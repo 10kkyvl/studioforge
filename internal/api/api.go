@@ -28,6 +28,7 @@ import (
 	"github.com/10kkyvl/studioforge/internal/models"
 	"github.com/10kkyvl/studioforge/internal/platform/toolpath"
 	"github.com/10kkyvl/studioforge/internal/projects"
+	"github.com/10kkyvl/studioforge/internal/prompts"
 	"github.com/10kkyvl/studioforge/internal/providers"
 	"github.com/10kkyvl/studioforge/internal/scheduler"
 	"github.com/10kkyvl/studioforge/internal/webui"
@@ -764,21 +765,21 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, 500, "database_error", "Unable to read chat history", err)
 		return
 	}
+	projectContext := projects.LoadContext(project.Path)
 	var subagents []providers.Subagent
 	if strings.Contains(strings.ToLower(agent.Role), "orchestrator") {
 		for _, candidate := range enabled {
 			if candidate.ID == agent.ID {
 				continue
 			}
-			subagents = append(subagents, providers.Subagent{Name: candidate.Name, Description: candidate.Role, Prompt: candidate.SystemPrompt})
+			// Delegated work is forwarded to the operator too, so a subagent needs the
+			// same rules about language and scope as the orchestrator that spawned it.
+			subagents = append(subagents, providers.Subagent{Name: candidate.Name, Description: candidate.Role, Prompt: prompts.ForRun(candidate.SystemPrompt, "")})
 		}
 	}
-	systemPrompt := agent.SystemPrompt
-	if pc := projects.LoadContext(project.Path); pc != "" {
-		// Carry the project's standing context so the operator need not re-explain
-		// the project on every message.
-		systemPrompt = strings.TrimSpace("Project context:\n" + pc + "\n\n" + systemPrompt)
-	}
+	// Carry the house rules and the project's standing context so the operator need
+	// not re-explain the project — or which language to answer in — on every message.
+	systemPrompt := prompts.ForRun(agent.SystemPrompt, projectContext)
 	if agent.Provider == "claude" && body.Mode != "plan" {
 		// Snapshot the project so the operator can revert an agent's edits. Best
 		// effort: a non-git project or a hook failure never blocks the run.
@@ -837,7 +838,7 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 					if agent == nil {
 						err = errors.New("the original agent is missing or disabled")
 					} else {
-						_, _, err = s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: run.ProjectID, AgentID: run.AgentID, TaskID: run.TaskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, WorkingDirectory: project.Path, Prompt: "Restart the interrupted StudioForge task. Inspect the previous failure and complete the task with verification.", MaxBudget: agent.Budget, Resources: []string{"project:" + run.ProjectID + ":write"}})
+						_, _, err = s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: run.ProjectID, AgentID: run.AgentID, TaskID: run.TaskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, WorkingDirectory: project.Path, Prompt: "Restart the interrupted task. Inspect the previous failure and complete the task with verification.", SystemPrompt: prompts.ForRun(agent.SystemPrompt, projects.LoadContext(project.Path)), MaxBudget: agent.Budget, Resources: []string{"project:" + run.ProjectID + ":write"}})
 					}
 				}
 			}
