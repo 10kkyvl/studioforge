@@ -133,10 +133,9 @@ cannot reach the behavior below through the UI or CLI, even though the code exis
   unavailable). `prompts.Input.Memory` is never populated by a live run; no run writes to or reads from
   it.
 - **`internal/prompts`** — `Assemble`'s structured, multi-section prompt template is never invoked outside
-  `assembly_test.go`. The system prompt an agent actually receives is built directly in
-  `internal/api/api.go`: the agent's stored `SystemPrompt` field with the project's static context
-  (`projects.LoadContext`) prepended as plain text — a much simpler concatenation than this package
-  provides for.
+  `assembly_test.go`. The system prompt an agent actually receives comes from the same package's much
+  simpler `ForRun`, called from `internal/api/api.go`: the standing `HouseRules`, the project's static
+  context (`projects.LoadContext`), then the agent's stored `SystemPrompt` field.
 - **`internal/tasks`** (`dag.go`) — `ValidateDAG` and its cycle detection are called only from
   `dag_test.go`. The `POST /api/v1/projects/{id}/tasks` handler accepts no `dependencies` field, so a
   real project cannot create a task dependency; `task_dependencies` rows exist only from the `--mock`
@@ -255,10 +254,12 @@ agents cannot reach Studio through this mechanism at all.
    run checks its project's budget (`Store.BudgetAllowed`) and then acquires a resource lease
    (`resources.Manager.Acquire`) on `project:<id>:write` — this is the "one writer per project" rule.
 5. **Prompt assembly (as actually wired)** — before submission, `api.createRun` already built the system
-   prompt: the agent's stored `SystemPrompt`, with the project's two static `.agent/*` context files
-   (`projects.LoadContext`) prepended if present. (The richer, multi-section `internal/prompts.Assemble`
-   template exists in the codebase but is not called from this path — see "Implemented but not yet
-   wired".)
+   prompt via `prompts.ForRun`: the standing `prompts.HouseRules` (answer in the operator's language;
+   the subject is the Roblox project, never StudioForge itself), then the project's two static
+   `.agent/*` context files (`projects.LoadContext`) if present, then the agent's stored `SystemPrompt`.
+   Subagents forwarded to an orchestrator carry the same house rules. (The richer, multi-section
+   `internal/prompts.Assemble` template exists in the codebase but is not called from this path — see
+   "Implemented but not yet wired".)
 6. **Git checkpoint** — for Claude runs not in `plan` mode, `gitcheckpoint.Checkpoint` runs
    `git add -A && git commit` in the project root before the provider starts, so the operator has a
    revert point. This is best-effort: a non-git project or an empty diff is a silent no-op and never fails
