@@ -1,0 +1,81 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22, cache: npm, cache-dependency-path: web/package-lock.json}
+      - run: npm ci
+        working-directory: web
+      - run: npm run check && npm run lint && npm test && npm run build
+        working-directory: web
+      - run: npx playwright install --with-deps chromium
+        working-directory: web
+      - run: npm run test:e2e
+        working-directory: web
+      - run: npm audit --audit-level=high
+        working-directory: web
+  go:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        go: ['1.25.x', '1.26.x']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: '${{ matrix.go }}', cache: true}
+      - name: Check gofmt
+        shell: bash
+        run: |
+          unformatted=$(gofmt -l cmd internal testdata)
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+      - run: go vet ./...
+      - run: go test ./...
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: '1.26.x', cache: true}
+      - run: go test -race ./...
+  build:
+    strategy:
+      matrix:
+        include:
+          - {os: windows-latest, goos: windows, goarch: amd64, output: studioforge.exe}
+          - {os: macos-latest, goos: darwin, goarch: arm64, output: studioforge}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22, cache: npm, cache-dependency-path: web/package-lock.json}
+      - uses: actions/setup-go@v5
+        with: {go-version: '1.26.x', cache: true}
+      - run: npm ci && npm run build
+        working-directory: web
+      - run: go build -trimpath -o ${{ matrix.output }} ./cmd/studioforge
+        env: {CGO_ENABLED: '0', GOOS: '${{ matrix.goos }}', GOARCH: '${{ matrix.goarch }}'}
+      - run: ./${{ matrix.output }} --version
+        if: runner.os == 'macOS'
+      - uses: actions/upload-artifact@v4
+        with: {name: 'studioforge-${{ matrix.goos }}-${{ matrix.goarch }}', path: '${{ matrix.output }}'}
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: '1.26.x', cache: true}
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: govulncheck ./...

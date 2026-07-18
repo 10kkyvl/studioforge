@@ -1,0 +1,91 @@
+name: Bug report
+description: Report a reproducible StudioForge problem
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        StudioForge is an alpha. Before filing, please check
+        [docs/TROUBLESHOOTING.md](../blob/main/docs/TROUBLESHOOTING.md) and
+        [docs/KNOWN_LIMITATIONS.md](../blob/main/docs/KNOWN_LIMITATIONS.md) — several packages are
+        implemented but deliberately not wired up yet, and they are listed there.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Include both the expected and the actual behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: The smallest safe sequence of steps that reproduces the problem.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `studioforge --version`.
+      placeholder: v0.1.0-alpha.1 (abc123456789, 2026-01-01T00:00:00Z)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows (amd64)
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Linux (built from source)
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: How were you running it?
+      options:
+        - Mock mode (--mock)
+        - Real project with Claude Code
+        - Real project with Codex CLI
+        - Real project with Roblox Studio access
+        - Real project with Rojo
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Doctor output
+      description: >
+        Output of `studioforge doctor`, with anything private removed. It reports detected
+        executables, versions, authentication state, and database health.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Run with `--log-level debug` if you can. Redaction is applied but is not exhaustive.
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety
+      options:
+        - label: I removed secrets, tokens, private prompts, and user source from this report.
+          required: true

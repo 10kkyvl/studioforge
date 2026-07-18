@@ -1,0 +1,147 @@
+# StudioForge guide (English)
+
+> **Public alpha.** This is a newly released alpha with no prior public release. Some features described below are implemented in code but not yet reachable from the running app; each such case is marked explicitly. See [Known Limitations](../KNOWN_LIMITATIONS.md) for the full verification matrix.
+
+## Installation
+
+### Windows 10/11 amd64
+
+Download the `windows-amd64.zip`, verify its SHA-256 against `SHA256SUMS.txt`, extract it to a user-writable directory, and run:
+
+```powershell
+./studioforge.exe --mock
+```
+
+Unsigned development builds may trigger SmartScreen. Verify the checksum and publisher source before choosing **More info → Run anyway**. A signed release should be preferred when available.
+
+### macOS 12+ Apple Silicon
+
+Download `macos-arm64.zip`, verify with `shasum -a 256`, extract, and open `StudioForge.app`. For an unsigned development build, use Control-click → Open once. Do not run commands that globally disable Gatekeeper. The archive contains no Node.js runtime.
+
+From source, install Go 1.25+, Node.js 22+, npm, and Git, then run `./scripts/dev.ps1` on Windows or `./scripts/dev.sh` on macOS.
+
+## First run
+
+The wizard checks the data directory, database, Git, Codex CLI/authentication, Claude Code/authentication, Rojo, and the official Studio MCP launcher. Each item shows the detected version/path and remediation. **Open dashboard** records completion; Doctor remains available in Settings.
+
+`--safe-mode` disables provider workers, MCP, and Rojo. Data, backups, exports, and diagnostics remain available. `--mock` seeds three isolated demo workspaces and exercises the production domain/API.
+
+## Codex CLI
+
+Install the current Codex CLI and authenticate it. StudioForge uses the stable non-interactive JSONL interface and reuses Codex CLI's saved authentication:
+
+```powershell
+codex --version
+codex login status
+```
+
+Runs use `codex exec --json`, an explicit workspace sandbox, no interactive approval prompts, the registered project as the working directory, and the agent's optional model/reasoning settings. StudioForge does not read or store Codex tokens. If Windows PATH resolves an inaccessible app-bundled executable, configure a separately installed Codex CLI executable under **Settings → Agents and integrations**.
+
+## Claude Code
+
+Install and authenticate Claude Code using Anthropic's current official instructions. Verify independently:
+
+```powershell
+claude --version
+claude auth status
+```
+
+StudioForge reads `claude --help` and enables only observed flags. Runs use print mode, stream JSON, reduced environment variables, bounded turns/budget, safe permission mode, and optional generated MCP configuration. Unsupported flags are omitted. Authentication stays in Claude Code; StudioForge does not store the token.
+
+## Roblox Studio MCP
+
+Update Roblox Studio, open **Assistant → … → Manage MCP Servers**, and enable **Studio as MCP server**. Official launchers:
+
+- Windows: `cmd.exe /c %LOCALAPPDATA%\Roblox\mcp.bat`
+- macOS: `/Applications/RobloxStudio.app/Contents/MacOS/StudioMCP`
+
+StudioForge discovers actual MCP tools and fails clearly when a required capability is absent. Studio access is fail-closed: a run is granted Studio access only when exactly one Studio instance is open. Claude Code runs its own MCP client, so StudioForge cannot pin an instance on the agent's connection from outside, and the official launcher accepts no instance-selection argument — with several Studios open, access is refused rather than guessed, and the run continues without Studio. The **Studio sessions** view and its bind action exist in the UI, but in this alpha real open Studio instances are not discovered into that view; its rows are demo data only. One instance is an exclusive resource for modifying/playtest operations.
+
+**Not implemented in this alpha** (see [Known Limitations](../KNOWN_LIMITATIONS.md)): the intended design is a playtest contract of select instance → read state → start → simulate input → collect console/screenshots → stop → structured result → bug tasks, with production publishing always requiring a Decision. `prompts.PlaytestResult` is defined in code but nothing constructs or parses it; StudioForge does not automate playtesting or capture screenshots, and no live run produces a Decision.
+
+## Rojo
+
+Install Rojo 7 CLI and the Studio plugin from official Rojo documentation. Verify:
+
+```powershell
+rojo --version
+```
+
+Each project selects a `*.project.json`. StudioForge invokes Rojo to build a place file and open it in Studio. **Not implemented in this alpha** (see [Known Limitations](../KNOWN_LIMITATIONS.md)): a live-sync `rojo serve <file> --port <unique-port>` session, supervised as a subprocess with streamed stdout/stderr, duplicate-session refusal, and stop/restart, is implemented and unit-tested in `internal/rojo`, but no HTTP endpoint starts, stops, or queries it — only the Rojo build is reachable. A VS Code extension does not replace the CLI.
+
+## Projects and agent teams
+
+Register an existing directory or create a new one. StudioForge stores its canonical path/fingerprint; it does not copy source into application data. Every project receives a default agent, including older registered projects that had none. The **Team builder** can create, edit, enable/disable, and launch agents with Codex, Claude Code, or mock providers. A version-controlled `.agent/` folder may contain a `constitution.yaml` and a `requirements.md`; StudioForge reads exactly these two files verbatim and prepends them to every run's system prompt. Nothing else under `.agent/` (architecture notes, prompts, skills, or memory) is read in this alpha. Runtime transcripts and usage remain in SQLite.
+
+Demo projects have separate orchestrator, builder, and verifier agents. Provider/model aliases (`fast`, `balanced`, `reasoning`, `premium`) are domain values; adapters map them. Permission profiles, concurrency, runtime, turns, and budget are per agent.
+
+**Settings → Agents and integrations** controls the default provider/model/effort, global concurrency, and executable overrides for Codex, Claude Code, Rojo, Git, and Roblox Studio MCP. Empty executable fields use PATH or platform discovery. Changes apply immediately and the integration cards show the effective path, version, authentication state, and remediation.
+
+## Multi-project concurrency
+
+The scheduler is round-robin across project queues. Different projects can hold writer leases simultaneously. A project has one writer by default; same-project writers wait on `project:<id>:write`. Resources are sorted and acquired atomically to prevent deadlock. Provider/model/global/project ceilings are checked before dispatch. Events are persisted before SSE publication.
+
+Pause and resume are cooperative at event boundaries. Cancel terminates the provider handle/process tree. Runs active during daemon failure become `interrupted`; restart creates a new auditable run. Histories, agents, tasks, usage, and budgets are filtered by `project_id`. (A project-scoped memory store exists in code — SQLite full-text search with Put/Search — but has zero callers outside tests in this alpha; no run reads or writes it.)
+
+## Permissions and safety
+
+- Keep the default loopback listener. `--unsafe-host` is an explicit escape hatch, not remote access hardening.
+- **Designed but not implemented in this alpha:** a Decision approval gate before production publish, destructive file changes, force Git, or Marketplace scripts. The `resolveDecision` endpoint and Decisions view exist, but nothing in a live run creates a Decision to approve — only the mock demo seed inserts sample rows.
+- **Designed but not implemented in this alpha:** an asset quarantine lifecycle — assets would start `unreviewed`, enter `quarantined`, receive script/style review, then become `approved`, `needs_cleanup`, or `rejected`. The status-transition validator is implemented but has no caller, and the Assets view is an empty placeholder with no API call.
+- **Designed but not implemented in this alpha:** Git rollback to a `studioforge/rollback-<timestamp>` branch at a verified commit, never force-resetting or removing untracked files. `internal/gitops` (`Status`, `Diff`, `SafeRollback`, `Tag`) is implemented and tested, but no API endpoint exposes it. (StudioForge does auto-commit a Git checkpoint before every non-plan Claude run, so the operator has something to revert to manually.)
+- Canonical path and symlink checks prevent adapters from escaping registered roots.
+
+## Backups, export, and import
+
+StudioForge creates an automatic SQLite backup at most once per 24 hours and offers **Create backup** in Settings. Backups use SQLite `VACUUM INTO` while the database is open.
+
+```powershell
+studioforge export --project PROJECT_ID --output project.zip
+studioforge import --file project.zip
+studioforge import --file project.zip --apply --path C:\existing\project
+```
+
+Portable export contains project metadata, agents, and tasks—not source. (Task dependency graphs are stored in the schema, but no API can create dependencies between tasks in this alpha — only the built-in mock demo seeds them.) Import always previews missing paths and conflicts before `--apply`.
+
+## Troubleshooting
+
+- **Another instance:** use the already-running window or stop that process cleanly. A stale PID lock is removed on next start.
+- **Blank UI:** ensure release assets were built before Go; official builds embed them. Check browser console and `/api/v1/health`.
+- **401 after copying URL:** bootstrap tokens are one-use. Start the daemon again or use the browser session originally opened.
+- **Claude missing/auth warning:** run `claude --version` and `claude auth status`; update/re-authenticate through Claude Code.
+- **Codex missing/auth warning:** run `codex --version` and `codex login status`; install/authenticate the CLI or set its executable path in Settings.
+- **Studio ambiguous:** Studio access is granted only when exactly one instance is open; close the extra Studio windows, leave a single instance open, and retry. (The Studio sessions bind action does not affect real instances in this alpha — it operates on demo data only.)
+- **Rojo unavailable:** install CLI, confirm `rojo --version`, select a `.project.json`, and verify the port is not blocked.
+- **Database:** run `studioforge doctor --bundle diagnostics.zip`; restore only from a known-good backup while the daemon is stopped.
+
+## Keyboard and accessibility
+
+Use Tab/Shift+Tab across all controls. Focus rings are always visible. Alt+1…Alt+9 moves between the first nine navigation sections. Tables scroll at narrow widths, cards collapse to one column, and the event log keeps only a bounded visible window while all events remain persisted.
+
+## Known limitations
+
+See [Known Limitations](../KNOWN_LIMITATIONS.md) for the verification-specific platform and integration matrix.
+
+---
+
+# Руководство StudioForge (Русский)
+
+Полная русская инструкция находится в [docs/ru/README.md](../ru/README.md). Ниже приведено её краткое содержание для читателей этой двуязычной страницы.
+
+## Установка и запуск
+
+Для разработки требуются Go 1.25+, Node.js 22+, npm и Git. Выполните `./scripts/dev.ps1 --no-open` в Windows либо `./scripts/dev.sh --no-open` в macOS/Linux. Для готового Windows archive распакуйте zip и запустите `studioforge.exe --mock`; в macOS распакуйте arm64 archive и откройте `StudioForge.app`.
+
+Wizard проверяет каталог данных, SQLite, Git, Codex CLI/auth, Claude Code/auth, Rojo и официальный Studio MCP launcher. `--safe-mode` отключает workers и внешние инструменты, а `--mock` создаёт три независимых demo workspace. Runtime не требует Node.js.
+
+## Codex, Claude, Studio MCP и Rojo
+
+StudioForge запускает Codex через `codex exec --json` с workspace sandbox и сохранённой CLI-авторизацией. StudioForge читает `claude --help` и добавляет только доступные flags. Токены провайдеров не сохраняются. Пути к Codex, Claude, Rojo, Git и Studio MCP задаются в **Настройки → Агенты и интеграции** и применяются сразу. Для Studio MCP включите **Studio as MCP server** в Roblox Studio: доступ выдаётся run'у только когда открыт ровно один экземпляр Studio (StudioForge не может закрепить instance на чужом MCP-соединении), а при нескольких открытых Studio доступ просто не выдаётся. Экран **Studio sessions** существует, но в этой альфа-версии реальные instances в него не попадают — там только demo-данные. Сборка (build) Rojo доступна из приложения; отдельная live-sync сессия `rojo serve <file> --port <unique-port>` реализована в коде, но пока не подключена ни к одному endpoint — см. [Known Limitations](../KNOWN_LIMITATIONS.md).
+
+## Эксплуатация
+
+Очередь честно чередует проекты; второй writer одного проекта ждёт `project:<id>:write`. Pause/resume выполняются между событиями, cancel завершает provider/process tree, interrupted runs доступны для restart. Backup использует SQLite `VACUUM INTO`; portable export не копирует source и всегда preview-ится перед import.
+
+## Проверка и доступность
+
+Запускайте `./scripts/test.ps1` и `go test -race ./...`. Используйте Tab/Shift+Tab; focus всегда видим, Alt+1…Alt+9 переключает первые девять разделов, а responsive layout корректно сжимается. Ограничения и фактическая platform matrix находятся в [Known Limitations](../KNOWN_LIMITATIONS.md).

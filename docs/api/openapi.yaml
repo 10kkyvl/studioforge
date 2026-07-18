@@ -1,0 +1,24 @@
+openapi: 3.1.0
+info: {title: StudioForge Local API, version: 1.0.0}
+servers: [{url: /api/v1}]
+paths:
+  /health:
+    get:
+      summary: Local daemon health
+      responses: {"200": {description: Healthy}}
+  /session/bootstrap:
+    post:
+      summary: Exchange one-time token for an HttpOnly session
+      responses: {"200": {description: Session established}}
+  /snapshot:
+    get:
+      summary: Complete UI bootstrap snapshot
+      responses: {"200": {description: Snapshot}}
+  /events:
+    get:
+      summary: Replayable SSE events
+      responses: {"200": {description: Stream}}
+  /runs:
+    post:
+      summary: Idempotent run creation
+      responses: {"201": {description: Queued}}

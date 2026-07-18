@@ -1,0 +1,55 @@
+name: Feature request
+description: Propose a capability or an improvement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check [docs/ROADMAP.md](../blob/main/docs/ROADMAP.md) and the feature status table in the
+        README first. Several packages are already implemented but not connected to the running product —
+        wiring one of those up is usually more valuable than adding something new.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow is currently difficult? Describe the situation you hit, not just the feature you want.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What should StudioForge do? Include the user-visible outcome and any safety implications.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - Wire up an existing but unreachable package
+        - Extend something that already works
+        - New capability
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: What workarounds did you consider?
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: This does not require adding credentials or proprietary Roblox assets to the repository.
+          required: true

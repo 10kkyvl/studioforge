@@ -1,0 +1,61 @@
+# Build output
+/dist/
+/artifacts/
+/coverage/
+
+# Frontend
+/web/node_modules/
+/web/.svelte-kit/
+/web/build/
+/web/test-results/
+/web/playwright-report/
+/web/.e2e/
+
+# Runtime
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.pid
+.studioforge/
+/.tmp-*/
+
+# Editors and OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Internal working notes — keep these out of the public repository.
+# Drafts, prompts, handoffs, status reports and planning docs belong in local
+# scratch space, not in a release. Anything genuinely useful to a contributor
+# goes in docs/ as a proper document instead.
+/HANDOFF.md
+/FINAL_REPORT.md
+/REPORT.md
+/NOTES.md
+/TODO.md
+/SCRATCH.md
+/*_prompt*.md
+/*_PROMPT*.md
+/docs/STATUS.md
+/docs/IMPLEMENTATION_CHECKLIST.md
+/docs/superpowers/
+/docs/internal/
+/docs/drafts/
+/.notes/
+/.scratch/
+/scratch/
+
+# Credentials and keys — never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.jks
+id_rsa
+id_ed25519
+credentials.json

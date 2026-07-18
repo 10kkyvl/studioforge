@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or usage help
+    url: https://github.com/10kkyvl/studioforge/discussions
+    about: Ask about setup, configuration, or how a workflow is meant to work. Please check docs/TROUBLESHOOTING.md first.
+  - name: Security vulnerability
+    url: https://github.com/10kkyvl/studioforge/security/advisories/new
+    about: Report a vulnerability privately. Do not open a public issue for an unpatched vulnerability.

@@ -1,0 +1,54 @@
+<script lang="ts">
+  import { translate } from '$lib/i18n';
+  import type { Project, StudioSession } from '$lib/types';
+
+  export let studios: StudioSession[];
+  export let projects: Project[];
+  export let projectName: (id: string) => string;
+  export let onBind: (sessionId: string, projectId: string) => void;
+</script>
+
+<section class="page-heading">
+  <div>
+    <p class="eyebrow">{$translate('nav.studios')}</p>
+    <h1>{$translate('studios.title')}</h1>
+    <p>{$translate('studios.subtitle')}</p>
+  </div>
+</section>
+<section class="studio-grid">
+  {#each studios as studio}
+    <article class="studio-card">
+      <header>
+        <div class="studio-light" class:active={studio.active}></div>
+        <div>
+          <h2>{studio.name}</h2>
+          <code>{studio.instanceId}</code>
+        </div>
+        {#if studio.mock}<span class="chip">{$translate('common.mock')}</span>{/if}
+      </header>
+      <dl>
+        <div>
+          <dt>{$translate('studios.place')}</dt>
+          <dd>{studio.placeId || '—'}</dd>
+        </div>
+        <div>
+          <dt>{$translate('studios.playState')}</dt>
+          <dd>{studio.playState}</dd>
+        </div>
+        <div>
+          <dt>{$translate('common.project')}</dt>
+          <dd>{studio.projectId ? projectName(studio.projectId) : $translate('common.none')}</dd>
+        </div>
+      </dl>
+      <label
+        >{$translate('studios.bind')}<select
+          value={studio.projectId ?? ''}
+          onchange={(event) => onBind(studio.id, event.currentTarget.value)}
+          ><option value="">{$translate('common.none')}</option>{#each projects as project}<option
+              value={project.id}>{project.name}</option
+            >{/each}</select
+        ></label
+      >
+    </article>
+  {:else}<div class="empty">{$translate('studios.empty')}</div>{/each}
+</section>

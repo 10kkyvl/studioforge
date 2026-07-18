@@ -1,0 +1,448 @@
+# Architecture
+
+StudioForge is a public alpha with no prior release and no git tags. This document describes what the
+code in this repository actually does, not a target state.
+
+## Overview
+
+StudioForge is a single Go daemon (`cmd/studioforge` → `internal/app`) that embeds a compiled SvelteKit
+SPA, stores its state in a local SQLite database, and drives external developer tools — `claude`,
+`codex`, Roblox's official Studio MCP launcher, and `rojo` — as supervised subprocesses. There is no
+second runtime service, no remote component, and no Roblox Studio plugin in this repository.
+
+The central idea is that StudioForge is a **project-level workflow layer**, not a replacement for any of
+the tools it orchestrates. It does not reimplement Claude Code, Codex, Rojo, or Roblox Studio's MCP
+integration. Instead it registers a project, keeps per-project state (agents, tasks, runs, event
+history) separate from every other project, schedules and rate-limits work against that state, and
+generates the per-run configuration each external tool needs, then starts that tool as a child process
+and streams its output back to the browser. The value it adds is in context, scheduling, budgets,
+checkpoints, and access control around calls to tools it does not own.
+
+## Component map
+
+Grouped by what each package is responsible for. All packages compile into one binary; there is no
+plugin loading or dynamic linking.
+
+### Entry point and daemon
+
+- `cmd/studioforge` — flag parsing and subcommand dispatch: the default daemon command, `doctor`,
+  `export`, `import`, and `mcp-shim`.
+- `internal/app` — daemon startup and shutdown: resolves the data directory, acquires the single-instance
+  lock, opens the database, recovers interrupted runs, optionally seeds the `--mock` demo, wires the
+  scheduler, provider adapters, the Studio MCP provisioner, and the HTTP server, then owns shutdown
+  ordering.
+- `internal/config` — `Options` (host/port/data-dir/log-level/safe-mode/mock/unsafe-host), loopback host
+  validation, and the `Version`/`Commit`/`BuildDate` variables injected via `-ldflags` at build time.
+
+### HTTP and events
+
+- `internal/api` — the HTTP handler tree, security middleware (Host/Origin/session checks, security
+  headers), the run-creation path, and the embedded-SPA static file server.
+- `internal/events` — `Hub`, an in-process publish/subscribe fan-out over already-persisted run events.
+- `internal/webui` — `//go:embed all:dist` of the built SvelteKit output; no Node.js is required at
+  runtime.
+
+### Scheduling and resources
+
+- `internal/scheduler` — a fair per-project queue (`fairqueue.go`), the run lifecycle state machine
+  (`state.go`), and `Manager` (`scheduler.go`), which enforces global/per-project/per-provider/per-model
+  concurrency limits, checks budgets before starting a job, calls an installable `MCPProvisioner` hook,
+  and supports pause/resume/cancel/restart plus heartbeat-based interrupted-run detection.
+- `internal/resources` — `Manager`, an atomic lease table keyed by sorted resource-key lists, with TTL
+  expiry, heartbeat renewal, and idempotent release. The scheduler uses one lease key,
+  `project:<id>:write`, per run, which is what makes "one writer per project" hold.
+
+### Storage
+
+- `internal/database` — SQLite connection setup (WAL, busy timeout, foreign keys), migration
+  application, integrity checks, backup (`VACUUM INTO`), and `Store`, the query layer for projects,
+  agents, tasks, runs, run events, threads, settings, decisions, and Studio session bindings.
+- `internal/migrations` — embedded, ordered, immutable `.sql` migration files (`//go:embed sql/*.sql`).
+- `internal/models` — the shared DTOs (`Project`, `Agent`, `Task`, `Run`, `RunEvent`, `ChatThread`,
+  `Decision`, `StudioSession`, `Diagnostics`, …) used across the database, API, and scheduler layers.
+
+### Providers (AI coding tools)
+
+- `internal/providers` — the `Provider` interface (`Diagnose`, `Start`, `Resume`, `Cancel`) and the
+  shared `RunRequest`/`Event`/`Result`/`Subagent` types every adapter implements against.
+- `internal/providers/claudecode` — execs the real `claude` binary in `-p` (non-interactive) mode,
+  discovers which flags it supports by parsing `claude --help`, builds arguments accordingly, streams and
+  classifies `stream-json` NDJSON events, and supports session resume and orchestrator subagent
+  delegation via `--agents`.
+- `internal/providers/codex` — execs `codex exec --json` (or `codex exec resume --json` for resume),
+  parses Codex's JSONL event stream, maps its sandbox modes to the shared permission profiles, and
+  classifies failures (rate limit, auth, approval configuration).
+- `internal/providers/mock` — a deterministic adapter used by the `--mock` demo and by tests; it needs no
+  external binary.
+
+### Roblox Studio integration
+
+- `internal/roblox/mcp` — `config.go` (launcher discovery, the tool allowlist by permission profile,
+  writing a per-run MCP config file), `transport.go` (a from-scratch MCP JSON-RPC stdio client),
+  `client.go` (`Discover`/`Call`/`ListStudios`/`SelectStudio` on top of the transport), `provisioner.go`
+  (the fail-closed access-grant decision described below), and `shim.go` (the `studioforge mcp-shim`
+  server).
+- `internal/roblox/studio` — `studio.go`: `Opener.OpenProject` builds a project's Rojo place file and
+  launches Roblox Studio on it; `PlaceName` derives the place's file name from the project name and ID,
+  which is how an already-open Studio window is later recognized as belonging to a given project.
+
+### Rojo
+
+- `internal/rojo` — `Manager.Build` and `Manager.InstallPlugin` compile a `.project.json` into a place
+  file and install the Rojo Studio plugin; both are called by `studio.Opener.OpenProject`.
+
+### Git
+
+- `internal/gitcheckpoint` — `Checkpoint(root, label)`, a best-effort `git add -A && git commit` run
+  before every non-plan Claude run, called directly from `internal/api/api.go`.
+
+### Project state and prompts
+
+- `internal/projects` — `PathGuard` (canonical-path registration and containment, used to reject any
+  resolved path outside a registered project root), `Fingerprint`, `Scaffold` (writes a new project's
+  Rojo skeleton), and `LoadContext`, which reads exactly two files verbatim —
+  `.agent/constitution.yaml` and `.agent/requirements.md` — for inclusion in the system prompt.
+- `internal/prompts` — `Assemble`/`Input`, a structured prompt-section template (safety policy,
+  constitution, requirements, role, skills, memory, blackboard, task, contracts, acceptance criteria,
+  permissions, expected schema) with built-in redaction. See "Implemented but not yet wired": this
+  package has no caller outside its own test.
+
+### Cross-cutting
+
+- `internal/security` — `Redact`, a regex-based secret scrubber for API keys, bearer tokens, and PEM
+  private key blocks, applied to diagnostic bundle exports.
+- `internal/diagnostics` — `Doctor.Run` (dependency and database checks surfaced by `studioforge doctor`
+  and `GET /api/v1/diagnostics`) and `Doctor.ExportBundle` (a redacted diagnostic zip). This package has
+  no test files.
+- `internal/processes` — `Supervisor` (tracked, terminable child processes; used for Rojo serve sessions)
+  and `MinimalEnvironment`, the allowlist that reduces what environment variables a provider subprocess
+  inherits.
+- `internal/platform` — data-directory resolution, the single-instance lock file, browser launching, a
+  `SecretStore` interface with Windows Credential Manager and macOS Keychain adapter stubs (both
+  currently return "unavailable"; StudioForge does not store Anthropic credentials), and
+  `toolpath`, which probes PATH and known install locations for each external tool.
+- `internal/portable` — `Export`/`Inspect`/`Apply` for the `studioforge export`/`import` CLI commands.
+
+### Implemented but not yet wired
+
+These packages are implemented, exercised by their own unit tests, and reachable only from tests — no
+code in `internal/app` or `internal/api` calls them from a live request. A user running StudioForge
+cannot reach the behavior below through the UI or CLI, even though the code exists and passes its tests.
+
+- **`internal/memory`** — a SQLite FTS5-backed store (`Put`/`Search`, with a `LIKE` fallback when FTS5 is
+  unavailable). `prompts.Input.Memory` is never populated by a live run; no run writes to or reads from
+  it.
+- **`internal/prompts`** — `Assemble`'s structured, multi-section prompt template is never invoked outside
+  `assembly_test.go`. The system prompt an agent actually receives is built directly in
+  `internal/api/api.go`: the agent's stored `SystemPrompt` field with the project's static context
+  (`projects.LoadContext`) prepended as plain text — a much simpler concatenation than this package
+  provides for.
+- **`internal/tasks`** (`dag.go`) — `ValidateDAG` and its cycle detection are called only from
+  `dag_test.go`. The `POST /api/v1/projects/{id}/tasks` handler accepts no `dependencies` field, so a
+  real project cannot create a task dependency; `task_dependencies` rows exist only from the `--mock`
+  demo seed.
+- **`internal/gitops`** — `Status`, `Diff`, `SafeRollback`, and `Tag` are implemented and tested, but no
+  HTTP endpoint exposes them. (This is a separate package from `internal/gitcheckpoint`, which *is*
+  wired — see the component map above.)
+- **`internal/roblox/assets`** — a 22-line quarantine status-transition validator with no caller anywhere
+  in the running product. `AssetsView.svelte` in the frontend is a bare empty state that makes no API
+  call. There is no asset scanning, upload, or Marketplace automation code at all.
+- **Rojo live-sync sessions** — `rojo.Manager.Start`/`Stop`/`Session` (a `rojo serve` session with an
+  allocated loopback port and log streaming) are unit-tested but no HTTP endpoint starts, stops, or
+  queries one. Only `Manager.Build` (a one-shot compile) is reachable, via `studio.Opener.OpenProject`.
+- **`internal/roblox/studio/service.go`** (`Service`) — an instance/binding tracker with no caller outside
+  its own test. The live `POST /api/v1/studios/{id}/bind` handler calls `database.Store.BindStudio`
+  directly; it does not use this type.
+- **Decisions** — `resolveDecision` and the `DecisionsView` UI exist and work against whatever
+  `decisions` rows are present, but nothing in a live run creates one. Only the `--mock` demo seed inserts
+  `decisions` rows.
+- **`prompts.PlaytestResult` and `prompts.ReviewResult`** — struct definitions with no code that
+  constructs or parses them.
+- **Real Studio instance discovery** — the Studio Sessions view is not populated from a live launcher
+  probe; its rows are `--mock` demo data only.
+
+## Process boundaries
+
+| Process | Started by | Lifetime | Talks to |
+| --- | --- | --- | --- |
+| StudioForge daemon | the user (`studioforge`, or `studioforge --mock`) | until stopped or the terminal closes | SQLite file, all subprocesses below, the browser over HTTP |
+| Browser | opened automatically (or manually) against the daemon's loopback URL | until closed | the daemon, over HTTP + SSE only |
+| `claude` | the daemon, per run | one run (`-p` exits when the turn completes) | stdout/stderr NDJSON to the daemon; optionally the `mcp-shim` subprocess over stdio, per its generated `--mcp-config` |
+| `codex` | the daemon, per run | one run (`codex exec` exits when the turn completes) | stdout/stderr JSONL to the daemon |
+| Roblox Studio MCP launcher (`mcp.bat` / `StudioMCP`) | the daemon (via provisioning/status probes) or the `mcp-shim` subprocess | per probe, or for the shim's lifetime | Roblox Studio's own WebSocket host inside the Studio process; JSON-RPC over stdio to whichever process spawned it |
+| `studioforge mcp-shim` | `claude`, as the command in its generated `--mcp-config` | for the run's duration | the Studio MCP launcher over stdio (lazily, on first request); the `claude` process over stdio |
+| `rojo` | the daemon, when opening a project in Studio | one build (`rojo build` exits when done) | stdout/stderr captured by the daemon |
+
+Roblox Studio itself is a separate, independently launched GUI application. StudioForge does not manage
+its process lifecycle — it only launches it once (`studio.LaunchPlace`, detached from the request that
+triggered it) and talks to its MCP launcher.
+
+## Communication protocols
+
+- **Browser ↔ daemon** — HTTP for commands (`/api/v1/...`) and Server-Sent Events for the live run-event
+  stream (`GET /api/v1/events`). There is no WebSocket in this repository.
+- **Daemon ↔ `claude`/`codex`** — the daemon execs the CLI with constructed arguments and a reduced
+  environment (`processes.MinimalEnvironment`), then reads newline-delimited JSON from its stdout:
+  `stream-json` events for Claude, JSONL events for Codex. Both are parsed line-by-line and normalized
+  into the shared `providers.Event` shape before being persisted and re-published.
+- **Daemon/shim ↔ Roblox Studio MCP launcher** — real MCP JSON-RPC 2.0 over stdio
+  (`internal/roblox/mcp/transport.go`): an `initialize` handshake, `tools/list`, and `tools/call`,
+  multiplexed by numeric request ID over one child process's stdin/stdout.
+- **Per-run MCP config** — when a Claude run is granted Studio access, the provisioner writes a small JSON
+  file (`{"mcpServers": {"Roblox_Studio": {"command": ..., "args": [...]}}}`) to
+  `<data-dir>/mcp/<run-id>.json` and passes its path to `claude --mcp-config`; the file is removed when
+  the run's grant is released.
+
+## Roblox Studio integration
+
+This repository contains **no Roblox Studio plugin** and does not reimplement any Studio operation.
+What it does is detect and launch Roblox's own official Studio MCP launcher and add a project-level
+layer of policy around it.
+
+**Launcher discovery** (`mcp.DetectLauncher`): with no configured override, it looks for
+`%LOCALAPPDATA%\Roblox\mcp.bat` on Windows (invoked as `cmd.exe /c mcp.bat`, since it is a batch file) or
+`/Applications/RobloxStudio.app/Contents/MacOS/StudioMCP` on macOS. Other platforms are reported as
+unsupported. An operator-configured `studio_mcp_path` override takes precedence and is stat-checked
+before use.
+
+**Tool allowlist by permission profile** (`mcp.AllowedTools`): in non-interactive mode, an MCP tool call
+Claude has not been told to auto-approve is denied, so the allowlist is what actually grants access, not
+just registration of the server. Three tiers, each including the tier below it:
+`read-only` (`script_read`, `script_search`, `script_grep`, `search_game_tree`, `inspect_instance`,
+`get_studio_state`, `get_console_output`, `screen_capture`, `list_roblox_studios`, `set_active_studio`);
+`workspace-write` adds tools that change the open place (`multi_edit`, `execute_luau`, `generate_mesh`,
+`generate_material`, `generate_procedural_model`, `insert_asset`, `search_asset`, `wait_job_finished`,
+`start_stop_play`, `subagent`, `skill`, `character_navigation`); `danger-full-access` adds tools that
+reach past the place (`upload_image`, `store_image`, `http_get`, `user_keyboard_input`,
+`user_mouse_input`). An unrecognized profile grants nothing.
+
+**Fail-closed single-instance rule**: Studio access is granted to a run only when the provisioner can
+identify exactly one Studio instance to hand to it. The real technical cause: Claude Code runs its own
+MCP client process, and `set_active_studio` is state on *that* connection, not something StudioForge can
+set from outside on the agent's behalf, and the launcher accepts no instance-selection argument at
+launch. With zero or several ambiguous instances open, `Provisioner.Provision` returns an empty grant (or
+one with a `Notice` explaining why) rather than guessing, and the run proceeds without Studio access. When
+a `Target.PlaceName` is known (i.e. a project is attached to the run) and no matching instance is open,
+the provisioner can open one itself if `studio_auto_open` is enabled, then poll for it to appear.
+
+**Why the shim exists**: the launcher advertises its tool list only to whichever MCP client won its single
+WebSocket host slot; every other client connected at the same time is told it has zero tools, even though
+its tool *calls* still succeed through the host. Pointing an agent straight at the launcher therefore
+risks the agent seeing no Studio tools at all whenever anything else (e.g. the Roblox Studio Assistant
+itself) is also connected. `studioforge mcp-shim` sits between the agent and the launcher: it answers
+`tools/list` from the best information available (a live connection, then a cached tool list from an
+earlier successful connection, then a hardcoded fallback list with an open argument schema) and forwards
+`tools/call` through untouched, so the agent's toolset stops depending on a race it cannot observe.
+
+**Studio access applies to Claude runs only.** The Codex CLI has no `--mcp-config` equivalent, so Codex
+agents cannot reach Studio through this mechanism at all.
+
+## Data flow: one chat message, end to end
+
+1. **HTTP request** — the browser posts to `POST /api/v1/runs` with a project, optional agent/task/thread
+   ID, and the prompt text. `internal/api.Server.createRun` validates the project, resolves the task (if
+   any) and prepends its title/description/acceptance criteria to the prompt, and resolves which enabled
+   agent should run (explicit agent, else the project's configured lead agent, else the first enabled
+   agent).
+2. **Provider check** — `scheduler.Manager.Diagnose` runs the chosen provider's diagnostics (executable
+   found, version, authentication) before a run is even queued; an unavailable or unauthenticated provider
+   is rejected with a 409 immediately.
+3. **Run record** — `scheduler.Manager.Submit` calls `database.Store.CreateRun`, which either creates a
+   new `runs` row (status `queued`) or, if an `Idempotency-Key` header matches an existing run, returns
+   that run unchanged. The job is pushed onto that project's slot in the fair queue.
+4. **Scheduler admission** — the scheduler's loop pops jobs across projects in round-robin order, subject
+   to global/per-project/per-provider/per-model concurrency ceilings (`canStartLocked`). Once popped, the
+   run checks its project's budget (`Store.BudgetAllowed`) and then acquires a resource lease
+   (`resources.Manager.Acquire`) on `project:<id>:write` — this is the "one writer per project" rule.
+5. **Prompt assembly (as actually wired)** — before submission, `api.createRun` already built the system
+   prompt: the agent's stored `SystemPrompt`, with the project's two static `.agent/*` context files
+   (`projects.LoadContext`) prepended if present. (The richer, multi-section `internal/prompts.Assemble`
+   template exists in the codebase but is not called from this path — see "Implemented but not yet
+   wired".)
+6. **Git checkpoint** — for Claude runs not in `plan` mode, `gitcheckpoint.Checkpoint` runs
+   `git add -A && git commit` in the project root before the provider starts, so the operator has a
+   revert point. This is best-effort: a non-git project or an empty diff is a silent no-op and never fails
+   the run.
+7. **MCP provisioning** — if the run's provider is Claude, the installed `MCPProvisioner` hook
+   (`mcp.Provisioner.Provision`) runs the fail-closed Studio access check described above and, if granted,
+   returns a config path and allowed-tools list; a snapshot of the open place's state is also prepended to
+   the prompt so the agent does not have to re-explore it.
+8. **Provider subprocess exec** — the scheduler calls `provider.Start` (or `.Resume`, if the thread has a
+   prior session ID), which execs `claude` or `codex` with arguments built from the run request (model,
+   effort, permission mode/sandbox, MCP config path, allowed tools, subagents) and a minimized environment.
+9. **Streamed events** — the provider adapter reads the subprocess's stdout line by line, classifies each
+   line into a `providers.Event`, and sends it on a channel the scheduler drains.
+10. **Persisted events** — the scheduler publishes each event through `events.Hub.Publish`, which first
+    calls `Store.AppendEvents` (an INSERT that assigns a monotonically increasing `id`) and only then
+    fans the now-persisted event out to subscribers. Events are never delivered live-only; every event a
+    client can see also exists in SQLite.
+11. **SSE to UI** — `GET /api/v1/events` first replays any events after the client's `Last-Event-ID` (or an
+    `after` query parameter) from the database, then subscribes to the hub for new ones, sending a
+    heartbeat comment every 15 seconds and disconnecting a client whose 256-event buffer overflows.
+
+## Configuration flow
+
+- **CLI flags** (`cmd/studioforge/main.go`): `--host`, `--port`, `--data-dir`, `--no-open`,
+  `--log-level`, `--safe-mode`, `--mock`, `--unsafe-host`, `--version`, plus the `doctor`, `export`,
+  `import`, and `mcp-shim` subcommands.
+- **Data directory resolution** (`platform.DataDir`): an explicit `--data-dir` is created and used as-is;
+  otherwise it is `os.UserConfigDir()/StudioForge`. `EnsurePrivateDirs` creates `backups`, `exports`,
+  `logs`, `artifacts`, `runtime`, and `mcp` subdirectories with `0o700` permissions.
+- **Settings-page path overrides applied without restart**: `POST /api/v1/settings` persists a key/value
+  to the `app_settings` table and, for a fixed set of keys (`codex_path`, `claude_path`, `rojo_path`,
+  `git_path`, `studio_mcp_path`, `studio_auto_open`, `concurrency`), calls an `applySetting` callback
+  wired in `internal/app` that updates the live provider adapters, the Doctor's override fields, the
+  Studio MCP override (an `atomic.Value`), the auto-open flag, or the scheduler's concurrency limits in
+  place — no process restart is involved.
+- **Version metadata**: `Version`, `Commit`, and `BuildDate` in `internal/config` default to
+  `dev`/`none`/`unknown` and are overwritten at build time via `-ldflags -X ...` in `scripts/build.ps1` /
+  `scripts/build.sh`, derived from `git describe` and `git rev-parse`.
+
+## Storage and project state
+
+- **Engine**: `modernc.org/sqlite` (pure Go, no CGO), opened with `journal_mode=WAL`,
+  `synchronous=NORMAL`, `busy_timeout=5000`, and `foreign_keys=1` (`database.sqliteDSN`).
+- **Migrations**: ordered, embedded `.sql` files applied once each, tracked in a `schema_migrations`
+  ledger table; each migration runs inside its own transaction. New migrations are added rather than
+  editing an already-released one.
+- **FTS5 detection with `LIKE` fallback**: `database.enableFTS` attempts to create a `memory_fts` virtual
+  table (`USING fts5(...)`); if that fails (the SQLite build lacks FTS5), `db.FTS5` is `false` and
+  `internal/memory.Store.Search` falls back to a `LIKE '%...%'` query instead. (As noted above, nothing in
+  the running product currently calls into `internal/memory`.)
+- **Integrity and backups**: `DB.Integrity` runs `PRAGMA integrity_check` and `PRAGMA foreign_key_check`;
+  `DB.Backup` uses `VACUUM INTO` to a target path that must not already exist. `internal/app` runs an
+  automatic backup at daemon start if the last one is more than 24 hours old, and `POST /api/v1/backups`
+  triggers one on demand.
+- **Portable export/import limits**: `studioforge export --project --output` (via `internal/portable`)
+  writes a zip containing the project's metadata, its agents, and its tasks — explicitly *not* its
+  source files (`Manifest.IncludesSource` is always `false`). `studioforge import --file` previews the
+  manifest and, with `--apply`, requires an existing project root path; it does not recreate source from
+  the archive.
+- **Single-instance lock**: `platform.AcquireLock` writes a PID-stamped lock file in the data directory
+  and refuses to start a second daemon against the same data directory while the recorded PID is alive.
+
+## Trust boundaries
+
+**Localhost is not a trust boundary in itself** — any process or browser tab on the machine can reach a
+loopback port. StudioForge's security model therefore does not rely on "it's on localhost" alone; each
+of the following is enforced independently:
+
+- **Loopback-only bind**: the listener binds `127.0.0.1` (or `localhost`) unless `--unsafe-host` is passed
+  with an explicit non-loopback `--host`; `config.Options.Normalize` rejects a non-loopback host otherwise.
+- **Bootstrap token → session cookie**: on startup, a one-use, cryptographically random bootstrap token is
+  printed to stdout and embedded in the auto-opened URL fragment (`#bootstrap=...`, never sent to the
+  server in a request path or query string). `POST /api/v1/session/bootstrap` exchanges it exactly once
+  for a session token, set as an `HttpOnly`, `SameSite=Strict` cookie (`studioforge_session`) with a
+  24-hour TTL that extends on use.
+- **Host/Origin validation on mutating requests**: every `/api/` request must present a `Host` header that
+  exactly matches the listener's own address; every mutating method (non-GET/HEAD/OPTIONS) must also
+  present an `Origin` header whose host matches. Both are enforced in `Server.security` before any handler
+  runs.
+- **No wildcard CORS**: the CSP (`default-src 'self'; script-src 'self'; ...; object-src 'none';
+  base-uri 'none'; frame-ancestors 'none'`) and the absence of any `Access-Control-Allow-Origin` header
+  together mean no other origin can drive the API even if it guesses the session cookie's name.
+- **Canonical root path containment and symlink rejection**: `projects.PathGuard` resolves every
+  registered project path through `filepath.EvalSymlinks` before recording it, and
+  `PathGuard.Resolve` rejects any relative path that would resolve outside that canonical root — this is
+  what stops a project-scoped operation from being redirected outside the registered directory via a
+  symlink or a `..` segment.
+- **Reduced provider environment**: `processes.MinimalEnvironment` passes only an explicit allowlist of
+  environment variables (`PATH`, `HOME`/`USERPROFILE`, temp-dir variables, proxy variables, `CODEX_HOME`,
+  etc.) to `claude`, `codex`, and `rojo` subprocesses — the daemon's own environment is not inherited
+  wholesale.
+- **Secret redaction**: `security.Redact` strips API keys, `Authorization: Bearer/Basic` headers,
+  `sk-ant-...`/`sk-...`-shaped tokens, and PEM private key blocks from diagnostic bundle exports
+  (`Doctor.ExportBundle`).
+- **A Claude run still inherits the operator's own Claude Code configuration** (`CLAUDE.md`, hooks,
+  plugins, skills) from the local `claude` installation, and that configuration is billed and executed on
+  every run. `--strict-mcp-config` isolates a run from the operator's other configured MCP servers, but it
+  is only emitted alongside `--mcp-config` — i.e. only when Studio access was granted — so a run without
+  Studio access still inherits those other servers. Claude Code's `--bare` flag would isolate a run fully,
+  but it requires `ANTHROPIC_API_KEY` and cannot use OAuth/subscription authentication, so StudioForge does
+  not use it.
+
+## Failure handling
+
+- **Interrupted-run recovery on startup**: `Store.RecoverInterrupted`, called once at daemon start before
+  anything else runs, transitions any run left in `starting`, `running`, or `cancelling` status to
+  `interrupted` with an explanatory error — this is what happens to a run in flight when the daemon
+  process itself is killed or crashes.
+- **Heartbeat leases**: while a run is active, the scheduler ticks a 5-second heartbeat on its resource
+  lease (`resources.Handle.Heartbeat`); a lease left un-renewed past its TTL is reaped by the manager's
+  background sweep, freeing the resource key for the next run even if the holder never releases it
+  explicitly.
+- **Provider error classification**: both `claudecode` and `codex` adapters pattern-match combined
+  stdout/stderr/error text into typed messages — rate limit, authentication, budget exceeded, capability
+  mismatch (an unsupported flag), approval configuration error — so a failure surfaces as an actionable
+  category rather than a raw stack trace.
+- **Fail-closed Studio access**: covered above — ambiguous or absent Studio instances yield no grant
+  rather than a guess, and the run always continues (without Studio tools) rather than failing outright.
+- **Budget ceilings**: `Store.BudgetAllowed` is checked before a queued job is allowed to acquire its
+  resource lease; a project with a configured daily budget whose already-used cost plus the run's
+  requested budget would exceed the limit fails the run immediately with a descriptive message, before any
+  subprocess is started.
+- **Safe mode** (`--safe-mode`): `POST /api/v1/runs` rejects every request with a 409 while safe mode is
+  on, and the scheduler's concurrency limits are simultaneously forced to `1/1/1/1`. In practice this means
+  no new AI runs can be created at all while safe mode is active; it does not change how Rojo or the
+  Studio MCP launcher are detected, only that no code path in the running daemon invokes them without a
+  run.
+
+## Extension points
+
+- **Adding a provider adapter**: implement `providers.Provider` (`Diagnose`, `Start`, `Resume`, `Cancel`)
+  in a new package under `internal/providers/<name>`, register an instance in the `adapters` map built in
+  `internal/app.Run`, and add the provider name to the validation lists in `internal/api/api.go`
+  (`normalizeAgent`, the `settings` handler's `default_provider` check). Per CONTRIBUTING's rule, keep the
+  new package independent of HTTP, SQLite, and the other adapters — it should only depend on
+  `internal/providers` and `internal/processes`.
+- **Adding a Studio tool to the allowlist**: add the tool's name to the appropriate tier
+  (`readOnlyTools`, `workspaceTools`, or `reachingTools`) in `internal/roblox/mcp/config.go`, and add it to
+  `OfficialTools` so the shim's fallback tool list also advertises it when no live schema is available.
+- **The domain-package independence rule** (from `CONTRIBUTING.md`): domain packages must stay independent
+  of the HTTP, SQLite, Claude, Roblox, and Rojo adapters; adapters implement narrow interfaces defined by
+  the domain packages that use them (e.g. `api.StudioOpener`, `scheduler.RunStore`,
+  `studio.Builder`), not the other way around.
+- **The resource/lease contract**: a new stateful feature that needs mutual exclusion declares its
+  resource keys on the `scheduler.Job` (or calls `resources.Manager.Acquire` directly) using a stable,
+  sorted key naming scheme (the existing convention is `project:<id>:write`); the lease manager handles
+  contention, heartbeat renewal, and expiry uniformly, so a new feature should not invent its own locking.
+
+## Diagram
+
+```mermaid
+flowchart LR
+    Browser["Browser<br/>(embedded SvelteKit SPA)"]
+
+    subgraph Daemon["StudioForge daemon (single Go process)"]
+        API["internal/api<br/>HTTP + SSE"]
+        Scheduler["internal/scheduler<br/>fair queue, leases, budgets"]
+        DB[("SQLite (WAL)<br/>internal/database")]
+        Providers["internal/providers/{claudecode,codex,mock}"]
+        MCP["internal/roblox/mcp<br/>provisioner + transport"]
+    end
+
+    Claude["claude subprocess"]
+    Codex["codex subprocess"]
+    Shim["studioforge mcp-shim<br/>subprocess"]
+    Launcher["Roblox Studio MCP launcher<br/>(official, mcp.bat / StudioMCP)"]
+    Studio["Roblox Studio<br/>(separate GUI process)"]
+    Rojo["rojo subprocess<br/>(build)"]
+
+    Browser <-->|HTTP + SSE| API
+    API --> Scheduler
+    API --> DB
+    Scheduler --> DB
+    Scheduler --> Providers
+    Scheduler --> MCP
+    Providers --> Claude
+    Providers --> Codex
+    MCP -->|status probes; writes --mcp-config naming the shim| Launcher
+    Claude -.->|spawns, per generated --mcp-config| Shim
+    Shim --> Launcher
+    Launcher <--> Studio
+    API --> Rojo
+    Rojo --> Studio
+```
+
+See [ADR 0001](adr/0001-architecture.md) and [ADR 0002](adr/0002-external-capabilities.md) for the
+accepted decisions behind this shape.

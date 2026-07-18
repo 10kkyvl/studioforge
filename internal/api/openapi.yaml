@@ -1,0 +1,135 @@
+openapi: 3.1.0
+info:
+  title: StudioForge Local API
+  version: 1.0.0
+servers:
+  - url: /api/v1
+paths:
+  /health:
+    get:
+      summary: Local daemon health
+      responses: {"200": {description: Healthy}}
+  /session/bootstrap:
+    post:
+      summary: Exchange one-time bootstrap token for an HttpOnly session
+      responses: {"200": {description: Session established}, "401": {description: Invalid token}}
+  /snapshot:
+    get:
+      summary: Load the complete UI bootstrap snapshot
+      responses: {"200": {description: Snapshot}}
+  /events:
+    get:
+      summary: Persisted and live SSE run events
+      parameters:
+        - {name: Last-Event-ID, in: header, schema: {type: integer}}
+      responses: {"200": {description: Event stream}}
+  /projects:
+    post:
+      summary: >-
+        Register or create a project root; scaffolds a Rojo skeleton when
+        none exists, and best-effort opens Studio when openStudio is set
+      responses: {"201": {description: Project created}}
+  /projects/{id}/tasks:
+    post:
+      summary: Create a task on a project (status defaults "backlog", priority 50)
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "201": {description: Task created}
+        "400": {description: Title is required}
+        "404": {description: Project not found}
+  /tasks/{taskId}:
+    post:
+      summary: Update a task's title, description, acceptance criteria, priority, status, or blocked reason
+      parameters:
+        - {name: taskId, in: path, required: true, schema: {type: string}}
+      responses:
+        "200": {description: Task updated}
+        "400": {description: Unknown status}
+        "404": {description: Task not found}
+    delete:
+      summary: Delete a task
+      parameters:
+        - {name: taskId, in: path, required: true, schema: {type: string}}
+      responses:
+        "200": {description: "{ok:true}"}
+        "404": {description: Task not found}
+  /projects/{id}/agents:
+    post:
+      summary: Create an enabled project agent
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses: {"201": {description: Agent created}}
+  /projects/{id}/agents/{agentID}:
+    post:
+      summary: Update a project agent configuration
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: agentID, in: path, required: true, schema: {type: string}}
+      responses: {"200": {description: Agent updated}}
+  /settings:
+    post:
+      summary: Update locale, agent defaults, concurrency, and executable path overrides
+      responses: {"200": {description: Settings applied}}
+  /detect-paths:
+    get:
+      summary: Report where Codex, Claude, Rojo, Git, and the Studio MCP launcher appear to be installed
+      description: >-
+        Takes no parameters. Detection executes each candidate to read its
+        version, so a caller-supplied path is refused rather than probed.
+        Results are cached briefly.
+      responses:
+        "200": {description: Candidates per settings key, best first}
+        "400": {description: Parameters were supplied}
+  /projects/{id}/threads:
+    get:
+      summary: List a project's chat threads, newest first (always non-empty)
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses: {"200": {description: Threads}}
+    post:
+      summary: Create a new chat thread; a blank title becomes "New chat"
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses: {"201": {description: Thread created}}
+  /projects/{id}/lead:
+    get:
+      summary: The project's lead agent ID ("" if unset)
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses: {"200": {description: Lead agent}}
+    post:
+      summary: Set the project's lead agent; must be one of the project's enabled agents
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "200": {description: Lead agent set}
+        "400": {description: Agent is not an enabled agent of the project}
+  /projects/{id}/pace:
+    get:
+      summary: The project's typical run duration, averaged over its last ~20 completed runs
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses: {"200": {description: "typicalSeconds and samples (0 when there is no history)"}}
+  /threads/{threadId}/messages:
+    get:
+      summary: A thread's chronological chat history (operator prompts and agent replies)
+      parameters:
+        - {name: threadId, in: path, required: true, schema: {type: string}}
+      responses: {"200": {description: Messages}}
+  /runs:
+    post:
+      summary: >-
+        Submit a run; supports Idempotency-Key, an optional threadId, and an
+        optional taskId that prepends the task's context to the prompt and
+        sets the task to "running" (400 if the task belongs to another project)
+      responses:
+        "201": {description: Run queued}
+        "400": {description: "Empty prompt, unknown task, or task from another project"}
+  /runs/{id}/{action}:
+    post:
+      summary: Pause, resume, cancel, or restart a run
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: action, in: path, required: true, schema: {type: string, enum: [pause, resume, cancel, restart]}}
+      responses: {"200": {description: Action accepted}}
