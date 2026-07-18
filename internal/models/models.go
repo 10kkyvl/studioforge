@@ -48,27 +48,38 @@ type Task struct {
 	BlockedReason      string   `json:"blockedReason,omitempty"`
 }
 
+// TokenUsage is the token accounting persisted with a run. It is embedded in
+// Run so the counters stay flat in the run JSON the UI already reads, and it
+// mirrors providers.Usage field for field so the two convert directly.
+type TokenUsage struct {
+	InputTokens         int `json:"inputTokens"`
+	OutputTokens        int `json:"outputTokens"`
+	CacheReadTokens     int `json:"cacheReadTokens"`
+	CacheCreationTokens int `json:"cacheCreationTokens"`
+}
+
 type Run struct {
-	ID               string     `json:"id"`
-	ProjectID        string     `json:"projectId"`
-	AgentID          string     `json:"agentId"`
-	TaskID           string     `json:"taskId,omitempty"`
-	Provider         string     `json:"provider"`
-	ModelAlias       string     `json:"modelAlias"`
-	ProviderSession  string     `json:"providerSession,omitempty"`
-	Status           string     `json:"status"`
-	Phase            string     `json:"phase"`
-	RequiredResource string     `json:"requiredResource,omitempty"`
-	Error            string     `json:"error,omitempty"`
-	Cost             float64    `json:"cost"`
-	BaseCommit       string     `json:"baseCommit,omitempty"`
-	ResultCommit     string     `json:"resultCommit,omitempty"`
-	ThreadID         string     `json:"threadId,omitempty"`
-	PromptSnapshot   string     `json:"promptSnapshot,omitempty"`
-	CreatedAt        time.Time  `json:"createdAt"`
-	UpdatedAt        time.Time  `json:"updatedAt"`
-	StartedAt        *time.Time `json:"startedAt,omitempty"`
-	FinishedAt       *time.Time `json:"finishedAt,omitempty"`
+	ID               string  `json:"id"`
+	ProjectID        string  `json:"projectId"`
+	AgentID          string  `json:"agentId"`
+	TaskID           string  `json:"taskId,omitempty"`
+	Provider         string  `json:"provider"`
+	ModelAlias       string  `json:"modelAlias"`
+	ProviderSession  string  `json:"providerSession,omitempty"`
+	Status           string  `json:"status"`
+	Phase            string  `json:"phase"`
+	RequiredResource string  `json:"requiredResource,omitempty"`
+	Error            string  `json:"error,omitempty"`
+	Cost             float64 `json:"cost"`
+	TokenUsage
+	BaseCommit     string     `json:"baseCommit,omitempty"`
+	ResultCommit   string     `json:"resultCommit,omitempty"`
+	ThreadID       string     `json:"threadId,omitempty"`
+	PromptSnapshot string     `json:"promptSnapshot,omitempty"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	UpdatedAt      time.Time  `json:"updatedAt"`
+	StartedAt      *time.Time `json:"startedAt,omitempty"`
+	FinishedAt     *time.Time `json:"finishedAt,omitempty"`
 }
 
 type ChatThread struct {

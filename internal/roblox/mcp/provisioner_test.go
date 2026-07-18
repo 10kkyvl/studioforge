@@ -111,6 +111,46 @@ func TestProvisionWithoutStudioIsNotAFailure(t *testing.T) {
 	}
 }
 
+// Roblox hands the MCP host slot to one client at a time. A second client still
+// connects and still answers, but lists no instances — indistinguishable here
+// from a machine with Studio closed. Staying silent left the agent with no
+// Studio tools and no reason, so it wrote files and claimed Rojo would sync.
+func TestProvisionExplainsAStudioHeldByAnotherClient(t *testing.T) {
+	p := newProvisioner(t, &studioTransport{instances: nil})
+	p.Running = func(context.Context) bool { return true }
+	grant := p.Provision(context.Background(), "run-1", "workspace-write", Target{})
+	if grant.ConfigPath != "" {
+		t.Fatal("a Studio held by another client must not receive access")
+	}
+	if !strings.Contains(grant.Notice, "another MCP client") {
+		t.Errorf("notice must name the cause the operator can act on, got %q", grant.Notice)
+	}
+}
+
+// The same empty list without a Studio process is the ordinary "nothing open"
+// case, which must stay silent.
+func TestProvisionStaysSilentWhenNoStudioProcessRuns(t *testing.T) {
+	p := newProvisioner(t, &studioTransport{instances: nil})
+	p.Running = func(context.Context) bool { return false }
+	if grant := p.Provision(context.Background(), "run-1", "workspace-write", Target{}); grant.Notice != "" {
+		t.Errorf("a closed Studio must not be reported as blocked, got %q", grant.Notice)
+	}
+}
+
+// The badge needs the two apart too: reporting a held connection as "none" sent
+// operators to reopen a Studio that was already in front of them.
+func TestStatusReportsAHeldConnectionAsBlocked(t *testing.T) {
+	p := newProvisioner(t, &studioTransport{instances: nil})
+	p.Running = func(context.Context) bool { return true }
+	status, err := p.Status(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Open != 0 || !status.Blocked {
+		t.Errorf("expected open=0 blocked=true, got open=%d blocked=%v", status.Open, status.Blocked)
+	}
+}
+
 func TestProvisionMissingLauncherIsNotAFailure(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{})
 	p.Override = func() string { return filepath.Join(t.TempDir(), "absent") }

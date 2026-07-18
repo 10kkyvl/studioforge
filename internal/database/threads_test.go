@@ -67,7 +67,7 @@ func TestLatestThreadSessionSelfHeals(t *testing.T) {
 	if err := store.UpdateRun(ctx, r1.ID, "completed", "verified", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetRunSessionAndCost(ctx, r1.ID, "sess-A", 0); err != nil {
+	if err := store.SetRunUsage(ctx, r1.ID, "sess-A", 0, models.TokenUsage{}); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := store.LatestThreadSession(ctx, thread.ID); got != "sess-A" {

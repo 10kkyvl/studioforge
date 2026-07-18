@@ -157,6 +157,41 @@ func (p *Process) Terminate(grace time.Duration) error {
 	})
 	return result
 }
+
+// ConfigureTree prepares a command the supervisor does not own so it can later
+// be killed together with everything it spawns. Providers that launch a CLI
+// which itself starts subprocesses (the MCP shim, tool processes) must call
+// this before Start; on POSIX there is otherwise no process group to signal.
+func ConfigureTree(cmd *exec.Cmd) { configureProcessTree(cmd) }
+
+// TerminateTree stops cmd and every process below it, mirroring what
+// (*Process).Terminate does for supervised processes: ask politely first so the
+// CLI can flush its output and exit on its own, then force-kill the whole tree
+// once grace has elapsed. exited must be closed once the command has been
+// reaped; closing it cancels the escalation, which also keeps us from
+// force-killing a PID the OS has since handed to somebody else.
+//
+// Only the graceful signal is sent synchronously, so callers learn immediately
+// whether it failed. The escalation waits in the background because cancel
+// paths run under locks (the scheduler holds its mutex) and must not block for
+// the grace period.
+func TerminateTree(cmd *exec.Cmd, exited <-chan struct{}, grace time.Duration) error {
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	err := gracefulTerminate(cmd)
+	go func() {
+		timer := time.NewTimer(grace)
+		defer timer.Stop()
+		select {
+		case <-exited:
+		case <-timer.C:
+			_ = forceKillTree(cmd)
+		}
+	}()
+	return err
+}
+
 func (s *Supervisor) Close(ctx context.Context) error {
 	s.mu.Lock()
 	s.closing = true

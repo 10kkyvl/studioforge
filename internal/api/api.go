@@ -606,6 +606,10 @@ func (s *Server) threadMessages(w http.ResponseWriter, r *http.Request) {
 type StudioStatus struct {
 	Open    int
 	Matched int
+	// Blocked means Studio is running but another MCP client holds its
+	// connection. It is reported apart from Open because the two look identical
+	// from the launcher — both list no instances — while needing opposite advice.
+	Blocked bool
 }
 
 // studioStatusHandler answers what the chat badge shows. It reports the state
@@ -628,8 +632,13 @@ func (s *Server) studioStatusHandler(w http.ResponseWriter, r *http.Request) {
 		state = "matched"
 	case status.Open > 0:
 		state = "other"
+	case status.Blocked:
+		// Studio is open; it is the connection that is unavailable. Reporting
+		// this as "none" sent operators to reopen a Studio already in front of
+		// them, and left the real cause — another MCP client owning it — unsaid.
+		state = "blocked"
 	}
-	writeJSON(w, 200, map[string]any{"open": status.Open, "matched": status.Matched, "state": state})
+	writeJSON(w, 200, map[string]any{"open": status.Open, "matched": status.Matched, "blocked": status.Blocked, "state": state})
 }
 
 func (s *Server) openStudio(w http.ResponseWriter, r *http.Request) {

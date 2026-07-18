@@ -2,6 +2,7 @@
   import { onDestroy, onMount, tick } from 'svelte';
   import { MessagesSquare, Plus } from '@lucide/svelte';
   import {
+    APIError,
     createTask,
     createThread,
     getLead,
@@ -12,7 +13,7 @@
     post,
     setLead,
   } from '$lib/api';
-  import { formatDate, locale, translate } from '$lib/i18n';
+  import { formatDate, formatTokens, locale, totalTokens, translate } from '$lib/i18n';
   import type {
     Agent,
     ChatMessage,
@@ -21,6 +22,7 @@
     RunEvent,
     StudioStatus,
     Task,
+    TokenUsage,
   } from '$lib/types';
 
   export let projectId: string | undefined;
@@ -57,6 +59,7 @@
 
   let studioStatus: StudioStatus = STUDIO_OFFLINE;
   let openingStudio = false;
+  let stopping = false;
   let commandInfo = '';
   let progressInterval: ReturnType<typeof setInterval> | undefined;
   let studioInterval: ReturnType<typeof setInterval> | undefined;
@@ -99,6 +102,29 @@
       studioStatus = await getStudioStatus(projectId);
     } catch {
       studioStatus = STUDIO_OFFLINE;
+    }
+  }
+
+  // Stop the run this chat is waiting on. The strip stays up until a terminal
+  // status arrives over SSE rather than being cleared here, because the run is
+  // only really over once the scheduler says so — cancelling is not instant, and
+  // hiding the strip early would claim an outcome that has not happened yet.
+  async function stopRun() {
+    if (!sentRunId || stopping) return;
+    stopping = true;
+    const runId = sentRunId;
+    try {
+      await post(`/runs/${runId}/cancel`, {});
+    } catch (cause) {
+      // A run that reached a terminal state between the click and the request is
+      // the common race, and the scheduler rejects it as "not active". Nothing
+      // went wrong — the run is stopped, which is what was asked for — so this
+      // must not raise a red banner. Anything else is worth saying out loud.
+      if (cause instanceof APIError && cause.code === 'run_action_failed') stopping = false;
+      else {
+        error = cause instanceof Error ? cause.message : String(cause);
+        stopping = false;
+      }
     }
   }
 
@@ -165,15 +191,32 @@
   $: progressPercent =
     typicalSeconds > 0 ? Math.min((elapsedSeconds / typicalSeconds) * 100, 100) : 0;
   $: stepCount = activeRunEvents.length;
+  // Usage events carry the run's total so far rather than a delta, so the
+  // newest one wins; adding them up would count the same tokens repeatedly.
+  $: liveTokens = activeRunEvents.reduce(
+    (total, event) =>
+      event.type === 'usage' ? totalTokens(event.payload as Partial<TokenUsage>) : total,
+    0,
+  );
   $: studioLabel = openingStudio
     ? $translate('chat.studioOpening')
     : studioStatus.state === 'matched'
       ? $translate('chat.studioMatched')
       : studioStatus.state === 'other'
         ? $translate('chat.studioOther')
-        : $translate('chat.studioNone');
+        : studioStatus.state === 'blocked'
+          ? $translate('chat.studioBlocked')
+          : $translate('chat.studioNone');
+  // Blocked is the one unreachable state opening Studio cannot fix — Studio is
+  // already open, and the connection belongs to another client — so the badge
+  // explains the fix instead of offering a button that would change nothing.
+  $: studioHint =
+    studioStatus.state === 'blocked'
+      ? $translate('chat.studioBlockedHint')
+      : $translate('chat.studioStatus');
   // Only a state Studio can be nudged out of, and only with a project to open.
-  $: studioActionable = studioStatus.state !== 'matched' && !!projectId;
+  $: studioActionable =
+    studioStatus.state !== 'matched' && studioStatus.state !== 'blocked' && !!projectId;
 
   function formatElapsed(seconds: number): string {
     const total = Math.max(0, Math.floor(seconds));
@@ -265,6 +308,7 @@
       // Reload history first, then drop the live bubbles, so the just-streamed
       // reply never blinks out before its persisted copy arrives.
       handledRunId = currentRunId;
+      stopping = false;
       const threadAtSend = selectedThreadId;
       void loadMessages(threadAtSend).then(() => {
         if (sentRunId === currentRunId) sentRunId = null;
@@ -470,7 +514,8 @@
         <span
           class="studio-badge"
           class:online={studioStatus.state === 'matched'}
-          title={$translate('chat.studioStatus')}
+          class:warn={studioStatus.state === 'blocked'}
+          title={studioHint}
         >
           <span class="dot"></span>{studioLabel}
         </span>
@@ -552,12 +597,26 @@
             style={progressCapped ? undefined : `width: ${progressPercent}%`}
           ></div>
         </div>
-        <p class="progress-text">
-          {$translate('chat.working')}
-          {formatElapsed(elapsedSeconds)} · {stepCount}
-          {$translate('chat.steps')}{#if paceSamples > 0}
-            · ~{formatElapsed(typicalSeconds)} {$translate('chat.typical')}{/if}
-        </p>
+        <div class="progress-row">
+          <p class="progress-text">
+            {$translate('chat.working')}
+            {formatElapsed(elapsedSeconds)} · {stepCount}
+            {$translate('chat.steps')}{#if liveTokens > 0}
+              · {formatTokens(liveTokens, $locale)}
+              {$translate('chat.tokens')}{/if}{#if paceSamples > 0}
+              · ~{formatElapsed(typicalSeconds)} {$translate('chat.typical')}{/if}
+          </p>
+          <button
+            type="button"
+            class="stop-button"
+            disabled={stopping}
+            title={$translate('chat.stopTitle')}
+            aria-label={$translate('chat.stopTitle')}
+            onclick={stopRun}
+          >
+            {stopping ? $translate('chat.stopping') : $translate('chat.stop')}
+          </button>
+        </div>
       </div>
     {/if}
     {#if attachedTask}
@@ -864,6 +923,33 @@
     gap: 5px;
     padding: 10px 18px;
     border-top: 1px solid var(--line);
+  }
+  .progress-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  /* Stop sits beside the elapsed text rather than near Send: it acts on the run
+     in flight, and a control that ends work should not sit where the control
+     that starts it is reached for. */
+  .stop-button {
+    flex: none;
+    padding: 3px 12px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--surface-2);
+    color: var(--text);
+    font-size: 0.78rem;
+    cursor: pointer;
+  }
+  .stop-button:hover:not(:disabled) {
+    border-color: var(--danger, #d9534f);
+    color: var(--danger, #d9534f);
+  }
+  .stop-button:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
   .progress-track {
     position: relative;

@@ -16,6 +16,11 @@ import (
 	"github.com/10kkyvl/studioforge/internal/providers"
 )
 
+// cancelGrace is how long a cancelled run has to shut itself down before its
+// process tree is killed outright. It is short because the user is waiting on
+// the Stop button, but long enough for the CLI to close its turn cleanly.
+const cancelGrace = 3 * time.Second
+
 type Provider struct {
 	mu         sync.RWMutex
 	executable string
@@ -103,6 +108,13 @@ func (p *Provider) start(ctx context.Context, req providers.RunRequest, resume s
 	cmd := exec.CommandContext(ctx, diag.Path, args...)
 	cmd.Dir = req.WorkingDirectory
 	cmd.Env = processes.MinimalEnvironment(req.Environment)
+	// Codex is the root of a small process tree: it spawns the MCP shim and a
+	// process per command it executes. Cancelling has to take the whole tree
+	// down, so the command is started as a killable group and both cancellation
+	// routes -- an explicit Cancel and the run context expiring -- go through
+	// the same tree kill. Without cmd.Cancel, context cancellation would fall
+	// back to os/exec's plain Process.Kill and orphan those children.
+	processes.ConfigureTree(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
@@ -112,6 +124,7 @@ func (p *Provider) start(ctx context.Context, req providers.RunRequest, resume s
 		return nil, err
 	}
 	h := &handle{cmd: cmd, events: make(chan providers.Event, 256), done: make(chan struct{})}
+	cmd.Cancel = func() error { return h.Cancel() }
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start Codex CLI: %w", err)
 	}
@@ -214,6 +227,14 @@ func (h *handle) readJSON(reader io.Reader) error {
 				h.result.SessionID = event.SessionID
 				h.mu.Unlock()
 			}
+			if event.Usage != (providers.Usage{}) {
+				h.mu.Lock()
+				// Codex reports usage per completed turn, so a run that takes
+				// several turns only has a total once they are summed.
+				h.result.Usage = h.result.Usage.Add(event.Usage)
+				event.Usage = h.result.Usage
+				h.mu.Unlock()
+			}
 			if event.Error != "" {
 				h.mu.Lock()
 				h.streamError = event.Error
@@ -259,6 +280,7 @@ func normalize(raw []byte) (providers.Event, error) {
 		event.Type = "status"
 	case "turn.completed":
 		event.Type = "usage"
+		event.Usage = parseUsage(value["usage"])
 	case "turn.failed", "error":
 		event.Type = "error"
 		if message, ok := value["message"].(string); ok {
@@ -282,6 +304,25 @@ func normalize(raw []byte) (providers.Event, error) {
 		}
 	}
 	return event, nil
+}
+
+// Codex names its cache counter cached_input_tokens and reports no cache
+// writes, so only the read side of the cache is ever populated here.
+func parseUsage(raw any) providers.Usage {
+	fields, ok := raw.(map[string]any)
+	if !ok {
+		return providers.Usage{}
+	}
+	return providers.Usage{
+		InputTokens:     tokenCount(fields, "input_tokens"),
+		OutputTokens:    tokenCount(fields, "output_tokens"),
+		CacheReadTokens: tokenCount(fields, "cached_input_tokens"),
+	}
+}
+
+func tokenCount(fields map[string]any, key string) int {
+	value, _ := fields[key].(float64)
+	return int(value)
 }
 
 func classifyError(text string) error {
@@ -315,9 +356,7 @@ func (h *handle) Wait() providers.Result {
 }
 func (h *handle) Cancel() error {
 	h.once.Do(func() {
-		if h.cmd.Process != nil {
-			_ = h.cmd.Process.Kill()
-		}
+		_ = processes.TerminateTree(h.cmd, h.done, cancelGrace)
 	})
 	return nil
 }

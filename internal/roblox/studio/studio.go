@@ -123,6 +123,51 @@ func DetectStudioExe() (string, error) {
 	return newest, nil
 }
 
+// IsRunning reports whether a Roblox Studio process exists on this machine.
+//
+// It is the only way to tell two situations apart that the launcher reports
+// identically. Roblox hands the MCP host slot to a single client: whichever
+// launcher won it is the one Studio registers with, and every later client
+// still connects and still answers, but lists no instances. So "no Studio is
+// open" and "Studio is open, but another MCP client owns it" both arrive as an
+// empty instance list. Looking for the process itself breaks the tie.
+//
+// Any failure to ask counts as "not running", because callers use this only to
+// sharpen a message they would otherwise word vaguely.
+func IsRunning(ctx context.Context) bool {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.CommandContext(ctx, "tasklist", "/FI", "IMAGENAME eq RobloxStudioBeta.exe", "/NH")
+	case "darwin":
+		cmd = exec.CommandContext(ctx, "pgrep", "-x", "RobloxStudio")
+	default:
+		return false
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		// pgrep exits non-zero when nothing matches, which is the common "not
+		// running" answer rather than a fault worth reporting.
+		return false
+	}
+	return processListShowsStudio(string(out), runtime.GOOS)
+}
+
+// processListShowsStudio reads a process listing the way each platform's tool
+// writes it, kept apart from the command so the parsing can be tested without a
+// Studio to point it at.
+func processListShowsStudio(out, goos string) bool {
+	if goos == "windows" {
+		// tasklist exits zero whether or not the filter matched, printing
+		// "INFO: No tasks are running which match the specified criteria." when
+		// it did not. That line never carries the image name, so finding the
+		// name is what separates a hit from a miss.
+		return strings.Contains(out, "RobloxStudioBeta")
+	}
+	// pgrep prints matching PIDs and nothing else.
+	return strings.TrimSpace(out) != ""
+}
+
 // newestStudio picks the most recently modified executable, so an upgraded
 // Studio version is preferred over a stale one left behind on disk.
 func newestStudio(matches []string) string {

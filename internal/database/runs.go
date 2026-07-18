@@ -35,8 +35,8 @@ func (s *Store) CreateRun(ctx context.Context, run models.Run, idempotencyKey st
 	now := time.Now().UTC()
 	run.CreatedAt, run.UpdatedAt = now, now
 	_, err := s.db.SQL.ExecContext(ctx, `INSERT INTO runs
-(id,project_id,task_id,agent_id,provider,model_alias,provider_session_id,status,phase,required_resource,error,prompt_snapshot,base_commit,result_commit,cost,idempotency_key,thread_id,created_at,updated_at)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, run.ID, run.ProjectID, nullText(run.TaskID), run.AgentID, run.Provider, run.ModelAlias, run.ProviderSession, run.Status, run.Phase, run.RequiredResource, run.Error, run.PromptSnapshot, run.BaseCommit, run.ResultCommit, run.Cost, nullText(idempotencyKey), nullText(run.ThreadID), formatTime(now), formatTime(now))
+(id,project_id,task_id,agent_id,provider,model_alias,provider_session_id,status,phase,required_resource,error,prompt_snapshot,base_commit,result_commit,cost,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,idempotency_key,thread_id,created_at,updated_at)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, run.ID, run.ProjectID, nullText(run.TaskID), run.AgentID, run.Provider, run.ModelAlias, run.ProviderSession, run.Status, run.Phase, run.RequiredResource, run.Error, run.PromptSnapshot, run.BaseCommit, run.ResultCommit, run.Cost, run.InputTokens, run.OutputTokens, run.CacheReadTokens, run.CacheCreationTokens, nullText(idempotencyKey), nullText(run.ThreadID), formatTime(now), formatTime(now))
 	if err != nil {
 		return models.Run{}, false, fmt.Errorf("create run: %w", err)
 	}
@@ -52,7 +52,7 @@ func nullText(s string) any {
 func formatTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 
 func (s *Store) Run(ctx context.Context, id string) (models.Run, error) {
-	row := s.db.SQL.QueryRowContext(ctx, `SELECT id,project_id,agent_id,COALESCE(task_id,''),provider,model_alias,provider_session_id,status,phase,required_resource,error,cost,base_commit,result_commit,COALESCE(thread_id,''),prompt_snapshot,created_at,updated_at,started_at,finished_at FROM runs WHERE id=?`, id)
+	row := s.db.SQL.QueryRowContext(ctx, `SELECT id,project_id,agent_id,COALESCE(task_id,''),provider,model_alias,provider_session_id,status,phase,required_resource,error,cost,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,base_commit,result_commit,COALESCE(thread_id,''),prompt_snapshot,created_at,updated_at,started_at,finished_at FROM runs WHERE id=?`, id)
 	return scanRun(row)
 }
 
@@ -62,7 +62,7 @@ func scanRun(row scanner) (models.Run, error) {
 	var r models.Run
 	var created, updated string
 	var started, finished sql.NullString
-	err := row.Scan(&r.ID, &r.ProjectID, &r.AgentID, &r.TaskID, &r.Provider, &r.ModelAlias, &r.ProviderSession, &r.Status, &r.Phase, &r.RequiredResource, &r.Error, &r.Cost, &r.BaseCommit, &r.ResultCommit, &r.ThreadID, &r.PromptSnapshot, &created, &updated, &started, &finished)
+	err := row.Scan(&r.ID, &r.ProjectID, &r.AgentID, &r.TaskID, &r.Provider, &r.ModelAlias, &r.ProviderSession, &r.Status, &r.Phase, &r.RequiredResource, &r.Error, &r.Cost, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens, &r.CacheCreationTokens, &r.BaseCommit, &r.ResultCommit, &r.ThreadID, &r.PromptSnapshot, &created, &updated, &started, &finished)
 	if err != nil {
 		return r, err
 	}
@@ -83,7 +83,7 @@ func (s *Store) ListRuns(ctx context.Context, projectID string, limit int) ([]mo
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.db.SQL.QueryContext(ctx, `SELECT id,project_id,agent_id,COALESCE(task_id,''),provider,model_alias,provider_session_id,status,phase,required_resource,error,cost,base_commit,result_commit,COALESCE(thread_id,''),prompt_snapshot,created_at,updated_at,started_at,finished_at FROM runs WHERE (?='' OR project_id=?) ORDER BY created_at DESC LIMIT ?`, projectID, projectID, limit)
+	rows, err := s.db.SQL.QueryContext(ctx, `SELECT id,project_id,agent_id,COALESCE(task_id,''),provider,model_alias,provider_session_id,status,phase,required_resource,error,cost,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,base_commit,result_commit,COALESCE(thread_id,''),prompt_snapshot,created_at,updated_at,started_at,finished_at FROM runs WHERE (?='' OR project_id=?) ORDER BY created_at DESC LIMIT ?`, projectID, projectID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -119,8 +119,11 @@ func (s *Store) UpdateRun(ctx context.Context, id, status, phase, resource, errT
 	return nil
 }
 
-func (s *Store) SetRunSessionAndCost(ctx context.Context, id, session string, cost float64) error {
-	_, err := s.db.SQL.ExecContext(ctx, "UPDATE runs SET provider_session_id=?,cost=?,updated_at=? WHERE id=?", session, cost, Now(), id)
+// SetRunUsage records everything a finished run spent. Token counts land with
+// the session and cost in one write so a run can never be seen with a cost but
+// no tokens, or the other way round.
+func (s *Store) SetRunUsage(ctx context.Context, id, session string, cost float64, tokens models.TokenUsage) error {
+	_, err := s.db.SQL.ExecContext(ctx, "UPDATE runs SET provider_session_id=?,cost=?,input_tokens=?,output_tokens=?,cache_read_tokens=?,cache_creation_tokens=?,updated_at=? WHERE id=?", session, cost, tokens.InputTokens, tokens.OutputTokens, tokens.CacheReadTokens, tokens.CacheCreationTokens, Now(), id)
 	return err
 }
 

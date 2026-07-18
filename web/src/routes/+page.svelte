@@ -27,6 +27,7 @@
     post,
     updateTask,
   } from '$lib/api';
+  import { loadProject, loadView, saveProject, saveView } from '$lib/session';
   import {
     detectLocale,
     formatDate,
@@ -78,6 +79,7 @@
   let notice = '';
   let newProject = { name: '', path: '', description: '', create: true, openStudio: false };
   let disconnect = () => {};
+  let restored = false;
 
   const nav: { id: View; icon: typeof Activity; key: TranslationKey }[] = [
     { id: 'chat', icon: MessagesSquare, key: 'nav.chat' },
@@ -93,6 +95,9 @@
     { id: 'settings', icon: Settings, key: 'nav.settings' },
   ];
 
+  $: if (restored) saveView(view);
+  $: if (restored) saveProject(selectedProjectId);
+
   $: projects = snapshot?.projects ?? [];
   $: selectedProject = projects.find((project) => project.id === selectedProjectId) ?? projects[0];
   $: selectedRun = snapshot?.runs.find((run) => run.id === selectedRunId);
@@ -101,6 +106,13 @@
   onMount(() => {
     const storedTheme = localStorage.getItem('studioforge-theme') ?? 'dark';
     setTheme(storedTheme);
+    const storedView = loadView(nav.map((item) => item.id));
+    if (storedView) view = storedView as View;
+    // Only now may the reactive writers below run. They are gated on this flag
+    // because Svelte runs reactive statements once at init — before onMount —
+    // which would persist the default view over the stored one and make the
+    // restore a no-op on every load.
+    restored = true;
     void initialize();
     const keyHandler = (event: KeyboardEvent) => {
       if (event.altKey && event.key >= '1' && event.key <= '9') {
@@ -143,8 +155,12 @@
     try {
       const nextSnapshot = await getSnapshot();
       snapshot = nextSnapshot;
-      if (!selectedProjectId && nextSnapshot.projects[0])
-        selectedProjectId = nextSnapshot.projects[0].id;
+      if (!selectedProjectId)
+        // The remembered project wins over "first in the list", but only if it
+        // still exists — projects can be removed from another window, or the
+        // data directory swapped entirely, between sessions.
+        selectedProjectId =
+          loadProject(nextSnapshot.projects) || nextSnapshot.projects[0]?.id || '';
       const configured = nextSnapshot.settings.locale;
       locale.set(configured === 'ru' || configured === 'en' ? configured : detectLocale());
       if (!selectedRunId && nextSnapshot.runs[0]) selectedRunId = nextSnapshot.runs[0].id;

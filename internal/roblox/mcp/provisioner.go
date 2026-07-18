@@ -47,7 +47,23 @@ type Provisioner struct {
 	// AutoOpen reports the studio_auto_open setting. A nil func opens Studio,
 	// which is the default the operator sees.
 	AutoOpen func() bool
+	// Running reports whether a Studio process exists, which distinguishes a
+	// machine with no Studio from one whose Studio is owned by another MCP
+	// client — the launcher lists no instances in both cases. A nil func means
+	// the question cannot be asked and the vaguer wording is used.
+	Running func(context.Context) bool
 }
+
+// blocked reports whether an empty instance list means "another MCP client owns
+// Studio" rather than "no Studio is open".
+func (p *Provisioner) blocked(ctx context.Context) bool {
+	return p.Running != nil && p.Running(ctx)
+}
+
+// hostTakenNotice explains the one failure that looks like every other: the
+// launcher connected, so nothing errored, yet Studio is unreachable because a
+// different MCP client holds the host slot.
+const hostTakenNotice = "Studio MCP withheld: Roblox Studio is running, but another MCP client already holds its connection — Roblox grants it to one client at a time. Close the other client (Claude Desktop, Claude Code, Cursor or another editor with the Roblox Studio MCP server enabled), or turn its Roblox MCP server off, then start the run again."
 
 func (p *Provisioner) timeout() time.Duration {
 	if p.Timeout > 0 {
@@ -107,6 +123,14 @@ func (p *Provisioner) Provision(ctx context.Context, runID, permissionProfile st
 		return Grant{Notice: notice}
 	}
 	if len(instances) == 0 {
+		// A machine with no Studio open stays silent: plenty of runs never want
+		// Studio, and a notice on each would be noise. A Studio that is open but
+		// owned by another MCP client is the opposite case — it looks identical
+		// here, yet leaving it silent strips the agent of every Studio tool with
+		// no stated reason, and it improvises a workaround instead.
+		if p.blocked(ctx) {
+			return Grant{Notice: hostTakenNotice}
+		}
 		return Grant{}
 	}
 	path := filepath.Join(p.Dir, runID+".json")
@@ -251,6 +275,10 @@ func (p *Provisioner) agentLaunch(launch LaunchConfig) LaunchConfig {
 type Status struct {
 	Open    int `json:"open"`
 	Matched int `json:"matched"`
+	// Blocked means Studio is running but another MCP client owns its
+	// connection, which is why no instance is listed. Without it the badge
+	// cannot tell this apart from a machine with Studio closed.
+	Blocked bool `json:"blocked"`
 }
 
 // Status reports the open Studio instances and how many hold the named place.
@@ -272,6 +300,9 @@ func (p *Provisioner) Status(ctx context.Context, placeName string) (Status, err
 		return Status{}, err
 	}
 	status := Status{Open: len(instances)}
+	if len(instances) == 0 {
+		status.Blocked = p.blocked(ctx)
+	}
 	if placeName != "" {
 		status.Matched = len(matching(instances, placeName))
 	}

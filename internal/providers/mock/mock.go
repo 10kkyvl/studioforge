@@ -50,26 +50,34 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, sessio
 	defer close(h.events)
 	defer close(h.done)
 	defer func() { p.mu.Lock(); delete(p.runs, req.RunID); p.mu.Unlock() }()
-	steps := []providers.Event{{Type: "status", RawType: "mock.start", Payload: map[string]any{"message": "Agent session started"}}, {Type: "message", RawType: "assistant.partial", Payload: map[string]any{"text": "Reading project constitution and task contract…"}}, {Type: "tool", RawType: "tool.use", Payload: map[string]any{"tool": "Read", "target": ".agent/constitution.yaml"}}, {Type: "message", RawType: "assistant.partial", Payload: map[string]any{"text": "Implementing the bounded milestone change…"}}, {Type: "artifact", RawType: "artifact.created", Payload: map[string]any{"kind": "handoff", "name": "task-handoff.json"}}, {Type: "usage", RawType: "result.usage", Payload: map[string]any{"inputTokens": 1200, "outputTokens": 680, "cost": 0.42}, Cost: 0.42}, {Type: "message", RawType: "assistant.final", Payload: map[string]any{"text": "Acceptance criteria verified in mock mode."}}}
+	steps := []providers.Event{{Type: "status", RawType: "mock.start", Payload: map[string]any{"message": "Agent session started"}}, {Type: "message", RawType: "assistant.partial", Payload: map[string]any{"text": "Reading project constitution and task contract…"}}, {Type: "tool", RawType: "tool.use", Payload: map[string]any{"tool": "Read", "target": ".agent/constitution.yaml"}}, {Type: "message", RawType: "assistant.partial", Payload: map[string]any{"text": "Implementing the bounded milestone change…"}}, {Type: "artifact", RawType: "artifact.created", Payload: map[string]any{"kind": "handoff", "name": "task-handoff.json"}}, {Type: "usage", RawType: "result.usage", Payload: map[string]any{"inputTokens": 1200, "outputTokens": 680, "cost": 0.42}, Cost: 0.42, Usage: providers.Usage{InputTokens: 1200, OutputTokens: 680, CacheReadTokens: 4400}}, {Type: "message", RawType: "assistant.final", Payload: map[string]any{"text": "Acceptance criteria verified in mock mode."}}}
 	if req.Scenario == "hang" {
 		<-ctx.Done()
 		h.result = providers.Result{SessionID: session, Err: ctx.Err(), ExitCode: -1}
 		return
 	}
+	// Tokens are counted as the steps stream, so every exit — including the
+	// cancelled and crashed ones — reports what the run had already spent
+	// rather than nothing at all.
+	var usage providers.Usage
 	for i, event := range steps {
 		if req.Scenario == "crash" && i == 3 {
-			h.result = providers.Result{SessionID: session, Err: errors.New("mock provider crashed"), ExitCode: 17}
+			h.result = providers.Result{SessionID: session, Usage: usage, Err: errors.New("mock provider crashed"), ExitCode: 17}
 			return
 		}
 		if req.Scenario == "rate_limit" && i == 2 {
-			h.result = providers.Result{SessionID: session, Err: errors.New("mock rate limit"), ExitCode: 1}
+			h.result = providers.Result{SessionID: session, Usage: usage, Err: errors.New("mock rate limit"), ExitCode: 1}
 			return
 		}
 		event.SessionID = session
 		event.At = time.Now().UTC()
+		if event.Usage != (providers.Usage{}) {
+			usage = usage.Add(event.Usage)
+			event.Usage = usage
+		}
 		select {
 		case <-ctx.Done():
-			h.result = providers.Result{SessionID: session, Err: ctx.Err(), ExitCode: -1}
+			h.result = providers.Result{SessionID: session, Usage: usage, Err: ctx.Err(), ExitCode: -1}
 			return
 		case h.events <- event:
 		}
@@ -77,12 +85,12 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, sessio
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			h.result = providers.Result{SessionID: session, Err: ctx.Err(), ExitCode: -1}
+			h.result = providers.Result{SessionID: session, Usage: usage, Err: ctx.Err(), ExitCode: -1}
 			return
 		case <-timer.C:
 		}
 	}
-	h.result = providers.Result{SessionID: session, Cost: 0.42, ExitCode: 0}
+	h.result = providers.Result{SessionID: session, Cost: 0.42, Usage: usage, ExitCode: 0}
 }
 func (p *Provider) Cancel(_ context.Context, runID string) error {
 	p.mu.Lock()

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { formatMoney, locale, translate } from '$lib/i18n';
+  import { formatMoney, formatTokens, locale, totalTokens, translate } from '$lib/i18n';
   import type { Run } from '$lib/types';
 
   export let runs: Run[];
@@ -23,18 +23,20 @@
         ><th>{$translate('common.status')}</th><th>{$translate('common.project')}</th><th
           >{$translate('common.agent')}</th
         ><th>{$translate('common.model')}</th><th>{$translate('activity.resource')}</th><th
-          >{$translate('common.budget')}</th
-        ><th>{$translate('common.actions')}</th></tr
+          >{$translate('activity.tokens')}</th
+        ><th>{$translate('common.budget')}</th><th>{$translate('common.actions')}</th></tr
       ></thead
     >
     <tbody>
       {#each runs as run}
+        {@const tokens = totalTokens(run)}
         <tr>
           <td><span class={`status status-${run.status}`}>{statusLabel(run.status)}</span></td>
           <td>{projectName(run.projectId)}</td><td>{agentName(run.agentId)}</td>
           <td><code>{run.provider}/{run.modelAlias}</code></td><td
             ><code>{run.requiredResource || '—'}</code></td
           >
+          <td>{tokens > 0 ? formatTokens(tokens, $locale) : '—'}</td>
           <td>{formatMoney(run.cost, $locale)}</td>
           <td
             ><div class="row-actions">
@@ -60,7 +62,7 @@
             </div></td
           >
         </tr>
-      {:else}<tr><td colspan="7" class="empty-cell">{$translate('activity.empty')}</td></tr>{/each}
+      {:else}<tr><td colspan="8" class="empty-cell">{$translate('activity.empty')}</td></tr>{/each}
     </tbody>
   </table>
 </div>

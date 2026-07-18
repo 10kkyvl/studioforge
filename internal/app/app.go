@@ -137,6 +137,7 @@ func Run(ctx context.Context, opts config.Options) error {
 			enabled, _ := studioAutoOpen.Load().(bool)
 			return enabled
 		},
+		Running: studio.IsRunning,
 	}
 	// studioTarget tells the provisioner which open Studio belongs to this run's
 	// project, and how to open it when none does. Every project used to build to
@@ -170,7 +171,7 @@ func Run(ctx context.Context, opts config.Options) error {
 			}
 		}
 		status, err := studioProvisioner.Status(ctx, placeName)
-		return api.StudioStatus{Open: status.Open, Matched: status.Matched}, err
+		return api.StudioStatus{Open: status.Open, Matched: status.Matched, Blocked: status.Blocked}, err
 	})
 	schedulerManager.SetMCPProvisioner(func(ctx context.Context, j *scheduler.Job) scheduler.MCPGrant {
 		if j.Provider != "claude" {

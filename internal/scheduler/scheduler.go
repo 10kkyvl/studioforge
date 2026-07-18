@@ -17,7 +17,7 @@ type RunStore interface {
 	CreateRun(context.Context, models.Run, string) (models.Run, bool, error)
 	Run(context.Context, string) (models.Run, error)
 	UpdateRun(context.Context, string, string, string, string, string) error
-	SetRunSessionAndCost(context.Context, string, string, float64) error
+	SetRunUsage(context.Context, string, string, float64, models.TokenUsage) error
 	BudgetAllowed(context.Context, string, float64) (bool, float64, float64, error)
 }
 type Job struct {
@@ -241,7 +241,10 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 		case <-ctx.Done():
 			handle.Cancel()
 			result := handle.Wait()
-			_ = result
+			// A cancelled run still spent tokens and money before it was
+			// stopped, so it is recorded like any other. The run context is
+			// already dead, hence the background one for both writes.
+			_ = m.store.SetRunUsage(context.Background(), j.RunID, result.SessionID, result.Cost, models.TokenUsage(result.Usage))
 			m.transition(context.Background(), j, "cancelling", "cancelled", "cancelled", "", "")
 			return
 		case <-ticker.C:
@@ -260,7 +263,7 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 		}
 	}
 	result := handle.Wait()
-	_ = m.store.SetRunSessionAndCost(ctx, j.RunID, result.SessionID, result.Cost)
+	_ = m.store.SetRunUsage(ctx, j.RunID, result.SessionID, result.Cost, models.TokenUsage(result.Usage))
 	if result.Err != nil {
 		m.fail(ctx, j, result.Err.Error())
 		return
@@ -320,6 +323,18 @@ func (m *Manager) emit(run models.Run, agent, eventType, raw string, payload any
 	_, _ = m.hub.Publish(ctx, models.RunEvent{ProjectID: run.ProjectID, RunID: run.ID, AgentID: agent, Type: eventType, RawType: raw, Payload: payload, CreatedAt: time.Now().UTC()})
 }
 func (m *Manager) emitEvent(ctx context.Context, j *Job, event providers.Event) {
+	// Providers report tokens in their own shapes and on their own events
+	// (Claude on assistant messages and the result, Codex on turn.completed),
+	// so the totals are republished once in a normalized usage event and the
+	// UI never has to know which provider produced them.
+	if event.Usage != (providers.Usage{}) {
+		_, _ = m.hub.Publish(ctx, models.RunEvent{ProjectID: j.ProjectID, RunID: j.RunID, AgentID: j.AgentID, Type: "usage", RawType: event.RawType, Payload: models.TokenUsage(event.Usage), CreatedAt: event.At})
+		// A provider event that carries nothing but usage has now been fully
+		// delivered; anything else still has its own payload to publish.
+		if event.Type == "usage" {
+			return
+		}
+	}
 	_, _ = m.hub.Publish(ctx, models.RunEvent{ProjectID: j.ProjectID, RunID: j.RunID, AgentID: j.AgentID, Type: event.Type, RawType: event.RawType, Payload: event.Payload, CreatedAt: event.At})
 }
 
@@ -374,7 +389,17 @@ func (m *Manager) Cancel(ctx context.Context, runID string) error {
 		m.mu.Unlock()
 		return nil
 	}
+	// A run that is still queued has no goroutine and no provider process, so
+	// there is nothing to signal: take it out of the queue and record the
+	// terminal state directly. queued -> cancelled is a legal transition, so it
+	// needs no intermediate "cancelling" step, and removing it first means the
+	// scheduler loop can never pop and start a run we just cancelled.
+	job, queued := m.queue.remove(runID)
 	m.mu.Unlock()
+	if queued {
+		m.transition(ctx, job, "queued", "cancelled", "cancelled", "", "cancelled while queued")
+		return nil
+	}
 	return errors.New("run is not active")
 }
 func (m *Manager) Close(ctx context.Context) error {

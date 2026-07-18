@@ -17,6 +17,11 @@ import (
 	"github.com/10kkyvl/studioforge/internal/providers"
 )
 
+// cancelGrace is how long a cancelled run has to shut itself down before its
+// process tree is killed outright. It is short because the user is waiting on
+// the Stop button, but long enough for the CLI to close its session cleanly.
+const cancelGrace = 3 * time.Second
+
 type Provider struct {
 	Executable string
 	mu         sync.Mutex
@@ -103,6 +108,13 @@ func (p *Provider) start(ctx context.Context, req providers.RunRequest, resume s
 	cmd := exec.CommandContext(ctx, diag.Path, args...)
 	cmd.Dir = req.WorkingDirectory
 	cmd.Env = processes.MinimalEnvironment(req.Environment)
+	// Claude Code is the root of a small process tree: it spawns the MCP shim
+	// and a process per tool call. Cancelling has to take the whole tree down,
+	// so the command is started as a killable group and both cancellation
+	// routes -- an explicit Cancel and the run context expiring -- go through
+	// the same tree kill. Without cmd.Cancel, context cancellation would fall
+	// back to os/exec's plain Process.Kill and orphan those children.
+	processes.ConfigureTree(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
@@ -111,7 +123,9 @@ func (p *Provider) start(ctx context.Context, req providers.RunRequest, resume s
 	if err != nil {
 		return nil, err
 	}
-	h := &handle{cmd: cmd, events: make(chan providers.Event, 128), done: make(chan struct{}), cancel: func() { _ = cmd.Process.Kill() }}
+	h := &handle{cmd: cmd, events: make(chan providers.Event, 128), done: make(chan struct{})}
+	h.cancel = func() { _ = processes.TerminateTree(cmd, h.done, cancelGrace) }
+	cmd.Cancel = func() error { return h.Cancel() }
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start Claude Code: %w", err)
 	}
@@ -316,6 +330,19 @@ func (h *handle) readJSON(reader io.Reader) error {
 				}
 				h.mu.Unlock()
 			}
+			if event.Usage != (providers.Usage{}) {
+				h.mu.Lock()
+				// Assistant messages report only their own tokens, so they add
+				// up; the result event reports the whole session and therefore
+				// replaces the running sum instead of doubling it.
+				if event.RawType == "result" {
+					h.result.Usage = event.Usage
+				} else {
+					h.result.Usage = h.result.Usage.Add(event.Usage)
+				}
+				event.Usage = h.result.Usage
+				h.mu.Unlock()
+			}
 			if event.Error != "" {
 				h.mu.Lock()
 				h.streamError = event.Error
@@ -355,6 +382,12 @@ func normalize(raw []byte) (providers.Event, error) {
 		event.Type = "status"
 	case "assistant":
 		event.Type = "message"
+		// Token counts arrive per assistant message long before the result
+		// event, which is the only way a live run can report what it is
+		// spending while it is still spending it.
+		if message, ok := value["message"].(map[string]any); ok {
+			event.Usage = parseUsage(message["usage"])
+		}
 	case "user":
 		event.Type = "tool"
 	case "result":
@@ -365,6 +398,7 @@ func normalize(raw []byte) (providers.Event, error) {
 		if cost, ok := value["total_cost_usd"].(float64); ok {
 			event.Cost = cost
 		}
+		event.Usage = parseUsage(value["usage"])
 		if failed, _ := value["is_error"].(bool); failed {
 			event.Type = "error"
 			if message, ok := value["result"].(string); ok && message != "" {
@@ -380,6 +414,26 @@ func normalize(raw []byte) (providers.Event, error) {
 	}
 	return event, nil
 }
+func parseUsage(raw any) providers.Usage {
+	fields, ok := raw.(map[string]any)
+	if !ok {
+		return providers.Usage{}
+	}
+	return providers.Usage{
+		InputTokens:         tokenCount(fields, "input_tokens"),
+		OutputTokens:        tokenCount(fields, "output_tokens"),
+		CacheReadTokens:     tokenCount(fields, "cache_read_input_tokens"),
+		CacheCreationTokens: tokenCount(fields, "cache_creation_input_tokens"),
+	}
+}
+
+// Counters decode as float64, and the CLI omits or nulls the cache fields on
+// runs that never touched the cache, so anything unreadable counts as zero.
+func tokenCount(fields map[string]any, key string) int {
+	value, _ := fields[key].(float64)
+	return int(value)
+}
+
 func classifyError(text string) error {
 	lower := strings.ToLower(text)
 	switch {

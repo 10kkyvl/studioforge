@@ -59,7 +59,16 @@ export type Task = {
   dependencies: string[];
   blockedReason?: string;
 };
-export type Run = {
+// Token counters a provider reported. The cache fields are Claude-only and
+// stay 0 elsewhere; they are separate from inputTokens because Claude counts
+// cache hits outside it.
+export type TokenUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+};
+export type Run = TokenUsage & {
   id: string;
   projectId: string;
   agentId: string;
@@ -125,7 +134,10 @@ export type StudioSession = {
 export type StudioStatus = {
   open: number;
   matched: number;
-  state: 'matched' | 'other' | 'none';
+  // 'blocked' means Studio is running but another MCP client owns its
+  // connection, which the launcher otherwise reports the same as 'none'.
+  state: 'matched' | 'other' | 'none' | 'blocked';
+  blocked?: boolean;
   error?: string;
 };
 export type Snapshot = {

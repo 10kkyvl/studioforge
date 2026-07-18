@@ -82,6 +82,87 @@ func TestSemanticErrorResult(t *testing.T) {
 		t.Fatalf("event=%+v", event)
 	}
 }
+func TestNormalizeParsesUsage(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want providers.Usage
+	}{
+		{
+			name: "assistant message reports its own tokens",
+			line: `{"type":"assistant","message":{"usage":{"input_tokens":12,"output_tokens":34,"cache_read_input_tokens":56,"cache_creation_input_tokens":78}}}`,
+			want: providers.Usage{InputTokens: 12, OutputTokens: 34, CacheReadTokens: 56, CacheCreationTokens: 78},
+		},
+		{
+			name: "result reports the session total",
+			line: `{"type":"result","session_id":"s","usage":{"input_tokens":100,"output_tokens":200}}`,
+			want: providers.Usage{InputTokens: 100, OutputTokens: 200},
+		},
+		{
+			name: "a run that never cached leaves the cache counters at zero",
+			line: `{"type":"result","usage":{"input_tokens":5,"output_tokens":6,"cache_read_input_tokens":null}}`,
+			want: providers.Usage{InputTokens: 5, OutputTokens: 6},
+		},
+		{
+			name: "an event without usage carries none",
+			line: `{"type":"assistant","message":{"content":[]}}`,
+		},
+		{
+			name: "a malformed usage object is not fatal",
+			line: `{"type":"result","usage":"unavailable"}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			event, err := normalize([]byte(tc.line))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if event.Usage != tc.want {
+				t.Errorf("usage=%+v want %+v", event.Usage, tc.want)
+			}
+		})
+	}
+}
+
+// Per-message reports are deltas and the result is the session total, so the
+// stream reader must add the former and let the latter replace the sum — and
+// every event must leave carrying the running total, since that is what the
+// live progress display renders.
+func TestReadJSONAccumulatesUsage(t *testing.T) {
+	h := &handle{events: make(chan providers.Event, 8)}
+	stream := `{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":5}}}
+{"type":"assistant","message":{"usage":{"input_tokens":20,"output_tokens":7}}}
+{"type":"result","session_id":"s","total_cost_usd":0.25,"usage":{"input_tokens":30,"output_tokens":12,"cache_read_input_tokens":900}}
+`
+	if err := h.readJSON(strings.NewReader(stream)); !errors.Is(err, io.EOF) {
+		t.Fatalf("read error=%v", err)
+	}
+	close(h.events)
+	var seen []providers.Usage
+	for event := range h.events {
+		seen = append(seen, event.Usage)
+	}
+	want := []providers.Usage{
+		{InputTokens: 10, OutputTokens: 5},
+		{InputTokens: 30, OutputTokens: 12},
+		{InputTokens: 30, OutputTokens: 12, CacheReadTokens: 900},
+	}
+	if len(seen) != len(want) {
+		t.Fatalf("events=%d want %d", len(seen), len(want))
+	}
+	for i := range want {
+		if seen[i] != want[i] {
+			t.Errorf("event %d usage=%+v want %+v", i, seen[i], want[i])
+		}
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.result.Usage != want[len(want)-1] {
+		t.Errorf("result usage=%+v want %+v", h.result.Usage, want[len(want)-1])
+	}
+}
+
 func TestBuildArgsAddsOnlyCapabilities(t *testing.T) {
 	args := buildArgs(providers.RunRequest{RunID: "id", Prompt: "prompt", Model: "balanced", Effort: "high", MaxTurns: 4, MaxBudget: 2, MCPConfigPath: "mcp.json", PermissionProfile: "default"}, "resume-id", map[string]bool{"stream-json": true, "resume": true, "model": true})
 	joined := strings.Join(args, " ")
@@ -320,3 +401,36 @@ func TestFakeClaudeScenarios(t *testing.T) {
 	}
 }
 func TestMain(m *testing.M) { os.Exit(m.Run()) }
+
+// Cancelling must actually stop the CLI. It used to kill only the Claude PID,
+// which on Windows orphans the MCP shim and any tool process Claude had
+// started, so this exercises the tree-kill path end to end: Wait may not return
+// until the process is really gone.
+func TestCancelTerminatesRun(t *testing.T) {
+	provider := New(fakeClaude(t))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	handle, err := provider.Start(ctx, providers.RunRequest{RunID: "run-hang", WorkingDirectory: t.TempDir(), Prompt: "test", PermissionProfile: "default", Environment: []string{"FAKE_CLAUDE_SCENARIO=hang"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for range handle.Events() {
+		}
+	}()
+	if err := provider.Cancel(ctx, "run-hang"); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan providers.Result, 1)
+	go func() { done <- handle.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(cancelGrace + 10*time.Second):
+		t.Fatal("cancelled Claude run never exited")
+	}
+	// A second Cancel arrives whenever the run context also expires; it must be
+	// a no-op rather than signalling a PID the OS may have reused.
+	if err := handle.Cancel(); err != nil {
+		t.Fatalf("repeat cancel: %v", err)
+	}
+}

@@ -39,18 +39,45 @@ type ResumeRequest struct {
 	RunRequest
 	SessionID string
 }
+
+// Usage is the token accounting a provider reports for a run. The cache
+// counters are Claude-only; providers that do not report them leave them zero.
+// They are kept apart from InputTokens because Claude counts cache hits
+// outside it, so collapsing them would understate what a run actually read.
+type Usage struct {
+	InputTokens         int `json:"inputTokens"`
+	OutputTokens        int `json:"outputTokens"`
+	CacheReadTokens     int `json:"cacheReadTokens"`
+	CacheCreationTokens int `json:"cacheCreationTokens"`
+}
+
+// Add folds one report into a running total.
+func (u Usage) Add(other Usage) Usage {
+	return Usage{
+		InputTokens:         u.InputTokens + other.InputTokens,
+		OutputTokens:        u.OutputTokens + other.OutputTokens,
+		CacheReadTokens:     u.CacheReadTokens + other.CacheReadTokens,
+		CacheCreationTokens: u.CacheCreationTokens + other.CacheCreationTokens,
+	}
+}
+
 type Event struct {
-	Type      string    `json:"type"`
-	RawType   string    `json:"rawType"`
-	Payload   any       `json:"payload"`
-	SessionID string    `json:"sessionId,omitempty"`
-	Cost      float64   `json:"cost,omitempty"`
-	Error     string    `json:"error,omitempty"`
-	At        time.Time `json:"at"`
+	Type      string  `json:"type"`
+	RawType   string  `json:"rawType"`
+	Payload   any     `json:"payload"`
+	SessionID string  `json:"sessionId,omitempty"`
+	Cost      float64 `json:"cost,omitempty"`
+	// Usage is the run's cumulative total at this point in the stream rather
+	// than the delta the provider reported, so a consumer can render the most
+	// recent event it saw without repeating each provider's accumulation rules.
+	Usage Usage     `json:"usage"`
+	Error string    `json:"error,omitempty"`
+	At    time.Time `json:"at"`
 }
 type Result struct {
 	SessionID string
 	Cost      float64
+	Usage     Usage
 	ExitCode  int
 	Err       error
 }

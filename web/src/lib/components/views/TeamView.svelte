@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Bot, Play, Plus, Save } from '@lucide/svelte';
   import { formatMoney, locale, translate } from '$lib/i18n';
+  import { modelsFor } from '$lib/models';
   import type { Agent, Project } from '$lib/types';
 
   export let agents: Agent[];
@@ -68,6 +69,7 @@
     <label
       >{$translate('common.model')}<input
         bind:value={draft.modelAlias}
+        list={`models-${draft.provider}`}
         placeholder={$translate('team.cliDefault')}
       /></label
     >
@@ -123,6 +125,7 @@
         <label
           >{$translate('common.model')}<input
             bind:value={agent.modelAlias}
+            list={`models-${agent.provider}`}
             placeholder={$translate('team.cliDefault')}
           /></label
         >
@@ -173,3 +176,17 @@
     </div>
   {/each}
 </section>
+
+<!-- One suggestion list per provider, shared by the create form and every agent
+     row. They stay <datalist> rather than <select> because the value is passed
+     to the CLI verbatim: a model released after this build must still be
+     typeable without waiting for StudioForge to ship an updated list. -->
+{#each ['claude', 'codex'] as provider (provider)}
+  {#if modelsFor(provider).length > 0}
+    <datalist id={`models-${provider}`}>
+      {#each modelsFor(provider) as model (model.id)}
+        <option value={model.id}>{model.label}</option>
+      {/each}
+    </datalist>
+  {/if}
+{/each}

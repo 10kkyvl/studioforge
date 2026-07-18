@@ -1,4 +1,5 @@
 import { derived, writable } from 'svelte/store';
+import type { TokenUsage } from '$lib/types';
 
 export const en = {
   'app.tagline': 'Local multi-project AI studio for Roblox',
@@ -61,6 +62,7 @@ export const en = {
   'activity.subtitle': 'All queues and active resources across projects.',
   'activity.empty': 'No runs yet. Start a demo run from a project card.',
   'activity.resource': 'Waiting resource',
+  'activity.tokens': 'Tokens',
   'overview.title': 'Project overview',
   'overview.health': 'Project health',
   'overview.milestone': 'Current milestone',
@@ -111,8 +113,14 @@ export const en = {
   'chat.studioNone': 'Studio: not open',
   'chat.studioMatched': 'Studio: this place is open',
   'chat.studioOther': 'Studio: another place',
+  'chat.studioBlocked': 'Studio: connection held by another app',
+  'chat.studioBlockedHint':
+    'Roblox gives its Studio connection to one MCP client at a time. Close the other client (Claude Desktop, Claude Code, Cursor) or turn off its Roblox Studio MCP server, then retry.',
   'chat.studioOpen': 'Open this project in Studio',
   'chat.studioOpening': 'Studio: opening…',
+  'chat.stop': 'Stop',
+  'chat.stopping': 'Stopping…',
+  'chat.stopTitle': 'Stop this run',
   'chat.scrollDown': 'Scroll to latest',
   'chat.modeLabel': 'Response mode',
   'chat.modeDo': 'Do',
@@ -122,6 +130,7 @@ export const en = {
   'chat.lead': 'Lead agent',
   'chat.working': 'Working…',
   'chat.steps': 'steps',
+  'chat.tokens': 'tokens',
   'chat.typical': 'typical',
   'chat.attachTask': 'Attach task',
   'chat.noTask': 'No task',
@@ -260,6 +269,7 @@ export const ru: Record<TranslationKey, string> = {
   'activity.subtitle': 'Все очереди и активные ресурсы по проектам.',
   'activity.empty': 'Запусков пока нет. Запустите демо-агента из карточки проекта.',
   'activity.resource': 'Ожидаемый ресурс',
+  'activity.tokens': 'Токены',
   'overview.title': 'Обзор проекта',
   'overview.health': 'Состояние проекта',
   'overview.milestone': 'Текущий milestone',
@@ -310,8 +320,14 @@ export const ru: Record<TranslationKey, string> = {
   'chat.studioNone': 'Студия не открыта',
   'chat.studioMatched': 'Студия: площадка проекта открыта',
   'chat.studioOther': 'Открыта другая площадка',
+  'chat.studioBlocked': 'Студия занята другим приложением',
+  'chat.studioBlockedHint':
+    'Roblox отдаёт связь со Studio только одному MCP-клиенту за раз. Закройте другой клиент (Claude Desktop, Claude Code, Cursor) или выключите в нём MCP-сервер Roblox Studio, затем повторите запуск.',
   'chat.studioOpen': 'Открыть студию с площадкой этого проекта',
   'chat.studioOpening': 'Открываем студию…',
+  'chat.stop': 'Стоп',
+  'chat.stopping': 'Останавливаем…',
+  'chat.stopTitle': 'Остановить этот запуск',
   'chat.scrollDown': 'К последнему',
   'chat.modeLabel': 'Режим ответа',
   'chat.modeDo': 'Делать',
@@ -321,6 +337,7 @@ export const ru: Record<TranslationKey, string> = {
   'chat.lead': 'Ведущий агент',
   'chat.working': 'Работаю…',
   'chat.steps': 'шагов',
+  'chat.tokens': 'токенов',
   'chat.typical': 'обычно',
   'chat.attachTask': 'Прикрепить задачу',
   'chat.noTask': 'Без задачи',
@@ -415,6 +432,26 @@ export function formatMoney(value: number, current: Locale): string {
     style: 'currency',
     currency: 'USD',
     maximumFractionDigits: 2,
+  }).format(value);
+}
+// Every counter counts: Claude reports cache hits outside inputTokens, so
+// summing them all is the only figure that reflects the context a run moved.
+// Partials are accepted because live usage events arrive as loose JSON.
+export function totalTokens(usage: Partial<TokenUsage> | null | undefined): number {
+  if (!usage) return 0;
+  return (
+    (usage.inputTokens ?? 0) +
+    (usage.outputTokens ?? 0) +
+    (usage.cacheReadTokens ?? 0) +
+    (usage.cacheCreationTokens ?? 0)
+  );
+}
+// Token counts are read at a glance rather than audited, so they collapse to
+// 12.4K instead of pushing the run row or the progress strip onto two lines.
+export function formatTokens(value: number, current: Locale): string {
+  return new Intl.NumberFormat(current, {
+    notation: 'compact',
+    maximumFractionDigits: 1,
   }).format(value);
 }
 export function formatDate(value: string, current: Locale): string {
