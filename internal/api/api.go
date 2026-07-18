@@ -63,6 +63,7 @@ type Server struct {
 	detectedAt   time.Time
 	studio       StudioOpener
 	studioStatus func(context.Context, string) (StudioStatus, error)
+	syncer       Syncer
 }
 type Dependencies struct {
 	Store                *database.Store
@@ -78,6 +79,7 @@ type Dependencies struct {
 	ApplySetting         func(string, string) error
 	Studio               StudioOpener
 	StudioStatus         func(context.Context, string) (StudioStatus, error)
+	Sync                 Syncer
 }
 
 func New(d Dependencies) (*Server, error) {
@@ -88,7 +90,7 @@ func New(d Dependencies) (*Server, error) {
 	if d.Logger == nil {
 		d.Logger = slog.Default()
 	}
-	return &Server{store: d.Store, db: d.DB, scheduler: d.Scheduler, hub: d.Hub, doctor: d.Doctor, sessions: d.Sessions, guard: d.Guard, safeMode: d.SafeMode, allowedHost: d.AllowedHost, dataDir: d.DataDir, logger: d.Logger, applySetting: d.ApplySetting, studio: d.Studio, studioStatus: d.StudioStatus, assets: assets, csp: contentSecurityPolicy(assets)}, nil
+	return &Server{store: d.Store, db: d.DB, scheduler: d.Scheduler, hub: d.Hub, doctor: d.Doctor, sessions: d.Sessions, guard: d.Guard, safeMode: d.SafeMode, allowedHost: d.AllowedHost, dataDir: d.DataDir, logger: d.Logger, applySetting: d.ApplySetting, studio: d.Studio, studioStatus: d.StudioStatus, syncer: d.Sync, assets: assets, csp: contentSecurityPolicy(assets)}, nil
 }
 
 func contentSecurityPolicy(assets fs.FS) string {
@@ -109,6 +111,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/projects", s.createProject)
 	mux.HandleFunc("POST /api/v1/projects/{id}/archive", s.archiveProject)
 	mux.HandleFunc("POST /api/v1/projects/{id}/open-studio", s.openStudio)
+	mux.HandleFunc("POST /api/v1/projects/{id}/sync", s.startSync)
+	mux.HandleFunc("DELETE /api/v1/projects/{id}/sync", s.stopSync)
 	mux.HandleFunc("POST /api/v1/projects/{id}/tasks", s.createTaskHandler)
 	mux.HandleFunc("POST /api/v1/tasks/{taskId}", s.updateTaskHandler)
 	mux.HandleFunc("DELETE /api/v1/tasks/{taskId}", s.deleteTaskHandler)
@@ -119,6 +123,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/projects/{id}/lead", s.getLead)
 	mux.HandleFunc("POST /api/v1/projects/{id}/lead", s.setLead)
 	mux.HandleFunc("GET /api/v1/projects/{id}/pace", s.pace)
+	mux.HandleFunc("POST /api/v1/projects/{id}/attachments", s.uploadAttachment)
+	mux.HandleFunc("GET /api/v1/projects/{id}/attachments/{name}", s.getAttachment)
 	mux.HandleFunc("GET /api/v1/threads/{threadId}/messages", s.threadMessages)
 	mux.HandleFunc("POST /api/v1/runs", s.createRun)
 	mux.HandleFunc("POST /api/v1/runs/{id}/{action}", s.runAction)
@@ -200,6 +206,9 @@ func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, r, 500, "database_error", "Unable to list projects", err)
 		return
+	}
+	for i := range projectsList {
+		projectsList[i].Sync = s.syncStatus(projectsList[i].ID)
 	}
 	runs, err := s.store.ListRuns(ctx, "", 200)
 	if err != nil {
@@ -404,6 +413,10 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, 500, "agent_create_failed", "Project was registered but its default agent could not be created", err)
 		return
 	}
+	// A freshly minted ID can never already hold a sync session, but setting it
+	// explicitly keeps every returned project payload going through the same
+	// path rather than leaving this one to rely on the zero value by accident.
+	project.Sync = s.syncStatus(project.ID)
 	writeJSON(w, 201, project)
 }
 
@@ -667,6 +680,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ProjectID, AgentID, TaskID, Scenario, Prompt, ThreadID, Mode string
 		MaxBudget                                                    float64
+		Attachments                                                  []string
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(w, r, 400, "invalid_json", err.Error(), nil)
@@ -696,6 +710,15 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		body.Prompt = buildTaskPrompt(task, body.Prompt)
+	}
+	if len(body.Attachments) > 0 {
+		for _, path := range body.Attachments {
+			if !validAttachmentRef(project.Path, path) {
+				writeError(w, r, 400, "invalid_attachment", "Attachment path is invalid: "+path, nil)
+				return
+			}
+		}
+		body.Prompt = appendAttachmentsBlock(body.Prompt, body.Attachments)
 	}
 	agents, err := s.store.ListAgents(r.Context(), body.ProjectID)
 	if err != nil {

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Archive, Bot, Boxes, FolderKanban, Play, Plus, Rocket, Search } from '@lucide/svelte';
   import { brand } from '$lib/brand';
-  import { formatMoney, locale, translate } from '$lib/i18n';
+  import { cacheTokens, formatMoney, formatTokens, locale, spendTokens, translate } from '$lib/i18n';
   import type { Project } from '$lib/types';
 
   export let projects: Project[];
@@ -80,6 +80,15 @@
           ></i>
         </div>
       </div>
+      {#if spendTokens(project) > 0 || cacheTokens(project) > 0}
+        <p class="token-line">
+          {$translate('common.spend')}
+          {formatTokens(spendTokens(project), $locale)}{#if cacheTokens(project) > 0}
+            <span class="token-cache"
+              >· {$translate('common.cache')} {formatTokens(cacheTokens(project), $locale)}</span
+            >{/if}
+        </p>
+      {/if}
       <footer>
         <span><Bot size={15} />{project.runningAgents} {$translate('projects.running')}</span>
         <div class="card-actions">
@@ -110,6 +119,16 @@
 </section>
 
 <style>
+  /* Same "second line, quieter" treatment as the chat header and the
+     activity table: spend reads first, cache trails it, dimmer. */
+  .token-line {
+    margin: 6px 0 0;
+    font-size: 0.72rem;
+    color: var(--muted);
+  }
+  .token-cache {
+    opacity: 0.75;
+  }
   .card-actions {
     display: flex;
     gap: 8px;

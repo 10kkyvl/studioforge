@@ -77,10 +77,18 @@ VALUES(?,?,?,?,?,?,?,?,?,?)`, project.ID, project.Name, project.Path, project.Fi
 }
 
 func (s *Store) ListProjects(ctx context.Context, includeArchived bool) ([]models.Project, error) {
+	// The last four columns are a project's lifetime token totals, summed
+	// straight off runs rather than usage_records: usage_records only tracks
+	// cost (what the budget gate needs), while runs already carries all four
+	// token counters per turn, so summing it directly needs no schema change.
 	query := `SELECT p.id,p.name,p.canonical_path,p.fingerprint,p.description,COALESCE(g.name,''),p.pinned,p.archived,p.mock,p.created_at,p.updated_at,
 COALESCE((SELECT SUM(b.limit_amount) FROM budgets b WHERE b.project_id=p.id AND b.scope='daily'),0),
 COALESCE((SELECT SUM(u.cost) FROM usage_records u WHERE u.project_id=p.id),0),
-COALESCE((SELECT COUNT(*) FROM runs r WHERE r.project_id=p.id AND r.status IN ('starting','running','waiting_resources')),0)
+COALESCE((SELECT COUNT(*) FROM runs r WHERE r.project_id=p.id AND r.status IN ('starting','running','waiting_resources')),0),
+COALESCE((SELECT SUM(r.input_tokens) FROM runs r WHERE r.project_id=p.id),0),
+COALESCE((SELECT SUM(r.output_tokens) FROM runs r WHERE r.project_id=p.id),0),
+COALESCE((SELECT SUM(r.cache_read_tokens) FROM runs r WHERE r.project_id=p.id),0),
+COALESCE((SELECT SUM(r.cache_creation_tokens) FROM runs r WHERE r.project_id=p.id),0)
 FROM projects p LEFT JOIN project_groups g ON g.id=p.group_id WHERE p.deleted_at IS NULL`
 	if !includeArchived {
 		query += " AND p.archived=0"
@@ -96,7 +104,7 @@ FROM projects p LEFT JOIN project_groups g ON g.id=p.group_id WHERE p.deleted_at
 		var p models.Project
 		var pinned, archived, mock int
 		var created, updated string
-		if err := rows.Scan(&p.ID, &p.Name, &p.Path, &p.Fingerprint, &p.Description, &p.GroupName, &pinned, &archived, &mock, &created, &updated, &p.BudgetLimit, &p.BudgetUsed, &p.RunningAgents); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.Path, &p.Fingerprint, &p.Description, &p.GroupName, &pinned, &archived, &mock, &created, &updated, &p.BudgetLimit, &p.BudgetUsed, &p.RunningAgents, &p.InputTokens, &p.OutputTokens, &p.CacheReadTokens, &p.CacheCreationTokens); err != nil {
 			return nil, err
 		}
 		p.Pinned, p.Archived, p.Mock = pinned != 0, archived != 0, mock != 0
@@ -113,6 +121,13 @@ FROM projects p LEFT JOIN project_groups g ON g.id=p.group_id WHERE p.deleted_at
 				return nil, err
 			}
 			p.Tags = append(p.Tags, tag)
+		}
+		// Next() reports "no more rows" the same way whether the cursor ran out
+		// or the read failed mid-iteration, so without this the project would be
+		// served with a silently truncated tag list.
+		if err := tagRows.Err(); err != nil {
+			tagRows.Close()
+			return nil, err
 		}
 		tagRows.Close()
 		result = append(result, p)

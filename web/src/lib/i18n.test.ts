@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { en, formatDate, formatMoney, formatTokens, ru, totalTokens } from './i18n';
+import { cacheTokens, en, formatDate, formatMoney, formatTokens, ru, spendTokens, totalTokens } from './i18n';
 
 describe('i18n catalogs', () => {
   it('have exact key parity', () => expect(Object.keys(ru).sort()).toEqual(Object.keys(en).sort()));
@@ -35,5 +35,35 @@ describe('token usage', () => {
     expect(formatTokens(12_400, 'en')).toBe('12.4K');
     expect(formatTokens(950, 'en')).toBe('950');
     expect(formatTokens(2_400_000, 'en')).toBe('2.4M');
+  });
+  // spendTokens is the headline: only the counters a budget actually tracks.
+  it('spend sums input and output only', () => {
+    expect(
+      spendTokens({
+        inputTokens: 12,
+        outputTokens: 34,
+        cacheReadTokens: 40_000,
+        cacheCreationTokens: 100,
+      }),
+    ).toBe(46);
+  });
+  // cacheTokens is the quieter figure: context reused, not sent fresh.
+  it('cache sums read and creation only', () => {
+    expect(
+      cacheTokens({
+        inputTokens: 12,
+        outputTokens: 34,
+        cacheReadTokens: 40_000,
+        cacheCreationTokens: 100,
+      }),
+    ).toBe(40_100);
+  });
+  it('spend and cache treat missing counters and absent usage as zero', () => {
+    expect(spendTokens({ cacheReadTokens: 900 })).toBe(0);
+    expect(cacheTokens({ inputTokens: 900 })).toBe(0);
+    expect(spendTokens(undefined)).toBe(0);
+    expect(spendTokens(null)).toBe(0);
+    expect(cacheTokens(undefined)).toBe(0);
+    expect(cacheTokens(null)).toBe(0);
   });
 });

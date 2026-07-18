@@ -3,6 +3,7 @@
   import { MessagesSquare, Plus } from '@lucide/svelte';
   import {
     APIError,
+    attachmentUrl,
     createTask,
     createThread,
     getLead,
@@ -12,12 +13,17 @@
     getThreads,
     post,
     setLead,
+    startSync,
+    stopSync,
+    uploadAttachment,
   } from '$lib/api';
-  import { formatDate, formatTokens, locale, totalTokens, translate } from '$lib/i18n';
+  import { parseAttachments } from '$lib/attachments';
+  import { cacheTokens, formatDate, formatTokens, locale, spendTokens, translate } from '$lib/i18n';
   import type {
     Agent,
     ChatMessage,
     ChatThread,
+    Project,
     Run,
     RunEvent,
     StudioStatus,
@@ -26,10 +32,19 @@
   } from '$lib/types';
 
   export let projectId: string | undefined;
+  // Only used for its sync field: the studio badge above already tracks Studio
+  // connectivity by polling, but sync status rides on the project payload
+  // itself (it only changes in response to the calls below, or the session
+  // dying on its own), so the caller's already-loaded project is enough.
+  export let project: Project | undefined = undefined;
   export let agentName: (id: string) => string;
   export let statusLabel: (status: string) => string;
   export let liveEvents: RunEvent[] = [];
   export let onSent: (runId: string) => void = () => {};
+  // Sync has no push notification of its own, so the caller must be nudged to
+  // reload the project payload after a start/stop rather than this view
+  // guessing at the new state.
+  export let onSynced: () => void = () => {};
   export let agents: Agent[] = [];
   export let tasks: Task[] = [];
 
@@ -50,6 +65,11 @@
   let loadedProjectId: string | undefined;
   let leadAgentId = '';
   let attachedTaskId = '';
+  // Pasted images, uploaded but not yet sent. previewUrl is a local object URL
+  // (never the server's own /attachments URL) so the chip renders instantly,
+  // before the upload that produces `path` even resolves.
+  let pendingAttachments: { path: string; previewUrl: string }[] = [];
+  let uploadingCount = 0;
   let sendStartMs = 0;
   let nowMs = Date.now();
   let typicalSeconds = 0;
@@ -59,6 +79,7 @@
 
   let studioStatus: StudioStatus = STUDIO_OFFLINE;
   let openingStudio = false;
+  let syncBusy = false;
   let stopping = false;
   let commandInfo = '';
   let progressInterval: ReturnType<typeof setInterval> | undefined;
@@ -70,6 +91,7 @@
     void loadLead(projectId);
     void loadPace(projectId);
     void loadStudioStatus();
+    clearPendingAttachments();
   } else if (!projectId && loadedProjectId) {
     loadedProjectId = undefined;
     threads = [];
@@ -80,6 +102,7 @@
     typicalSeconds = 0;
     paceSamples = 0;
     studioStatus = STUDIO_OFFLINE;
+    clearPendingAttachments();
   }
 
   onMount(() => {
@@ -95,6 +118,7 @@
   onDestroy(() => {
     if (progressInterval) clearInterval(progressInterval);
     if (studioInterval) clearInterval(studioInterval);
+    clearPendingAttachments();
   });
 
   async function loadStudioStatus() {
@@ -149,6 +173,81 @@
     }
   }
 
+  // Start and stop share one handler and one badge: the same POST/DELETE pair
+  // the server exposes on /projects/{id}/sync. Toggling reads project.sync
+  // rather than a local boolean, so the badge reflects what the last project
+  // reload actually reported, not an optimistic guess.
+  async function toggleSync() {
+    if (!projectId || syncBusy) return;
+    syncBusy = true;
+    error = '';
+    try {
+      if (project?.sync.active) {
+        await stopSync(projectId);
+      } else {
+        await startSync(projectId);
+      }
+      onSynced();
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      syncBusy = false;
+    }
+  }
+
+  // Claude Code has no image content-block channel — StudioForge shells out
+  // to the CLI with the prompt as a single positional argument
+  // (claudecode/claude.go:213) — so a pasted screenshot only ever reaches the
+  // agent as a file path Claude Code's own Read tool opens. This handler is
+  // the one place that path gets minted: upload on paste, chip in the
+  // composer, path folded into the prompt on send (see submitRun).
+  async function handlePaste(e: ClipboardEvent) {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const images = Array.from(items).filter(
+      (item) => item.kind === 'file' && item.type.startsWith('image/'),
+    );
+    if (images.length === 0) return;
+    // Letting the default paste through here would, at best, insert nothing
+    // and, in some browsers, drop a broken image placeholder into the
+    // textarea — the image belongs in the chip row, not the draft text.
+    e.preventDefault();
+    for (const item of images) {
+      const file = item.getAsFile();
+      if (file) await attachImage(file);
+    }
+  }
+
+  async function attachImage(file: File) {
+    if (!projectId) return;
+    error = '';
+    uploadingCount += 1;
+    const previewUrl = URL.createObjectURL(file);
+    try {
+      const { path } = await uploadAttachment(projectId, file);
+      pendingAttachments = [...pendingAttachments, { path, previewUrl }];
+    } catch (cause) {
+      URL.revokeObjectURL(previewUrl);
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      uploadingCount -= 1;
+    }
+  }
+
+  function removeAttachment(path: string) {
+    const found = pendingAttachments.find((a) => a.path === path);
+    if (found) URL.revokeObjectURL(found.previewUrl);
+    pendingAttachments = pendingAttachments.filter((a) => a.path !== path);
+  }
+
+  // Object URLs are local to this browser tab and never sent anywhere — they
+  // must be revoked explicitly or they outlive the File they were built from
+  // for the life of the page, on every project/thread switch and unmount.
+  function clearPendingAttachments() {
+    for (const attachment of pendingAttachments) URL.revokeObjectURL(attachment.previewUrl);
+    pendingAttachments = [];
+  }
+
   // Slash commands let the operator act without leaving the composer.
   async function runCommand(text: string): Promise<boolean> {
     const [name, ...rest] = text.slice(1).split(' ');
@@ -191,13 +290,16 @@
   $: progressPercent =
     typicalSeconds > 0 ? Math.min((elapsedSeconds / typicalSeconds) * 100, 100) : 0;
   $: stepCount = activeRunEvents.length;
-  // Usage events carry the run's total so far rather than a delta, so the
+  // Usage events carry the run's totals so far rather than a delta, so the
   // newest one wins; adding them up would count the same tokens repeatedly.
-  $: liveTokens = activeRunEvents.reduce(
-    (total, event) =>
-      event.type === 'usage' ? totalTokens(event.payload as Partial<TokenUsage>) : total,
-    0,
+  // Spend and cache are then read off that one surviving payload, so the
+  // "replace, don't sum" rule applies to both instead of just a single total.
+  $: liveUsage = activeRunEvents.reduce<Partial<TokenUsage> | null>(
+    (usage, event) => (event.type === 'usage' ? (event.payload as Partial<TokenUsage>) : usage),
+    null,
   );
+  $: liveSpendTokens = spendTokens(liveUsage);
+  $: liveCacheTokens = cacheTokens(liveUsage);
   $: studioLabel = openingStudio
     ? $translate('chat.studioOpening')
     : studioStatus.state === 'matched'
@@ -217,6 +319,17 @@
   // Only a state Studio can be nudged out of, and only with a project to open.
   $: studioActionable =
     studioStatus.state !== 'matched' && studioStatus.state !== 'blocked' && !!projectId;
+  $: syncActive = !!project?.sync.active;
+  $: syncLabel = syncBusy
+    ? syncActive
+      ? $translate('chat.syncStopping')
+      : $translate('chat.syncStarting')
+    : syncActive
+      ? $translate('chat.syncOn')
+      : $translate('chat.syncOff');
+  // The hint about pressing Connect only matters once a session exists to
+  // connect to; before that the badge's own label already says everything.
+  $: syncHint = syncActive ? $translate('chat.syncHint') : $translate('chat.syncStatus');
 
   function formatElapsed(seconds: number): string {
     const total = Math.max(0, Math.floor(seconds));
@@ -260,8 +373,13 @@
   }
 
   $: selectedThread = threads.find((thread) => thread.id === selectedThreadId);
+  // The thread's lifetime totals, as opposed to liveSpendTokens/liveCacheTokens
+  // below, which are only the run currently in flight.
+  $: threadSpendTokens = spendTokens(selectedThread);
+  $: threadCacheTokens = cacheTokens(selectedThread);
   $: leadKnown = !!leadAgentId && agents.some((agent) => agent.id === leadAgentId);
   $: attachedTask = attachedTaskId ? tasks.find((task) => task.id === attachedTaskId) : undefined;
+  $: uploadingImage = uploadingCount > 0;
   $: activeRunEvents = sentRunId ? liveEvents.filter((event) => event.runId === sentRunId) : [];
   // Only the agent's own text belongs in the chat — drop system/tool/status/
   // stderr events so the conversation is not buried in machine chatter.
@@ -418,6 +536,11 @@
     error = '';
     commandInfo = '';
     draft = '';
+    // Captured before clearing: on failure both need to reappear exactly as
+    // the operator left them, and the chips must not flash empty while the
+    // request is in flight.
+    const attachments = pendingAttachments;
+    pendingAttachments = [];
     sendStartMs = Date.now();
     nowMs = sendStartMs;
     const optimistic: ChatMessage = {
@@ -437,15 +560,22 @@
           threadId: selectedThreadId,
           mode,
           ...(attachedTaskId ? { taskId: attachedTaskId } : {}),
+          ...(attachments.length ? { attachments: attachments.map((a) => a.path) } : {}),
         },
         { 'Idempotency-Key': crypto.randomUUID() },
       );
+      // The server folded the paths into prompt_snapshot; the local object
+      // URLs served their purpose as instant previews and are no longer
+      // needed once the real message reloads with server-backed thumbnails.
+      for (const attachment of attachments) URL.revokeObjectURL(attachment.previewUrl);
       sentRunId = run.id;
       onSent(run.id);
     } catch (cause) {
-      // The send failed: drop the optimistic bubble and give the text back.
+      // The send failed: drop the optimistic bubble and give the text and
+      // attachments back.
       messages = messages.filter((m) => m !== optimistic);
       draft = prompt;
+      pendingAttachments = attachments;
       error = cause instanceof Error ? cause.message : String(cause);
     } finally {
       sending = false;
@@ -497,7 +627,18 @@
   </div>
   <article class="chat-panel">
     <header>
-      <h2>{selectedThread?.title ?? $translate('chat.threadsTitle')}</h2>
+      <div class="chat-title-block">
+        <h2>{selectedThread?.title ?? $translate('chat.threadsTitle')}</h2>
+        {#if threadSpendTokens > 0 || threadCacheTokens > 0}
+          <p class="thread-tokens">
+            {$translate('common.spend')}
+            {formatTokens(threadSpendTokens, $locale)}{#if threadCacheTokens > 0}
+              <span class="token-cache"
+                >· {$translate('common.cache')} {formatTokens(threadCacheTokens, $locale)}</span
+              >{/if}
+          </p>
+        {/if}
+      </div>
       {#if studioActionable}
         <button
           type="button"
@@ -519,6 +660,19 @@
         >
           <span class="dot"></span>{studioLabel}
         </span>
+      {/if}
+      {#if project}
+        <button
+          type="button"
+          class="studio-badge sync-badge"
+          class:online={syncActive}
+          disabled={syncBusy}
+          title={syncHint}
+          aria-label={syncActive ? $translate('chat.syncStop') : $translate('chat.syncStart')}
+          onclick={toggleSync}
+        >
+          <span class="dot"></span>{syncLabel}
+        </button>
       {/if}
       {#if agents.length > 0}
         <label class="lead-select">
@@ -549,6 +703,7 @@
         </div>
       {:else}
         {#each messages as message, index (message.runId + '-' + message.role + '-' + index)}
+          {@const parsed = parseAttachments(message.text)}
           <div class={`bubble bubble-${message.role}`}>
             <div class="bubble-meta">
               <span class="bubble-label"
@@ -559,7 +714,19 @@
               {/if}
               <time>{formatDate(message.at, $locale)}</time>
             </div>
-            <p>{message.text}</p>
+            {#if parsed.text}<p>{parsed.text}</p>{/if}
+            {#if parsed.images.length > 0 && projectId}
+              <div class="message-images">
+                {#each parsed.images as image (image)}
+                  <img
+                    class="message-image"
+                    src={attachmentUrl(projectId, image)}
+                    alt=""
+                    loading="lazy"
+                  />
+                {/each}
+              </div>
+            {/if}
           </div>
         {/each}
         {#each activeLiveEvents as event (event.id)}
@@ -598,14 +765,22 @@
           ></div>
         </div>
         <div class="progress-row">
-          <p class="progress-text">
-            {$translate('chat.working')}
-            {formatElapsed(elapsedSeconds)} · {stepCount}
-            {$translate('chat.steps')}{#if liveTokens > 0}
-              · {formatTokens(liveTokens, $locale)}
-              {$translate('chat.tokens')}{/if}{#if paceSamples > 0}
-              · ~{formatElapsed(typicalSeconds)} {$translate('chat.typical')}{/if}
-          </p>
+          <div class="progress-text-block">
+            <p class="progress-text">
+              {$translate('chat.working')}
+              {formatElapsed(elapsedSeconds)} · {stepCount}
+              {$translate('chat.steps')}{#if liveSpendTokens > 0}
+                · {formatTokens(liveSpendTokens, $locale)}
+                {$translate('chat.tokens')}{/if}{#if paceSamples > 0}
+                · ~{formatElapsed(typicalSeconds)} {$translate('chat.typical')}{/if}
+            </p>
+            {#if liveCacheTokens > 0}
+              <p class="progress-text progress-cache">
+                {$translate('common.cache')}
+                {formatTokens(liveCacheTokens, $locale)}
+              </p>
+            {/if}
+          </div>
           <button
             type="button"
             class="stop-button"
@@ -628,6 +803,24 @@
           onclick={() => (attachedTaskId = '')}
           aria-label={$translate('chat.noTask')}>×</button
         >
+      </div>
+    {/if}
+    {#if pendingAttachments.length > 0 || uploadingImage}
+      <div class="attachment-row">
+        {#each pendingAttachments as attachment (attachment.path)}
+          <div class="attachment-chip">
+            <img class="attachment-thumb" src={attachment.previewUrl} alt="" />
+            <button
+              type="button"
+              class="chip-clear"
+              onclick={() => removeAttachment(attachment.path)}
+              aria-label={$translate('chat.removeAttachment')}>×</button
+            >
+          </div>
+        {/each}
+        {#if uploadingImage}
+          <span class="attachment-uploading">{$translate('chat.uploadingImage')}</span>
+        {/if}
       </div>
     {/if}
     {#if commandInfo}<p class="command-info">{commandInfo}</p>{/if}
@@ -667,6 +860,7 @@
         bind:value={draft}
         rows="2"
         placeholder={$translate('runs.composerPlaceholder')}
+        title={$translate('chat.pasteImageHint')}
         disabled={!projectId || !selectedThreadId}
         onkeydown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey) {
@@ -674,11 +868,12 @@
             send();
           }
         }}
+        onpaste={handlePaste}
       ></textarea>
       <button
         class="primary"
         type="submit"
-        disabled={sending || !draft.trim() || !projectId || !selectedThreadId}
+        disabled={sending || uploadingImage || !draft.trim() || !projectId || !selectedThreadId}
         >{$translate('runs.send')}</button
       >
     </form>
@@ -770,6 +965,22 @@
   .chat-panel > header h2 {
     margin: 0;
     font-size: 0.95rem;
+  }
+  .chat-title-block {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  /* The thread's lifetime spend, quieter than the title above it — a passive
+     readout, not something that competes for attention on every render. */
+  .thread-tokens {
+    margin: 0;
+    font-size: 0.68rem;
+    color: var(--muted);
+  }
+  .token-cache {
+    opacity: 0.75;
   }
   .lead-select {
     display: flex;
@@ -890,6 +1101,19 @@
     white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
+  .message-images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .message-image {
+    max-width: 220px;
+    max-height: 160px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    object-fit: cover;
+  }
   .bubble-meta {
     display: flex;
     align-items: center;
@@ -980,10 +1204,22 @@
       transform: translateX(250%);
     }
   }
+  .progress-text-block {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
   .progress-text {
     margin: 0;
     font-size: 0.72rem;
     color: var(--muted);
+  }
+  /* Cache sits below spend, smaller again — the same "second line, quieter"
+     treatment as the chat header's thread total. */
+  .progress-cache {
+    font-size: 0.66rem;
+    opacity: 0.75;
   }
   .attached-task-chip {
     display: inline-flex;
@@ -1015,6 +1251,38 @@
   }
   .chip-clear:hover {
     color: var(--text);
+  }
+  .attachment-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin: 10px 18px 0;
+  }
+  .attachment-chip {
+    position: relative;
+    width: 48px;
+    height: 48px;
+  }
+  .attachment-thumb {
+    width: 100%;
+    height: 100%;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    object-fit: cover;
+  }
+  .attachment-chip .chip-clear {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    width: 16px;
+    height: 16px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+  }
+  .attachment-uploading {
+    font-size: 0.72rem;
+    color: var(--muted);
   }
   .composer {
     display: flex;

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { formatMoney, formatTokens, locale, totalTokens, translate } from '$lib/i18n';
+  import { cacheTokens, formatMoney, formatTokens, locale, spendTokens, translate } from '$lib/i18n';
   import type { Run } from '$lib/types';
 
   export let runs: Run[];
@@ -29,14 +29,28 @@
     >
     <tbody>
       {#each runs as run}
-        {@const tokens = totalTokens(run)}
+        {@const spend = spendTokens(run)}
+        {@const cache = cacheTokens(run)}
         <tr>
           <td><span class={`status status-${run.status}`}>{statusLabel(run.status)}</span></td>
           <td>{projectName(run.projectId)}</td><td>{agentName(run.agentId)}</td>
           <td><code>{run.provider}/{run.modelAlias}</code></td><td
             ><code>{run.requiredResource || '—'}</code></td
           >
-          <td>{tokens > 0 ? formatTokens(tokens, $locale) : '—'}</td>
+          <td>
+            {#if spend > 0 || cache > 0}
+              <div class="token-cell">
+                <span>{formatTokens(spend, $locale)}</span>
+                {#if cache > 0}
+                  <span class="token-cache"
+                    >{$translate('common.cache')} {formatTokens(cache, $locale)}</span
+                  >
+                {/if}
+              </div>
+            {:else}
+              —
+            {/if}
+          </td>
           <td>{formatMoney(run.cost, $locale)}</td>
           <td
             ><div class="row-actions">
@@ -66,3 +80,18 @@
     </tbody>
   </table>
 </div>
+
+<style>
+  .token-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  /* Cache rides under spend in the same cell, smaller and dimmer — a
+     secondary reading, not a second column competing with it. */
+  .token-cache {
+    font-size: 0.68rem;
+    color: var(--muted);
+    opacity: 0.75;
+  }
+</style>

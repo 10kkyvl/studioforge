@@ -30,6 +30,8 @@ export const en = {
   'common.status': 'Status',
   'common.model': 'Model',
   'common.budget': 'Budget',
+  'common.spend': 'Spend',
+  'common.cache': 'Cache',
   'common.duration': 'Duration',
   'common.actions': 'Actions',
   'common.none': 'None',
@@ -118,6 +120,15 @@ export const en = {
     'Roblox gives its Studio connection to one MCP client at a time. Close the other client (Claude Desktop, Claude Code, Cursor) or turn off its Roblox Studio MCP server, then retry.',
   'chat.studioOpen': 'Open this project in Studio',
   'chat.studioOpening': 'Studio: opening…',
+  'chat.syncStatus': 'Rojo live-sync',
+  'chat.syncOff': 'Sync: off',
+  'chat.syncStarting': 'Sync: starting…',
+  'chat.syncStopping': 'Sync: stopping…',
+  'chat.syncOn': 'Sync: live',
+  'chat.syncHint':
+    'File edits now push to Studio automatically. Press Connect in the Rojo plugin inside Studio once per session to receive them.',
+  'chat.syncStart': 'Start Rojo live-sync',
+  'chat.syncStop': 'Stop Rojo live-sync',
   'chat.stop': 'Stop',
   'chat.stopping': 'Stopping…',
   'chat.stopTitle': 'Stop this run',
@@ -134,6 +145,9 @@ export const en = {
   'chat.typical': 'typical',
   'chat.attachTask': 'Attach task',
   'chat.noTask': 'No task',
+  'chat.pasteImageHint': 'Paste a screenshot to attach it',
+  'chat.uploadingImage': 'Uploading image…',
+  'chat.removeAttachment': 'Remove attachment',
   'studios.title': 'Studio sessions',
   'studios.subtitle': 'Explicit instance bindings prevent cross-project edits.',
   'studios.empty': 'No Studio instances discovered. Mock sessions appear in demo mode.',
@@ -237,6 +251,8 @@ export const ru: Record<TranslationKey, string> = {
   'common.status': 'Статус',
   'common.model': 'Модель',
   'common.budget': 'Бюджет',
+  'common.spend': 'Расход',
+  'common.cache': 'Кэш',
   'common.duration': 'Длительность',
   'common.actions': 'Действия',
   'common.none': 'Нет',
@@ -325,6 +341,15 @@ export const ru: Record<TranslationKey, string> = {
     'Roblox отдаёт связь со Studio только одному MCP-клиенту за раз. Закройте другой клиент (Claude Desktop, Claude Code, Cursor) или выключите в нём MCP-сервер Roblox Studio, затем повторите запуск.',
   'chat.studioOpen': 'Открыть студию с площадкой этого проекта',
   'chat.studioOpening': 'Открываем студию…',
+  'chat.syncStatus': 'Live-sync через Rojo',
+  'chat.syncOff': 'Sync: выключен',
+  'chat.syncStarting': 'Sync: запускается…',
+  'chat.syncStopping': 'Sync: останавливается…',
+  'chat.syncOn': 'Sync: работает',
+  'chat.syncHint':
+    'Изменения файлов теперь сами доставляются в Studio. Нажмите Connect в плагине Rojo внутри Studio один раз за сессию, чтобы их получать.',
+  'chat.syncStart': 'Запустить Rojo live-sync',
+  'chat.syncStop': 'Остановить Rojo live-sync',
   'chat.stop': 'Стоп',
   'chat.stopping': 'Останавливаем…',
   'chat.stopTitle': 'Остановить этот запуск',
@@ -341,6 +366,9 @@ export const ru: Record<TranslationKey, string> = {
   'chat.typical': 'обычно',
   'chat.attachTask': 'Прикрепить задачу',
   'chat.noTask': 'Без задачи',
+  'chat.pasteImageHint': 'Вставьте скриншот, чтобы прикрепить его',
+  'chat.uploadingImage': 'Загружаем изображение…',
+  'chat.removeAttachment': 'Удалить вложение',
   'studios.title': 'Сессии Studio',
   'studios.subtitle': 'Явные привязки защищают проекты от перекрёстных изменений.',
   'studios.empty': 'Studio instances не обнаружены. В демо-режиме показаны mock sessions.',
@@ -434,9 +462,16 @@ export function formatMoney(value: number, current: Locale): string {
     maximumFractionDigits: 2,
   }).format(value);
 }
-// Every counter counts: Claude reports cache hits outside inputTokens, so
-// summing them all is the only figure that reflects the context a run moved.
-// Partials are accepted because live usage events arrive as loose JSON.
+// One number cannot answer both "how much context moved" and "what did this
+// cost" — chat runs always resume, so every turn re-reads the whole prior
+// context through the cache, and cacheReadTokens then dwarfs the input and
+// output counts that actually track spend. So there are three metrics, not
+// one: totalTokens stays the legitimate "context moved" figure (every
+// counter Claude reports); spendTokens (input + output) is the headline,
+// since those are the counters a budget is measured against; cacheTokens
+// (read + creation) is the quieter number showing how much of that context
+// was reused instead of sent fresh. Partials are accepted throughout because
+// live usage events arrive as loose JSON.
 export function totalTokens(usage: Partial<TokenUsage> | null | undefined): number {
   if (!usage) return 0;
   return (
@@ -445,6 +480,16 @@ export function totalTokens(usage: Partial<TokenUsage> | null | undefined): numb
     (usage.cacheReadTokens ?? 0) +
     (usage.cacheCreationTokens ?? 0)
   );
+}
+// The headline figure: what a run actually spent, as opposed to what it moved.
+export function spendTokens(usage: Partial<TokenUsage> | null | undefined): number {
+  if (!usage) return 0;
+  return (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
+}
+// The quieter figure: context reused from cache rather than sent fresh.
+export function cacheTokens(usage: Partial<TokenUsage> | null | undefined): number {
+  if (!usage) return 0;
+  return (usage.cacheReadTokens ?? 0) + (usage.cacheCreationTokens ?? 0);
 }
 // Token counts are read at a glance rather than audited, so they collapse to
 // 12.4K instead of pushing the run row or the progress strip onto two lines.

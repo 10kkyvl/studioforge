@@ -77,9 +77,17 @@ func (s *Store) CreateThread(ctx context.Context, projectID, title string) (mode
 // updated_at has only as much precision as the OS clock offers, so two
 // threads created back-to-back in the same request can carry an identical
 // timestamp; rowid breaks that tie in insertion order so "most recent" still
-// means what callers expect.
+// means what callers expect. Each thread also carries its lifetime token
+// totals — a SUM over every run tied to it, mirroring ListProjects's
+// per-project sum — so the chat header can show what a conversation has spent
+// without a second round trip.
 func (s *Store) ListThreads(ctx context.Context, projectID string) ([]models.ChatThread, error) {
-	rows, err := s.db.SQL.QueryContext(ctx, `SELECT id,project_id,title,created_at,updated_at FROM chat_threads WHERE project_id=? ORDER BY updated_at DESC, rowid DESC`, projectID)
+	rows, err := s.db.SQL.QueryContext(ctx, `SELECT t.id,t.project_id,t.title,t.created_at,t.updated_at,
+COALESCE((SELECT SUM(r.input_tokens) FROM runs r WHERE r.thread_id=t.id),0),
+COALESCE((SELECT SUM(r.output_tokens) FROM runs r WHERE r.thread_id=t.id),0),
+COALESCE((SELECT SUM(r.cache_read_tokens) FROM runs r WHERE r.thread_id=t.id),0),
+COALESCE((SELECT SUM(r.cache_creation_tokens) FROM runs r WHERE r.thread_id=t.id),0)
+FROM chat_threads t WHERE t.project_id=? ORDER BY t.updated_at DESC, t.rowid DESC`, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +96,7 @@ func (s *Store) ListThreads(ctx context.Context, projectID string) ([]models.Cha
 	for rows.Next() {
 		var t models.ChatThread
 		var created, updated string
-		if err := rows.Scan(&t.ID, &t.ProjectID, &t.Title, &created, &updated); err != nil {
+		if err := rows.Scan(&t.ID, &t.ProjectID, &t.Title, &created, &updated, &t.InputTokens, &t.OutputTokens, &t.CacheReadTokens, &t.CacheCreationTokens); err != nil {
 			return nil, err
 		}
 		t.CreatedAt, t.UpdatedAt = parseTime(created), parseTime(updated)

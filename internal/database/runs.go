@@ -122,9 +122,37 @@ func (s *Store) UpdateRun(ctx context.Context, id, status, phase, resource, errT
 // SetRunUsage records everything a finished run spent. Token counts land with
 // the session and cost in one write so a run can never be seen with a cost but
 // no tokens, or the other way round.
+//
+// It also inserts the matching usage_records row, in the same transaction:
+// usage_records, not runs, is what BudgetUsed and the pre-run budget gate
+// (BudgetAllowed) sum over, so without this write a run's spend would never
+// count toward its project's daily ceiling no matter how much it burned.
+// project_id, agent_id, provider and model_alias are re-read from the run row
+// CreateRun already wrote rather than threaded through as extra parameters,
+// so this stays the one place a caller updates a run's spend.
 func (s *Store) SetRunUsage(ctx context.Context, id, session string, cost float64, tokens models.TokenUsage) error {
-	_, err := s.db.SQL.ExecContext(ctx, "UPDATE runs SET provider_session_id=?,cost=?,input_tokens=?,output_tokens=?,cache_read_tokens=?,cache_creation_tokens=?,updated_at=? WHERE id=?", session, cost, tokens.InputTokens, tokens.OutputTokens, tokens.CacheReadTokens, tokens.CacheCreationTokens, Now(), id)
-	return err
+	tx, err := s.db.SQL.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, "UPDATE runs SET provider_session_id=?,cost=?,input_tokens=?,output_tokens=?,cache_read_tokens=?,cache_creation_tokens=?,updated_at=? WHERE id=?", session, cost, tokens.InputTokens, tokens.OutputTokens, tokens.CacheReadTokens, tokens.CacheCreationTokens, Now(), id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	var projectID, agentID, provider, modelAlias string
+	if err := tx.QueryRowContext(ctx, "SELECT project_id,agent_id,provider,model_alias FROM runs WHERE id=?", id).Scan(&projectID, &agentID, &provider, &modelAlias); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO usage_records(id,project_id,run_id,agent_id,provider,model_alias,input_tokens,output_tokens,cost,recorded_at) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		NewID(), projectID, id, agentID, provider, modelAlias, tokens.InputTokens, tokens.OutputTokens, cost, Now()); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) RecoverInterrupted(ctx context.Context) (int64, error) {

@@ -69,6 +69,15 @@ func TestCancelledRunPersistsTokens(t *testing.T) {
 	if got.ProviderSession == "" {
 		t.Error("a cancelled run must still record the session it spent them in")
 	}
+	// SetRunUsage writes usage_records in the same call, so a cancelled run's
+	// cost must reach the budget gate too, not just the runs row.
+	_, _, used, err := store.BudgetAllowed(ctx, "demo-obby", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used <= 0 {
+		t.Errorf("a cancelled run's cost must count toward the project's budget, used=%v", used)
+	}
 }
 
 func usageEvents(t *testing.T, store *database.Store, projectID, runID string) []map[string]any {

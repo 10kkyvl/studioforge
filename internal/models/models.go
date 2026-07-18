@@ -3,21 +3,42 @@ package models
 import "time"
 
 type Project struct {
-	ID            string    `json:"id"`
-	Name          string    `json:"name"`
-	Path          string    `json:"path"`
-	Fingerprint   string    `json:"fingerprint"`
-	Description   string    `json:"description"`
-	GroupName     string    `json:"groupName,omitempty"`
-	Tags          []string  `json:"tags"`
-	Pinned        bool      `json:"pinned"`
-	Archived      bool      `json:"archived"`
-	Mock          bool      `json:"mock"`
-	BudgetLimit   float64   `json:"budgetLimit"`
-	BudgetUsed    float64   `json:"budgetUsed"`
-	RunningAgents int       `json:"runningAgents"`
-	CreatedAt     time.Time `json:"createdAt"`
-	UpdatedAt     time.Time `json:"updatedAt"`
+	ID            string   `json:"id"`
+	Name          string   `json:"name"`
+	Path          string   `json:"path"`
+	Fingerprint   string   `json:"fingerprint"`
+	Description   string   `json:"description"`
+	GroupName     string   `json:"groupName,omitempty"`
+	Tags          []string `json:"tags"`
+	Pinned        bool     `json:"pinned"`
+	Archived      bool     `json:"archived"`
+	Mock          bool     `json:"mock"`
+	BudgetLimit   float64  `json:"budgetLimit"`
+	BudgetUsed    float64  `json:"budgetUsed"`
+	RunningAgents int      `json:"runningAgents"`
+	// TokenUsage here is not one run's counters but the SUM of every run's
+	// counters in the project, so the project card can answer "what has this
+	// project spent" without the caller re-summing runs itself.
+	TokenUsage
+	// Sync is the project's live Rojo sync session, if any. It is never stored:
+	// api.Server fills it in from the running rojo.Manager after loading the
+	// project, because a `rojo serve` process is daemon-lifetime state that no
+	// SQL query could answer.
+	Sync      SyncStatus `json:"sync"`
+	CreatedAt time.Time  `json:"createdAt"`
+	UpdatedAt time.Time  `json:"updatedAt"`
+}
+
+// SyncStatus is whether a project's files are being pushed live into an open
+// Roblox Studio via `rojo serve`, and since when. It rides on the project
+// payload instead of its own polling endpoint — contrast StudioStatus, which
+// the chat badge polls — because it only ever changes in response to a
+// project's own sync/unsync calls or the session dying on its own; nothing
+// external moves it the way another MCP client can steal Studio's connection.
+type SyncStatus struct {
+	Active    bool      `json:"active"`
+	Port      int       `json:"port"`
+	StartedAt time.Time `json:"startedAt"`
 }
 
 type Agent struct {
@@ -48,8 +69,10 @@ type Task struct {
 	BlockedReason      string   `json:"blockedReason,omitempty"`
 }
 
-// TokenUsage is the token accounting persisted with a run. It is embedded in
-// Run so the counters stay flat in the run JSON the UI already reads, and it
+// TokenUsage is the per-run token accounting, and also the shape used for its
+// aggregates: Project and ChatThread embed the same four counters as a SUM
+// over every run in the project or thread, respectively. Embedding in Run
+// keeps the counters flat in the run JSON the UI already reads, and it
 // mirrors providers.Usage field for field so the two convert directly.
 type TokenUsage struct {
 	InputTokens         int `json:"inputTokens"`
@@ -83,9 +106,13 @@ type Run struct {
 }
 
 type ChatThread struct {
-	ID        string    `json:"id"`
-	ProjectID string    `json:"projectId"`
-	Title     string    `json:"title"`
+	ID        string `json:"id"`
+	ProjectID string `json:"projectId"`
+	Title     string `json:"title"`
+	// Same aggregate as Project.TokenUsage, scoped to this thread's runs
+	// instead of the whole project, so the chat header can show what a
+	// conversation has spent.
+	TokenUsage
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }

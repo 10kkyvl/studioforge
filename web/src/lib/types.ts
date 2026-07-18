@@ -19,7 +19,28 @@ export type Diagnostics = {
   dependencies: Record<string, Check>;
   checks: Check[];
 };
-export type Project = {
+// Token counters a provider reported. The cache fields are Claude-only and
+// stay 0 elsewhere; they are separate from inputTokens because Claude counts
+// cache hits outside it.
+export type TokenUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+};
+// A project's live Rojo `rojo serve` session, if any. Rides on the project
+// payload rather than its own polling endpoint (contrast StudioStatus below)
+// because it only changes in response to the sync endpoints or the session
+// dying on its own.
+export type SyncStatus = {
+  active: boolean;
+  port: number;
+  startedAt: string;
+};
+// Project's TokenUsage is not one run's counters but the SUM across every run
+// in the project, so the project card can show total spend without re-summing
+// runs on the client.
+export type Project = TokenUsage & {
   id: string;
   name: string;
   path: string;
@@ -32,6 +53,7 @@ export type Project = {
   budgetLimit: number;
   budgetUsed: number;
   runningAgents: number;
+  sync: SyncStatus;
   updatedAt: string;
 };
 export type Agent = {
@@ -59,15 +81,6 @@ export type Task = {
   dependencies: string[];
   blockedReason?: string;
 };
-// Token counters a provider reported. The cache fields are Claude-only and
-// stay 0 elsewhere; they are separate from inputTokens because Claude counts
-// cache hits outside it.
-export type TokenUsage = {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheCreationTokens: number;
-};
 export type Run = TokenUsage & {
   id: string;
   projectId: string;
@@ -93,7 +106,9 @@ export type RunEvent = {
   payload: unknown;
   createdAt: string;
 };
-export type ChatThread = {
+// Same aggregate as Project's TokenUsage, scoped to this thread's runs
+// instead of the whole project.
+export type ChatThread = TokenUsage & {
   id: string;
   projectId: string;
   title: string;

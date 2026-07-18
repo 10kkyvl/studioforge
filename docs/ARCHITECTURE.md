@@ -89,7 +89,14 @@ plugin loading or dynamic linking.
 ### Rojo
 
 - `internal/rojo` — `Manager.Build` and `Manager.InstallPlugin` compile a `.project.json` into a place
-  file and install the Rojo Studio plugin; both are called by `studio.Opener.OpenProject`.
+  file and install the Rojo Studio plugin; both are called by `studio.Opener.OpenProject`. `Manager.Start`/
+  `Stop`/`Session` run and track a `rojo serve` live-sync session under `internal/processes.Supervisor`, one
+  per project, on an allocated loopback port; `internal/app` adapts them to `api.Syncer`
+  (`internal/app/sync.go`), and `POST`/`DELETE /api/v1/projects/{id}/sync` are the endpoints that actually
+  start and stop one — this is what delivers a `.lua` file the agent just edited on disk into an
+  already-open Studio without restarting it. A session outlives the run that started it; it is torn down by
+  `processes.Supervisor.Close` on daemon shutdown, the same path every other subprocess in this document's
+  process table stops through.
 
 ### Git
 
@@ -146,9 +153,6 @@ cannot reach the behavior below through the UI or CLI, even though the code exis
 - **`internal/roblox/assets`** — a 22-line quarantine status-transition validator with no caller anywhere
   in the running product. `AssetsView.svelte` in the frontend is a bare empty state that makes no API
   call. There is no asset scanning, upload, or Marketplace automation code at all.
-- **Rojo live-sync sessions** — `rojo.Manager.Start`/`Stop`/`Session` (a `rojo serve` session with an
-  allocated loopback port and log streaming) are unit-tested but no HTTP endpoint starts, stops, or
-  queries one. Only `Manager.Build` (a one-shot compile) is reachable, via `studio.Opener.OpenProject`.
 - **`internal/roblox/studio/service.go`** (`Service`) — an instance/binding tracker with no caller outside
   its own test. The live `POST /api/v1/studios/{id}/bind` handler calls `database.Store.BindStudio`
   directly; it does not use this type.
@@ -170,7 +174,8 @@ cannot reach the behavior below through the UI or CLI, even though the code exis
 | `codex` | the daemon, per run | one run (`codex exec` exits when the turn completes) | stdout/stderr JSONL to the daemon |
 | Roblox Studio MCP launcher (`mcp.bat` / `StudioMCP`) | the daemon (via provisioning/status probes) or the `mcp-shim` subprocess | per probe, or for the shim's lifetime | Roblox Studio's own WebSocket host inside the Studio process; JSON-RPC over stdio to whichever process spawned it |
 | `studioforge mcp-shim` | `claude`, as the command in its generated `--mcp-config` | for the run's duration | the Studio MCP launcher over stdio (lazily, on first request); the `claude` process over stdio |
-| `rojo` | the daemon, when opening a project in Studio | one build (`rojo build` exits when done) | stdout/stderr captured by the daemon |
+| `rojo build` | the daemon, when opening a project in Studio | one build (exits when done) | stdout/stderr captured by the daemon |
+| `rojo serve` | the daemon, on `POST /api/v1/projects/{id}/sync` | until `DELETE /api/v1/projects/{id}/sync`, or daemon shutdown | stdout/stderr captured by the daemon as log lines; Studio talks to it over its own loopback port, not through the daemon |
 
 Roblox Studio itself is a separate, independently launched GUI application. StudioForge does not manage
 its process lifecycle — it only launches it once (`studio.LaunchPlace`, detached from the request that
@@ -401,8 +406,10 @@ of the following is enforced independently:
   `OfficialTools` so the shim's fallback tool list also advertises it when no live schema is available.
 - **The domain-package independence rule** (from `CONTRIBUTING.md`): domain packages must stay independent
   of the HTTP, SQLite, Claude, Roblox, and Rojo adapters; adapters implement narrow interfaces defined by
-  the domain packages that use them (e.g. `api.StudioOpener`, `scheduler.RunStore`,
-  `studio.Builder`), not the other way around.
+  the domain packages that use them (e.g. `api.StudioOpener`, `api.Syncer`, `scheduler.RunStore`,
+  `studio.Builder`), not the other way around. `api.Syncer` is why `internal/api` never imports
+  `internal/rojo` directly: `internal/app.syncAdapter` is the one place that translates `*rojo.Manager`'s
+  `Session` into the plain `models.SyncStatus` the interface and the project payload both use.
 - **The resource/lease contract**: a new stateful feature that needs mutual exclusion declares its
   resource keys on the `scheduler.Job` (or calls `resources.Manager.Acquire` directly) using a stable,
   sorted key naming scheme (the existing convention is `project:<id>:write`); the lease manager handles
@@ -427,7 +434,7 @@ flowchart LR
     Shim["studioforge mcp-shim<br/>subprocess"]
     Launcher["Roblox Studio MCP launcher<br/>(official, mcp.bat / StudioMCP)"]
     Studio["Roblox Studio<br/>(separate GUI process)"]
-    Rojo["rojo subprocess<br/>(build)"]
+    Rojo["rojo subprocess<br/>(build, or serve for live-sync)"]
 
     Browser <-->|HTTP + SSE| API
     API --> Scheduler
@@ -441,8 +448,8 @@ flowchart LR
     Claude -.->|spawns, per generated --mcp-config| Shim
     Shim --> Launcher
     Launcher <--> Studio
-    API --> Rojo
-    Rojo --> Studio
+    API -->|open-studio: build; sync: serve| Rojo
+    Rojo -->|build: writes a place file<br/>serve: live file sync, operator presses Connect| Studio
 ```
 
 See [ADR 0001](adr/0001-architecture.md) and [ADR 0002](adr/0002-external-capabilities.md) for the

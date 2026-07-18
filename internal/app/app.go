@@ -118,6 +118,11 @@ func Run(ctx context.Context, opts config.Options) error {
 	}
 	rojoManager := rojo.New(supervisor, setting("rojo_path", ""))
 	doctor := &diagnostics.Doctor{DB: db, DataDir: dataDir, SafeMode: opts.SafeMode, MockMode: opts.MockMode, Claude: claudeProvider, Codex: codexProvider, Rojo: rojoManager, MCPOverride: setting("studio_mcp_path", ""), GitOverride: setting("git_path", "")}
+	// rojoManager.Start puts its process on the same supervisor every other
+	// child process runs under, so the shutdown sequence below
+	// (supervisor.Close) already stops a live sync session and frees its port
+	// without anything here having to track sessions separately.
+	syncer := &syncAdapter{manager: rojoManager}
 
 	// Grant Claude runs access to Roblox Studio. Only Claude: the Codex adapter
 	// has no --mcp-config equivalent, so a grant there would spawn the launcher
@@ -215,7 +220,7 @@ func Run(ctx context.Context, opts config.Options) error {
 	}
 	defer listener.Close()
 	baseURL := url.URL{Scheme: "http", Host: listener.Addr().String()}
-	apiServer, err := api.New(api.Dependencies{Store: store, DB: db, Scheduler: schedulerManager, Hub: hub, Doctor: doctor, Sessions: sessions, Guard: guard, SafeMode: opts.SafeMode, AllowedHost: listener.Addr().String(), DataDir: dataDir, Logger: slog.Default(), ApplySetting: applySetting, Studio: studioOpener, StudioStatus: studioStatus})
+	apiServer, err := api.New(api.Dependencies{Store: store, DB: db, Scheduler: schedulerManager, Hub: hub, Doctor: doctor, Sessions: sessions, Guard: guard, SafeMode: opts.SafeMode, AllowedHost: listener.Addr().String(), DataDir: dataDir, Logger: slog.Default(), ApplySetting: applySetting, Studio: studioOpener, StudioStatus: studioStatus, Sync: syncer})
 	if err != nil {
 		return err
 	}

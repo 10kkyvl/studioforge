@@ -137,6 +137,64 @@ func TestCreateAndListThreads(t *testing.T) {
 	}
 }
 
+// The chat header reads a thread's lifetime spend straight off ListThreads,
+// so the SUM has to add across every run tied to the thread, not just carry
+// the latest one.
+func TestListThreadsAggregatesTokens(t *testing.T) {
+	store, ctx := newThreadStore(t)
+	thread, err := store.CreateThread(ctx, "demo-obby", "Spend check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", ModelAlias: "balanced", ThreadID: thread.ID}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetRunUsage(ctx, first.ID, "sess-1", 0.1, models.TokenUsage{InputTokens: 100, OutputTokens: 50, CacheReadTokens: 900, CacheCreationTokens: 10}); err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", ModelAlias: "balanced", ThreadID: thread.ID}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetRunUsage(ctx, second.ID, "sess-2", 0.2, models.TokenUsage{InputTokens: 200, OutputTokens: 25, CacheReadTokens: 100, CacheCreationTokens: 5}); err != nil {
+		t.Fatal(err)
+	}
+	threads, err := store.ListThreads(ctx, "demo-obby")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got models.ChatThread
+	found := false
+	for _, th := range threads {
+		if th.ID == thread.ID {
+			got, found = th, true
+		}
+	}
+	if !found {
+		t.Fatalf("thread %q not found in list", thread.ID)
+	}
+	want := models.TokenUsage{InputTokens: 300, OutputTokens: 75, CacheReadTokens: 1000, CacheCreationTokens: 15}
+	if got.TokenUsage != want {
+		t.Errorf("thread tokens=%+v want %+v", got.TokenUsage, want)
+	}
+
+	// A thread's totals must not leak into a sibling thread's totals.
+	untouched, err := store.CreateThread(ctx, "demo-obby", "Untouched")
+	if err != nil {
+		t.Fatal(err)
+	}
+	threads, err = store.ListThreads(ctx, "demo-obby")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, th := range threads {
+		if th.ID == untouched.ID && th.TokenUsage != (models.TokenUsage{}) {
+			t.Errorf("untouched thread should have zero tokens, got %+v", th.TokenUsage)
+		}
+	}
+}
+
 func TestThreadByIDReturnsProject(t *testing.T) {
 	store, ctx := newThreadStore(t)
 	created, err := store.CreateThread(ctx, "demo-obby", "Ideas")

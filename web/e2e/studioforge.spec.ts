@@ -167,6 +167,34 @@ test('first run, locale, projects, live run, and core navigation', async ({ page
   const composer = page.locator('.composer');
   await expect(composer).toBeInViewport();
 
+  // Pasting an image into the composer uploads it to /attachments and shows a
+  // removable preview chip, without inserting anything into the draft text.
+  // A real OS clipboard is not available to a headless run, so the paste is
+  // simulated the way browsers themselves construct one: a ClipboardEvent
+  // carrying a DataTransfer with a File, dispatched straight at the textarea
+  // ChatView.svelte's onpaste handler is bound to.
+  const draftBefore = await page.locator('.composer textarea').inputValue();
+  const pngBase64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+  await page.locator('.composer textarea').evaluate((el, base64) => {
+    const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+    const file = new File([bytes], 'clip.png', { type: 'image/png' });
+    const data = new DataTransfer();
+    data.items.add(file);
+    const event = new ClipboardEvent('paste', {
+      clipboardData: data,
+      bubbles: true,
+      cancelable: true,
+    });
+    el.dispatchEvent(event);
+  }, pngBase64);
+  const chip = page.locator('.attachment-chip');
+  await expect(chip).toBeVisible();
+  await expect(page.locator('.attachment-thumb')).toBeVisible();
+  expect(await page.locator('.composer textarea').inputValue()).toBe(draftBefore);
+  await page.getByRole('button', { name: 'Remove attachment', exact: true }).click();
+  await expect(chip).toHaveCount(0);
+
   await expect(page).toHaveTitle('StudioForge');
   await expect(page.locator('main')).toBeVisible();
   await expect(page.locator('main h1')).toHaveCount(1);

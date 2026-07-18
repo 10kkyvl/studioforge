@@ -1,5 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { APIError, getLead, getPace, getStudioStatus, request, setLead } from './api';
+import {
+  APIError,
+  attachmentUrl,
+  getLead,
+  getPace,
+  getStudioStatus,
+  request,
+  setLead,
+  startSync,
+  stopSync,
+  uploadAttachment,
+} from './api';
 
 afterEach(() => vi.unstubAllGlobals());
 describe('API client', () => {
@@ -86,6 +97,40 @@ describe('studio status endpoint', () => {
   });
 });
 
+describe('sync endpoints', () => {
+  it('starts a live-sync session and returns its status', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ active: true, port: 34872, startedAt: '2026-07-19T00:00:00Z' }),
+        {
+          status: 200,
+        },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(startSync('proj-1')).resolves.toEqual({
+      active: true,
+      port: 34872,
+      startedAt: '2026-07-19T00:00:00Z',
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/projects/proj-1/sync',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+  it('stops a live-sync session', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(stopSync('proj-1')).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/projects/proj-1/sync',
+      expect.objectContaining({ method: 'DELETE' }),
+    );
+  });
+});
+
 describe('pace endpoint', () => {
   it('reads the typical run duration and sample count', async () => {
     const fetchMock = vi
@@ -110,5 +155,52 @@ describe('pace endpoint', () => {
         ),
     );
     await expect(getPace('proj-1')).resolves.toEqual({ typicalSeconds: 0, samples: 0 });
+  });
+});
+
+describe('attachment endpoints', () => {
+  it('uploads a pasted image as multipart, not JSON', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ path: '.studioforge/attachments/2026-07-19-abc123.png' }), {
+        status: 201,
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const file = new File(['fake-bytes'], 'clip.png', { type: 'image/png' });
+    await expect(uploadAttachment('proj-1', file)).resolves.toEqual({
+      path: '.studioforge/attachments/2026-07-19-abc123.png',
+    });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/v1/projects/proj-1/attachments');
+    expect(init.method).toBe('POST');
+    expect(init.credentials).toBe('same-origin');
+    // No Content-Type header of our own: the browser must set the multipart
+    // boundary itself, which it can only do if this stays unset.
+    expect(init.headers).toBeUndefined();
+    expect(init.body).toBeInstanceOf(FormData);
+    expect((init.body as FormData).get('file')).toBe(file);
+  });
+  it('surfaces the server error envelope on a rejected upload', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: 'unsupported_type',
+              message: 'Only PNG, JPEG, GIF, or WebP images are accepted',
+            },
+          }),
+          { status: 400 },
+        ),
+      ),
+    );
+    const file = new File(['not-an-image'], 'notes.txt', { type: 'text/plain' });
+    await expect(uploadAttachment('proj-1', file)).rejects.toBeInstanceOf(APIError);
+  });
+  it("builds the download URL from the path's basename", () => {
+    expect(attachmentUrl('proj-1', '.studioforge/attachments/2026-07-19-abc123.png')).toBe(
+      '/api/v1/projects/proj-1/attachments/2026-07-19-abc123.png',
+    );
   });
 });

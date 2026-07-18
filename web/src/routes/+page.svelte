@@ -432,6 +432,7 @@
         {#if view === 'chat'}
           <ChatView
             projectId={selectedProject?.id}
+            project={selectedProject}
             liveEvents={events.filter(
               (event) => selectedProject && event.projectId === selectedProject.id,
             )}
@@ -446,6 +447,7 @@
             onSent={(id) => {
               selectedRunId = id;
             }}
+            onSynced={() => void refresh()}
           />
         {:else if view === 'projects'}
           <ProjectsView

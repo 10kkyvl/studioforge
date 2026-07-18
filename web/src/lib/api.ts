@@ -5,6 +5,7 @@ import type {
   RunEvent,
   Snapshot,
   StudioStatus,
+  SyncStatus,
   Task,
 } from './types';
 
@@ -77,6 +78,26 @@ export const getStudioStatus = (projectId?: string) =>
   request<StudioStatus>(
     projectId ? `/studio-status?project=${encodeURIComponent(projectId)}` : '/studio-status',
   );
+export const startSync = (projectId: string) => post<SyncStatus>(`/projects/${projectId}/sync`, {});
+export const stopSync = (projectId: string): Promise<void> =>
+  request(`/projects/${projectId}/sync`, { method: 'DELETE' }).then(() => undefined);
+// Bypasses request(): a multipart body must let the browser set its own
+// Content-Type (with the boundary it generated), and request() always forces
+// application/json.
+export const uploadAttachment = (projectId: string, file: File | Blob) => {
+  const form = new FormData();
+  form.append('file', file);
+  return fetch(`/api/v1/projects/${projectId}/attachments`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    body: form,
+  }).then((response) => parse<{ path: string }>(response));
+};
+// The chip/thumbnail path is the composer's own reference
+// (".studioforge/attachments/<name>"); the server only serves by basename,
+// so this always strips down to that before building the URL.
+export const attachmentUrl = (projectId: string, path: string) =>
+  `/api/v1/projects/${projectId}/attachments/${encodeURIComponent(path.split('/').pop() ?? '')}`;
 export const createTask = (
   projectId: string,
   t: { title: string; description?: string; acceptanceCriteria?: string; priority?: number },
