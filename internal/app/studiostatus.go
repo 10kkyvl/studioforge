@@ -44,7 +44,9 @@ func cachedStudioStatus(probe func(context.Context, string) (api.StudioStatus, e
 			inflight[projectID] = wait
 			mu.Unlock()
 
-			status, err := probe(ctx, projectID)
+			probeCtx, cancel := context.WithTimeout(context.Background(), studioStatusTTL)
+			status, err := probe(probeCtx, projectID)
+			cancel()
 
 			mu.Lock()
 			cache[projectID] = entry{status: status, err: err, at: time.Now()}
