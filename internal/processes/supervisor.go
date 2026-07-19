@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -34,10 +36,11 @@ type Process struct {
 	lines      chan Line
 	done       chan struct{}
 	cancel     context.CancelFunc
-	mu         sync.RWMutex
-	result     Result
-	once       sync.Once
-	collectors sync.WaitGroup
+	mu           sync.RWMutex
+	result       Result
+	once         sync.Once
+	droppedLines atomic.Int64
+	collectors   sync.WaitGroup
 }
 type Supervisor struct {
 	mu        sync.Mutex
@@ -121,7 +124,19 @@ func (p *Process) collect(reader io.Reader, stream string) {
 	for {
 		line, err := r.ReadString('\n')
 		if line != "" {
-			p.lines <- Line{Stream: stream, Text: line, At: time.Now().UTC()}
+			select {
+			case p.lines <- Line{Stream: stream, Text: line, At: time.Now().UTC()}:
+			default:
+				// Nobody is draining Lines() fast enough (or at all). Drop
+				// the line rather than blocking, which would backpressure
+				// the bufio.Reader and, transitively, the child process's
+				// stdout/stderr pipe. Log on the first drop and then only
+				// every 500th, so a sustained drop doesn't flood the log but
+				// also doesn't go silent after the first occurrence.
+				if n := p.droppedLines.Add(1); n == 1 || n%500 == 0 {
+					slog.Warn("process output buffer full, dropping lines", "process_id", p.spec.ID, "kind", p.spec.Kind, "dropped_total", n)
+				}
+			}
 		}
 		if err != nil {
 			return
@@ -129,6 +144,7 @@ func (p *Process) collect(reader io.Reader, stream string) {
 	}
 }
 func (p *Process) Lines() <-chan Line { return p.lines }
+func (p *Process) DroppedLines() int64 { return p.droppedLines.Load() }
 func (p *Process) PID() int {
 	if p.cmd.Process == nil {
 		return 0
@@ -153,6 +169,16 @@ func (p *Process) Terminate(grace time.Duration) error {
 		case <-timer.C:
 			_ = forceKillTree(p.cmd)
 			p.cancel()
+			// Wait for the reaper goroutine to finish so a nil return from
+			// Terminate reliably means the process has actually been
+			// reaped, not just asked to die. Bound the wait so Terminate
+			// itself cannot hang forever if something is truly stuck.
+			safety := time.NewTimer(10 * time.Second)
+			defer safety.Stop()
+			select {
+			case <-p.done:
+			case <-safety.C:
+			}
 		}
 	})
 	return result

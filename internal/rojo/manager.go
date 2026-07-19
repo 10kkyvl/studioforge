@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os/exec"
 	"path/filepath"
@@ -136,6 +137,14 @@ func (m *Manager) Start(ctx context.Context, projectID, projectFile string) (*Se
 	m.sessions[projectID] = session
 	m.mu.Unlock()
 	go func() { _ = proc.Wait(); m.mu.Lock(); delete(m.sessions, projectID); m.mu.Unlock() }()
+	// Continuously drain the session's Lines channel so it never fills up
+	// and backpressures the rojo serve subprocess, and log output for
+	// debugging rojo sync issues.
+	go func() {
+		for line := range session.Lines {
+			slog.Debug("rojo", "project_id", projectID, "stream", line.Stream, "line", strings.TrimRight(line.Text, "\r\n"))
+		}
+	}()
 	return session, nil
 }
 func (m *Manager) Stop(projectID string) error {

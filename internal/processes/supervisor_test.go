@@ -45,6 +45,14 @@ func TestSupervisorCapturesStreamsAndExit(t *testing.T) {
 		t.Fatalf("stdout=%q stderr=%q", stdout, stderr)
 	}
 }
+func TestCollectDropsLinesUnderBackpressureAndCountsThem(t *testing.T) {
+	p := &Process{lines: make(chan Line, 1), spec: Spec{ID: "test-proc", Kind: "test"}}
+	p.collectors.Add(1)
+	p.collect(strings.NewReader(strings.Repeat("line\n", 10)), "stdout")
+	if got := p.DroppedLines(); got != 9 {
+		t.Fatalf("DroppedLines() = %d, want 9", got)
+	}
+}
 func TestSupervisorTerminatesProcessTree(t *testing.T) {
 	supervisor := NewSupervisor()
 	defer supervisor.Close(context.Background())
