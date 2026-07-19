@@ -260,11 +260,12 @@ agents cannot reach Studio through this mechanism at all.
    (`resources.Manager.Acquire`) on `project:<id>:write` — this is the "one writer per project" rule.
 5. **Prompt assembly (as actually wired)** — before submission, `api.createRun` already built the system
    prompt via `prompts.ForRun`: the standing `prompts.HouseRules` (answer in the operator's language;
-   the subject is the Roblox project, never StudioForge itself), then the project's two static
-   `.agent/*` context files (`projects.LoadContext`) if present, then the agent's stored `SystemPrompt`.
-   Subagents forwarded to an orchestrator carry the same house rules. (The richer, multi-section
-   `internal/prompts.Assemble` template exists in the codebase but is not called from this path — see
-   "Implemented but not yet wired".)
+   the subject is the Roblox project, never StudioForge itself; prefer the Studio MCP tools over
+   hand-written Luau; and the `studioforge-question` convention for asking a closed question), then the
+   project's two static `.agent/*` context files (`projects.LoadContext`) if present, then the agent's
+   stored `SystemPrompt`. Subagents forwarded to an orchestrator carry the same house rules. (The
+   richer, multi-section `internal/prompts.Assemble` template exists in the codebase but is not called
+   from this path — see "Implemented but not yet wired".)
 6. **Git checkpoint** — for Claude runs not in `plan` mode, `gitcheckpoint.Checkpoint` runs
    `git add -A && git commit` in the project root before the provider starts, so the operator has a
    revert point. This is best-effort: a non-git project or an empty diff is a silent no-op and never fails
