@@ -32,11 +32,29 @@ async function parse<T>(response: Response): Promise<T> {
   return body as T;
 }
 
+const REQUEST_TIMEOUT_MS = 15000;
+
+function withTimeout(signal?: AbortSignal | null): AbortSignal {
+  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+async function fetchWithTimeout(input: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(input, { ...init, signal: withTimeout(init.signal) });
+  } catch (cause) {
+    if (cause instanceof DOMException && cause.name === 'TimeoutError') {
+      throw new APIError('Request timed out. Check your connection and try again.', 'timeout');
+    }
+    throw cause;
+  }
+}
+
 export async function bootstrapFromHash(): Promise<void> {
   const match = location.hash.match(/^#bootstrap=(.+)$/);
   if (!match) return;
   const token = decodeURIComponent(match[1]);
-  const response = await fetch('/api/v1/session/bootstrap', {
+  const response = await fetchWithTimeout('/api/v1/session/bootstrap', {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
@@ -47,7 +65,7 @@ export async function bootstrapFromHash(): Promise<void> {
 }
 
 export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(`/api/v1${path}`, {
+  const response = await fetchWithTimeout(`/api/v1${path}`, {
     ...options,
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json', ...(options.headers ?? {}) },
