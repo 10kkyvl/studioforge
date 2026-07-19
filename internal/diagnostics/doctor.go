@@ -142,13 +142,16 @@ func (d *Doctor) ExportBundle(ctx context.Context, target string) error {
 	if err != nil {
 		return err
 	}
+	if err := writeBundle(file, report); err != nil {
+		_ = file.Close()
+		_ = os.Remove(target)
+		return err
+	}
+	return file.Close()
+}
+
+func writeBundle(file *os.File, report models.Diagnostics) error {
 	zw := zip.NewWriter(file)
-	ok := false
-	defer func() {
-		if !ok {
-			_ = os.Remove(target)
-		}
-	}()
 	write := func(name string, value any) error {
 		entry, err := zw.Create(name)
 		if err != nil {
@@ -168,14 +171,7 @@ func (d *Doctor) ExportBundle(ctx context.Context, target string) error {
 	if err := write("README.json", meta); err != nil {
 		return err
 	}
-	if err := zw.Close(); err != nil {
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	ok = true
-	return nil
+	return zw.Close()
 }
 
 func JSON(report models.Diagnostics) string {
