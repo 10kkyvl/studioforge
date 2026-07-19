@@ -814,8 +814,11 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	systemPrompt := prompts.ForRun(agent.SystemPrompt, projectContext)
 	if agent.Provider == "claude" && body.Mode != "plan" {
 		// Snapshot the project so the operator can revert an agent's edits. Best
-		// effort: a non-git project or a hook failure never blocks the run.
-		_, _ = gitcheckpoint.Checkpoint(project.Path, "StudioForge checkpoint before agent run")
+		// effort: a non-git project or a hook failure never blocks the run, but the
+		// failure is logged so an operator who loses `git revert` coverage can find out why.
+		if _, checkpointErr := gitcheckpoint.Checkpoint(project.Path, "StudioForge checkpoint before agent run"); checkpointErr != nil {
+			s.logger.Warn("git checkpoint failed", "project_id", project.ID, "project_path", project.Path, "error", checkpointErr)
+		}
 	}
 	key := r.Header.Get("Idempotency-Key")
 	run, created, err := s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: project.ID, AgentID: agent.ID, TaskID: body.TaskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, WorkingDirectory: project.Path, Prompt: body.Prompt, SystemPrompt: systemPrompt, Mode: body.Mode, ThreadID: thread.ID, ResumeSessionID: resumeSession, Scenario: body.Scenario, MaxBudget: maxBudget, Resources: []string{"project:" + project.ID + ":write"}, IdempotencyKey: key, Subagents: subagents})

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -248,7 +249,21 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 			m.transition(context.Background(), j, "cancelling", "cancelled", "cancelled", "", "")
 			return
 		case <-ticker.C:
-			_ = lease.Heartbeat()
+			if err := lease.Heartbeat(); err != nil {
+				// The lease is gone (most likely reaped by the lease manager, e.g.
+				// ErrLeaseLost), so the mutual-exclusion guarantee it provided no
+				// longer holds: another run could now acquire the same project
+				// write lock while this one keeps executing. Stop it rather than
+				// let it run on silently as if healthy, mirroring how the
+				// ctx.Done() and pause-cancel branches below abort an in-flight
+				// provider process before recording a terminal state.
+				slog.Error("run lost its project lease during execution", "run_id", j.RunID, "project_id", j.ProjectID, "error", err)
+				handle.Cancel()
+				result := handle.Wait()
+				_ = m.store.SetRunUsage(ctx, j.RunID, result.SessionID, result.Cost, models.TokenUsage(result.Usage))
+				m.fail(ctx, j, "lost project lock during execution")
+				return
+			}
 		case event, ok := <-eventsCh:
 			if !ok {
 				eventsCh = nil
@@ -302,7 +317,12 @@ func (m *Manager) finished(j *Job) {
 	m.signal()
 }
 func (m *Manager) fail(ctx context.Context, j *Job, message string) {
-	_ = m.store.UpdateRun(ctx, j.RunID, "failed", "failed", "", message)
+	if err := m.store.UpdateRun(ctx, j.RunID, "failed", "failed", "", message); err != nil {
+		// The event below still fires, so the stream will now claim the run
+		// failed even though the DB row disagrees — log loudly so that
+		// divergence leaves a trace instead of vanishing silently.
+		slog.Error("failed to persist run transition", "run_id", j.RunID, "status", "failed", "error", err)
+	}
 	m.emit(models.Run{ID: j.RunID, ProjectID: j.ProjectID}, j.AgentID, "error", "scheduler.failed", map[string]any{"message": message})
 	// Also surface a terminal status event. Consumers such as the chat UI key off
 	// status events to learn a run has ended; a failure that only emitted an
@@ -314,7 +334,13 @@ func (m *Manager) transition(ctx context.Context, j *Job, from, to, phase, resou
 		m.emit(models.Run{ID: j.RunID, ProjectID: j.ProjectID}, j.AgentID, "error", "scheduler.transition", map[string]any{"message": err.Error()})
 		return
 	}
-	_ = m.store.UpdateRun(ctx, j.RunID, to, phase, resource, message)
+	if err := m.store.UpdateRun(ctx, j.RunID, to, phase, resource, message); err != nil {
+		// Same risk as in fail(): the status event fired below will report
+		// this transition as having happened even though the write that was
+		// supposed to record it failed, leaving the DB row and the event
+		// stream silently out of sync unless this is logged.
+		slog.Error("failed to persist run transition", "run_id", j.RunID, "status", to, "error", err)
+	}
 	m.emit(models.Run{ID: j.RunID, ProjectID: j.ProjectID}, j.AgentID, "status", "scheduler.state", map[string]any{"status": to, "phase": phase, "resource": resource})
 }
 func (m *Manager) emit(run models.Run, agent, eventType, raw string, payload any) {
