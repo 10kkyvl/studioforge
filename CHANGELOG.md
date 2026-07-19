@@ -8,7 +8,144 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- Agents can now ask the operator a closed, multiple-choice question mid-conversation instead of
+  only free text. A completed assistant message that carries a fenced `studioforge-question` block
+  (2-4 options) is detected by the scheduler, published as a new `question` run event, and parks the
+  run in the pre-existing but previously unreachable `waiting_decision` status instead of `completed`.
+  The chat view renders it as a card with one button per option; clicking
+  answers exactly as typing that option's label would and, because a run in `waiting_decision` is now
+  resumable just like a completed one, continues the same underlying CLI session. The deterministic
+  `--mock` provider demonstrates it: send a chat message containing "question test" to see a sample.
+- The standing system prompt every agent, subagent, and restarted run receives now also steers agents
+  toward the Studio MCP tools instead of hand-written Luau: `generate_mesh`/`generate_material`/
+  `generate_procedural_model` before faking geometry or textures with a script, `search_asset` then
+  `insert_asset` before generating something from scratch, `wait_job_finished` after kicking off an
+  async generation or asset job, `subagent`/`skill` delegation for well-scoped Studio-side work, and
+  `screen_capture`/console/playtest checks before reporting a visual or gameplay result as done. It
+  also documents the `studioforge-question` convention used by the feature above.
+- The project overview now shows the Roblox Studio MCP launcher's status alongside Rojo's, and the
+  Settings diagnostics card now shows each dependency's `help` text (previously computed by
+  `studioforge doctor` but never rendered anywhere). A fresh install that hasn't enabled Studio as an
+  MCP server inside Roblox Studio's own Assistant menu now sees that on the dashboard, with the exact
+  steps to fix it, instead of only discovering it indirectly when an agent run silently proceeds
+  without Studio access.
+
+### Fixed
+
+- Chat no longer retires a run's progress strip while the agent is still working. The provider
+  streams its own JSON verbatim under the `status` event type, so a sub-agent finishing
+  (`subtype: "task_notification"`, `status: "completed"`) read as the whole run ending. Long
+  orchestrator runs that delegate work therefore looked stopped for their remaining minutes, with
+  the reply arriving later out of nowhere. A run is now considered finished only when the scheduler
+  itself says so, via its `scheduler.state` raw type.
+- Relatedly, `waiting_decision` — the status a run now parks in when an agent asks a question (see
+  Added) — was added to the set of statuses that mark a run as finished-for-now on the client,
+  alongside `completed`/`failed`/`cancelled`. Without it, the chat view kept showing "Working…"
+  forever after a question was asked, because the client never recognized that the run had actually
+  stopped executing to wait for an answer. Found via manual end-to-end testing.
+- Fixed a file descriptor leak in `studioforge doctor --bundle`: exporting a diagnostics bundle
+  created the archive file but never closed it, so repeated exports over a long-running daemon
+  accumulated open handles instead of releasing them.
+- The shared Studio-status probe that backs the chat badge no longer dies for every waiting caller
+  when one of them cancels. Concurrent lookups for the same project's Studio status shared one
+  in-flight probe, but that probe ran on the first caller's own request context, so cancelling that
+  first request also failed every other caller still waiting on the shared result. The probe now
+  runs on its own timeout-bound context instead.
+- Stopping a supervised subprocess (Rojo live-sync sessions today) now waits for the process to
+  actually be reaped on the force-kill path before returning, instead of returning as soon as the
+  kill signal was sent, which could let a caller believe a process was gone while it was still
+  exiting. Reading a subprocess's output lines is now non-blocking, so a process whose output nobody
+  is currently draining fast enough no longer backpressures its own stdout/stderr pipe.
+- A Rojo live-sync session's log output is now actually drained and logged in production. Previously
+  only tests consumed it, so in the running daemon a session's output could fill the channel's
+  buffer and backpressure — and eventually wedge — the `rojo serve` subprocess once it filled.
+- A git-checkpoint failure before an agent run is no longer silently discarded: the error is now
+  logged, so a project that couldn't be committed (a dirty submodule, a lock held by another Git
+  process, and so on) leaves a trace instead of failing to checkpoint with no record anywhere.
+- Every frontend request now carries a 15-second timeout. This app keeps one `EventSource` open per
+  tab for the whole session, and Chrome caps a profile to 6 concurrent connections per origin on
+  HTTP/1.1; once that budget was exhausted a `fetch` could sit pending indefinitely instead of
+  failing, wedging any UI awaiting it (a spinner that only clears in a `finally`). A timed-out request
+  now surfaces as a normal error instead of staying stuck.
+- `static()` silently served `index.html` for any missing asset, including ones with a file extension
+  (`.js`, `.css`, `.woff2`, ...) — a real 404 that used to make the browser try to execute HTML as a
+  JS module, so the app never booted. Only extensionless (client-side route) paths fall back now, and
+  `Content-Type` is hardcoded for the file kinds the frontend actually ships instead of trusting
+  `mime.TypeByExtension`, which reads the Windows registry and can report a bogus type (observed:
+  `text/plain` for `.js`) on a stripped-down or mangled machine.
+- Fixed duplicate event replay on SSE reconnect. `GET /api/v1/events` accepted both the browser's
+  native `Last-Event-ID` header and an `after` query parameter but always preferred the query
+  parameter, even when it was stale, which defeated the browser's own reconnect cursor and
+  re-delivered already-seen events. The endpoint now prefers `Last-Event-ID` when both are present,
+  and reconnecting the client's event stream (for example, on tab visibility change) now reuses the
+  existing connection instead of tearing it down and reopening it with a stale cursor, which was the
+  other half of the same symptom.
+- The client-side half of that same reconnect fix had a gap: `connectEvents`/`openSharedStream` were
+  made idempotent so repeated calls reuse one shared `EventSource`, but the page's own `connectStream`
+  still called `disconnect()` unconditionally before every reconnect attempt. Since the page is
+  normally the only subscriber, that dropped the subscriber count to zero, which closed the shared
+  stream anyway — so every tab visibility change (switching away and back, restoring a minimized
+  window) still tore down and reopened the connection instead of leaving the live one alone, exactly
+  what the idempotency was meant to prevent. `connectStream` now tracks whether this tab already holds
+  a live subscription and skips reconnecting when it does.
+- That still left the worse bug in the same function: `connectStream` also returned before opening a
+  connection at all whenever `document.hidden` was true, including on the very first call, from
+  `initialize()` at mount. A tab that starts hidden — opened in the background, restored by the
+  browser, or otherwise never receiving an actual hidden-to-visible `visibilitychange` transition —
+  therefore never opened a live stream for its entire session: no error, no console warning, just a
+  chat that never showed live progress and a "Working…" that never resolved. `connectStream` no longer
+  gates on `document.hidden` at all; the `visibilitychange` handler still closes the connection when a
+  tab genuinely goes hidden (so an abandoned background tab doesn't hold a permanent slot in Chrome's
+  6-connections-per-origin budget) and reopens it on return, but establishing the *first* connection no
+  longer depends on that event ever firing. Sending a chat message now also defensively ensures the
+  stream is connected, as a second line of defense that needs no visibility signal at all.
+- The SSE message handler's `try/catch` covered both `JSON.parse` and the delivery of the parsed event
+  to every subscriber in one block, so an exception thrown while a subscriber processed a live event
+  (not just malformed server data) was silently swallowed with no console error — the connection would
+  stay open and healthy while the UI simply stopped updating. Parsing and delivery are now separate, so
+  only genuinely malformed payloads are treated as recoverable; a bug in event handling itself is no
+  longer hidden.
+- Two silent error paths in the scheduler now log loudly instead of vanishing: a failed database
+  write when persisting a run's status transition, so a run whose stored status disagrees with what
+  the event stream reported now leaves a trace; and a lost project write-lease during execution, so
+  a run whose lease was reaped mid-flight no longer keeps executing without the mutual-exclusion
+  guarantee it depends on — losing the lease now cancels the provider process and fails the run
+  instead of letting it continue unprotected.
+- The app no longer opens a live SSE connection when the initial data snapshot fails to load. It
+  previously opened one anyway, behind the error screen, on a session the operator couldn't see yet.
+- The Alt+1..9 view-switch keyboard shortcut no longer fires while typing in an input, textarea, or
+  contenteditable element, and no longer misfires on AltGr — common on non-US/RU keyboards, which
+  Windows reports as both `ctrlKey` and `altKey`, previously indistinguishable from a plain Alt combo.
+- Fixed four project-switching race conditions in the chat view: stale thread, message, lead-agent,
+  and pace data could appear after rapidly switching projects; a task attached in one project could
+  leak into a run submitted after switching to another; an image upload that resolved after its
+  project had already been switched away from could pollute the new project's pending attachments;
+  and double-clicking "New chat" could create two threads instead of one.
+- Fixed a question card rendering bug: each option button was keyed on its own label text, so two
+  options sharing a label (a plausible mistake for an agent to make) would collapse or misrender in
+  Svelte's keyed `{#each}` block. Options are now keyed by their position instead.
+- The frontend's `studioforge-question` fence regex accepted a closing fence with no newline before
+  it, while the scheduler's regex that decides whether a run actually parks in `waiting_decision`
+  required one. A message the backend never treated as a question could still render as a question
+  card once persisted and reloaded from history. Both regexes now agree.
+- A Rojo live-sync session's drained output is no longer logged at `Info` level per line, which could
+  flood the log during an active sync session with no way to quiet it; it now logs at `Debug`.
+- A supervised subprocess whose output nobody drains fast enough now counts every dropped line instead
+  of only warning once and then going silent for the rest of the run.
+- Fixed a real connection leak in the shared SSE client: on a transient network error, `onerror` set
+  the shared `EventSource` reference to `null`, but the browser can and does automatically reconnect
+  that same connection afterward — leaving the app with no reference to a connection that was actually
+  still alive. A tab that later went to the background could then never find that connection to close
+  it, pinning one of Chrome's 6 connections-per-origin slots for the rest of the tab's life. The
+  reference is no longer cleared on error; the existing `readyState` check already correctly detects a
+  connection that is genuinely and permanently closed.
+- `studioforge doctor --bundle` closed its output file via both an explicit `Close()` on success and a
+  deferred `Close()` that ran regardless, and on a write failure it removed the target file before
+  closing the handle still open on it rather than after — fragile ordering that risked the delete
+  failing while the file was still held open. Export now closes the file exactly once, and always
+  before removing it on a failure.
 
 ## [0.1.0-alpha.1] - Unreleased
 

@@ -65,9 +65,14 @@ The project is an alpha as a whole. The table below describes individual capabil
 | Codex CLI provider | `codex exec --json`, JSONL events, workspace sandbox, thread resume |
 | Orchestrator delegation | Agents with an orchestrator role pass other enabled agents to Claude's native `--agents` flag |
 | Official Studio MCP integration | Launcher discovery, per-run config, permission-scoped tool allowlist, JSON-RPC stdio transport, `mcp-shim` |
+| Studio MCP tool guidance | The standing system prompt steers agents toward Studio's own tools — `generate_mesh`/`generate_material`/`generate_procedural_model`, `search_asset` + `insert_asset`, `wait_job_finished`, `subagent`/`skill` delegation, `screen_capture`/console/playtest checks — over hand-written Luau |
+| Interactive questions | An agent can pause a run on a closed 2-4 option question (a `studioforge-question` fenced block); the chat view renders clickable option buttons and answering resumes the same session |
 | Git checkpoints | Auto-commit before each non-plan Claude run |
 | Rojo build + open | Compiles a place file and opens it in Studio |
+| Rojo live-sync | `POST`/`DELETE /api/v1/projects/{id}/sync` start and stop a `rojo serve` session that pushes on-disk edits into an already-open Studio |
 | Static project context | Reads `.agent/constitution.yaml` and `.agent/requirements.md` verbatim into the system prompt |
+| Image attachments | Paste a screenshot into the chat composer; it uploads and is folded into the prompt as a file path the agent can read |
+| Run pace indicator | `GET /api/v1/projects/{id}/pace` averages a project's last ~20 completed runs into a typical duration; the chat progress bar scales against it |
 | Diagnostics | `studioforge doctor`, redacted `--bundle` archive |
 | Deterministic demo | `--mock` runs three seeded projects with no Claude, Studio, or Rojo |
 | Packaging | Windows amd64 zip, macOS arm64 `.app` (both unsigned development builds) |
@@ -76,7 +81,7 @@ The project is an alpha as a whole. The table below describes individual capabil
 
 | Capability | Why it is experimental |
 | --- | --- |
-| Studio access grant | Fail-closed: granted only when exactly one Studio instance is open (see [Known limitations](#known-limitations)) |
+| Studio access grant | Fail-closed: granted only when exactly one Studio instance is open; the chat badge also reports a distinct blocked state (Studio open, connection held by another MCP client) separately from closed (see [Known limitations](#known-limitations)) |
 | Permission-profile tool tiers | `read-only`, `workspace-write`, and `danger-full-access` gates are implemented and unit-tested |
 | End-to-end Claude and Studio paths | Covered only by opt-in smoke tests behind `STUDIOFORGE_REAL_CLAUDE=1` / `STUDIOFORGE_REAL_STUDIO=1`; default tests and CI use fake CLIs |
 
@@ -90,8 +95,7 @@ These packages are implemented and unit-tested but have no caller in the API or 
 | `internal/tasks` DAG validation | No API accepts task dependencies; only the demo seed creates them |
 | `internal/gitops` | `Status`, `Diff`, `SafeRollback`, `Tag` exposed by no endpoint |
 | `internal/roblox/assets` | Quarantine state validator with no caller; the Assets view is an empty placeholder |
-| Rojo live-sync sessions | `rojo serve` lifecycle is unit-tested but no endpoint starts or queries it |
-| Decisions | The UI and resolve endpoint exist, but no live run produces a decision |
+| Decisions | The `Decision`/`DecisionsView` approve-or-reject UI and resolve endpoint still have no live producer; unrelated, the `waiting_decision` status string is now used by the interactive question feature above |
 | `internal/prompts` template | The structured multi-section prompt template has no caller; the real system prompt is a simpler concatenation |
 
 ### Planned — not implemented
