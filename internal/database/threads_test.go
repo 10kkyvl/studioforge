@@ -87,6 +87,35 @@ func TestLatestThreadSessionSelfHeals(t *testing.T) {
 	}
 }
 
+// A run parked in waiting_decision is a turn paused mid-flight waiting on the
+// user to answer an interactive question, not a dead end like a failed or
+// cancelled run: the next message (a clicked option or free text) must
+// continue the same session, exactly like resuming a completed run does.
+func TestLatestThreadSessionResumesWaitingDecision(t *testing.T) {
+	store, ctx := newThreadStore(t)
+	thread, err := store.EnsureDefaultThread(ctx, "demo-obby")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", ModelAlias: "balanced", ThreadID: thread.ID}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateRun(ctx, run.ID, "waiting_decision", "waiting_decision", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetRunUsage(ctx, run.ID, "sess-question", 0, models.TokenUsage{}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.LatestThreadSession(ctx, thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "sess-question" {
+		t.Fatalf("a run waiting on a decision must still be resumable, got %q", got)
+	}
+}
+
 func TestLatestThreadSessionEmptyWhenNoRuns(t *testing.T) {
 	store, ctx := newThreadStore(t)
 	thread, err := store.EnsureDefaultThread(ctx, "demo-obby")

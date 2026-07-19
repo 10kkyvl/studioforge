@@ -18,6 +18,13 @@
     uploadAttachment,
   } from '$lib/api';
   import { parseAttachments } from '$lib/attachments';
+  import { endsRun } from '$lib/runStatus';
+  import {
+    extractQuestionFence,
+    normalizeQuestionPayload,
+    shouldAnswerQuestion,
+  } from '$lib/questionCard';
+  import { isStaleGeneration } from '$lib/staleness';
   import { cacheTokens, formatDate, formatTokens, locale, spendTokens, translate } from '$lib/i18n';
   import type {
     Agent,
@@ -45,10 +52,16 @@
   // reload the project payload after a start/stop rather than this view
   // guessing at the new state.
   export let onSynced: () => void = () => {};
+  // Second line of defense against a tab that never opened a live SSE
+  // connection in the first place (see +page.svelte's connectStream): actually
+  // sending a message is unambiguous proof this tab is in real use regardless
+  // of what the Page Visibility API reports, or whether a visibilitychange
+  // event has ever fired, so submitRun calls this unconditionally before
+  // posting the run. It is idempotent — a no-op once already connected — so
+  // calling it on every send costs nothing.
+  export let onEnsureStream: () => void = () => {};
   export let agents: Agent[] = [];
   export let tasks: Task[] = [];
-
-  const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 
   let threads: ChatThread[] = [];
   let selectedThreadId = '';
@@ -63,8 +76,14 @@
   let error = '';
   let sentRunId: string | null = null;
   let loadedProjectId: string | undefined;
+  // Bumped once per project switch. Every async load below captures it before
+  // its await and only applies the result if it is still current afterward —
+  // guards against a slow/reordered response from project A landing in the UI
+  // after project B is already selected.
+  let projectGeneration = 0;
   let leadAgentId = '';
   let attachedTaskId = '';
+  let creatingThread = false;
   // Pasted images, uploaded but not yet sent. previewUrl is a local object URL
   // (never the server's own /attachments URL) so the chip renders instantly,
   // before the upload that produces `path` even resolves.
@@ -87,13 +106,16 @@
 
   $: if (projectId && projectId !== loadedProjectId) {
     loadedProjectId = projectId;
+    projectGeneration += 1;
     void loadThreads(projectId);
     void loadLead(projectId);
     void loadPace(projectId);
     void loadStudioStatus();
+    attachedTaskId = '';
     clearPendingAttachments();
   } else if (!projectId && loadedProjectId) {
     loadedProjectId = undefined;
+    projectGeneration += 1;
     threads = [];
     selectedThreadId = '';
     messages = [];
@@ -102,6 +124,7 @@
     typicalSeconds = 0;
     paceSamples = 0;
     studioStatus = STUDIO_OFFLINE;
+    attachedTaskId = '';
     clearPendingAttachments();
   }
 
@@ -220,15 +243,24 @@
 
   async function attachImage(file: File) {
     if (!projectId) return;
+    // Captured up front: if the project changes mid-upload, pendingAttachments
+    // was already cleared synchronously by the reset block above, and this
+    // upload's path lives under the OLD project's attachments directory —
+    // pushing it into the new project's chip row after the fact would be
+    // silently wrong, not just late.
+    const generation = projectGeneration;
     error = '';
     uploadingCount += 1;
     const previewUrl = URL.createObjectURL(file);
     try {
       const { path } = await uploadAttachment(projectId, file);
+      if (isStaleGeneration(generation, projectGeneration)) return;
       pendingAttachments = [...pendingAttachments, { path, previewUrl }];
     } catch (cause) {
       URL.revokeObjectURL(previewUrl);
-      error = cause instanceof Error ? cause.message : String(cause);
+      if (!isStaleGeneration(generation, projectGeneration)) {
+        error = cause instanceof Error ? cause.message : String(cause);
+      }
     } finally {
       uploadingCount -= 1;
     }
@@ -382,10 +414,35 @@
   $: uploadingImage = uploadingCount > 0;
   $: activeRunEvents = sentRunId ? liveEvents.filter((event) => event.runId === sentRunId) : [];
   // Only the agent's own text belongs in the chat — drop system/tool/status/
-  // stderr events so the conversation is not buried in machine chatter.
+  // stderr events so the conversation is not buried in machine chatter. A
+  // "question" event is the one other kind that belongs here: it is how the
+  // agent's turn ends when it wants the operator to pick between options
+  // instead of just talking.
   $: activeLiveEvents = activeRunEvents.filter(
-    (event) => event.type === 'message' && messageText(event.payload).trim() !== '',
+    (event) =>
+      (event.type === 'message' && messageText(event.payload).trim() !== '') ||
+      (event.type === 'question' && normalizeQuestionPayload(event.payload) !== null),
   );
+
+  // A card only offers live buttons while it is the very last thing in the
+  // transcript — once anything newer exists (a later message, or a later live
+  // event), clicking it would send an out-of-context answer, so it renders as
+  // a static summary instead. A send already in flight counts as "newer" too.
+  function isLatestQuestionCard(isLast: boolean): boolean {
+    return isLast && !sending;
+  }
+
+  let answeredQuestionKeys = new Set<string>();
+
+  // Shared by both the live-event card and the historical-message card: submit
+  // the chosen option's label exactly as if the operator had typed it, and
+  // disable this specific card immediately so a double-click (or a click after
+  // the send already started) cannot fire twice.
+  function answerQuestion(key: string, label: string) {
+    if (!shouldAnswerQuestion(key, sending, answeredQuestionKeys)) return;
+    answeredQuestionKeys = new Set(answeredQuestionKeys).add(key);
+    void submitRun(label);
+  }
 
   // Anything within this many pixels of the end counts as "at the bottom".
   const BOTTOM_SLACK = 80;
@@ -418,10 +475,7 @@
   let handledRunId = '';
   $: if (sentRunId && sentRunId !== handledRunId) {
     const currentRunId = sentRunId;
-    const terminal = liveEvents.some(
-      (event) =>
-        event.runId === currentRunId && event.type === 'status' && isTerminalStatus(event.payload),
-    );
+    const terminal = liveEvents.some((event) => endsRun(event, currentRunId));
     if (terminal) {
       // Reload history first, then drop the live bubbles, so the just-streamed
       // reply never blinks out before its persisted copy arrives.
@@ -434,19 +488,14 @@
     }
   }
 
-  function isTerminalStatus(payload: unknown): boolean {
-    if (payload && typeof payload === 'object' && 'status' in payload) {
-      const value = (payload as Record<string, unknown>).status;
-      return typeof value === 'string' && TERMINAL_STATUSES.has(value);
-    }
-    return false;
-  }
-
   async function loadThreads(id: string) {
+    const generation = projectGeneration;
     loadingThreads = true;
     error = '';
     try {
-      threads = await getThreads(id);
+      const result = await getThreads(id);
+      if (isStaleGeneration(generation, projectGeneration)) return;
+      threads = result;
       sentRunId = null;
       if (threads[0]) {
         await selectThread(threads[0].id);
@@ -456,9 +505,11 @@
         atBottom = true;
       }
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      if (!isStaleGeneration(generation, projectGeneration)) {
+        error = cause instanceof Error ? cause.message : String(cause);
+      }
     } finally {
-      loadingThreads = false;
+      if (!isStaleGeneration(generation, projectGeneration)) loadingThreads = false;
     }
   }
 
@@ -473,33 +524,47 @@
 
   async function loadMessages(id: string) {
     if (!id) return;
+    const generation = projectGeneration;
     loadingMessages = true;
     error = '';
     try {
-      messages = await getThreadMessages(id);
+      const result = await getThreadMessages(id);
+      if (isStaleGeneration(generation, projectGeneration)) return;
+      messages = result;
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      if (!isStaleGeneration(generation, projectGeneration)) {
+        error = cause instanceof Error ? cause.message : String(cause);
+      }
     } finally {
-      loadingMessages = false;
+      if (!isStaleGeneration(generation, projectGeneration)) loadingMessages = false;
     }
   }
 
   async function loadLead(id: string) {
+    const generation = projectGeneration;
     try {
-      leadAgentId = await getLead(id);
+      const result = await getLead(id);
+      if (isStaleGeneration(generation, projectGeneration)) return;
+      leadAgentId = result;
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      if (!isStaleGeneration(generation, projectGeneration)) {
+        error = cause instanceof Error ? cause.message : String(cause);
+      }
     }
   }
 
   async function loadPace(id: string) {
+    const generation = projectGeneration;
     try {
       const pace = await getPace(id);
+      if (isStaleGeneration(generation, projectGeneration)) return;
       typicalSeconds = pace.typicalSeconds;
       paceSamples = pace.samples;
     } catch {
-      typicalSeconds = 0;
-      paceSamples = 0;
+      if (!isStaleGeneration(generation, projectGeneration)) {
+        typicalSeconds = 0;
+        paceSamples = 0;
+      }
     }
   }
 
@@ -516,7 +581,8 @@
   }
 
   async function newThread() {
-    if (!projectId) return;
+    if (!projectId || creatingThread) return;
+    creatingThread = true;
     error = '';
     try {
       const thread = await createThread(projectId, '');
@@ -527,11 +593,14 @@
       atBottom = true;
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      creatingThread = false;
     }
   }
 
   async function submitRun(prompt: string) {
     if (!projectId || !selectedThreadId || sending) return;
+    onEnsureStream();
     sending = true;
     error = '';
     commandInfo = '';
@@ -603,7 +672,11 @@
   <div class="thread-list">
     <div class="thread-list-header">
       <h2>{$translate('chat.threadsTitle')}</h2>
-      <button class="primary new-thread" onclick={newThread} disabled={!projectId}>
+      <button
+        class="primary new-thread"
+        onclick={newThread}
+        disabled={!projectId || creatingThread}
+      >
         <Plus size={15} />{$translate('chat.newThread')}
       </button>
     </div>
@@ -703,7 +776,12 @@
         </div>
       {:else}
         {#each messages as message, index (message.runId + '-' + message.role + '-' + index)}
-          {@const parsed = parseAttachments(message.text)}
+          {@const question = message.role === 'agent' ? extractQuestionFence(message.text) : null}
+          {@const parsed = parseAttachments(question ? question.remainder : message.text)}
+          {@const questionKey = `msg-${message.runId}-${index}`}
+          {@const isLatestQuestion = isLatestQuestionCard(
+            index === messages.length - 1 && activeLiveEvents.length === 0,
+          )}
           <div class={`bubble bubble-${message.role}`}>
             <div class="bubble-meta">
               <span class="bubble-label"
@@ -727,9 +805,34 @@
                 {/each}
               </div>
             {/if}
+            {#if question}
+              <div class="question-card" class:question-card-static={!isLatestQuestion}>
+                <p class="question-text">{question.card.question}</p>
+                <div class="question-options">
+                  {#each question.card.options as option, optionIndex (optionIndex)}
+                    <button
+                      type="button"
+                      class="question-option"
+                      disabled={!isLatestQuestion || answeredQuestionKeys.has(questionKey)}
+                      onclick={() => answerQuestion(questionKey, option.label)}
+                    >
+                      <span class="question-option-label">{option.label}</span>
+                      {#if option.description}
+                        <span class="question-option-desc">{option.description}</span>
+                      {/if}
+                    </button>
+                  {/each}
+                </div>
+              </div>
+            {/if}
           </div>
         {/each}
-        {#each activeLiveEvents as event (event.id)}
+        {#each activeLiveEvents as event, eventIndex (event.id)}
+          {@const liveQuestion =
+            event.type === 'question' ? normalizeQuestionPayload(event.payload) : null}
+          {@const isLatestQuestion = isLatestQuestionCard(
+            eventIndex === activeLiveEvents.length - 1,
+          )}
           <div class="bubble bubble-agent bubble-live">
             <div class="bubble-meta">
               <span class="bubble-label"
@@ -741,7 +844,28 @@
                 )}</time
               >
             </div>
-            <p>{messageText(event.payload)}</p>
+            {#if liveQuestion}
+              <div class="question-card" class:question-card-static={!isLatestQuestion}>
+                <p class="question-text">{liveQuestion.question}</p>
+                <div class="question-options">
+                  {#each liveQuestion.options as option, optionIndex (optionIndex)}
+                    <button
+                      type="button"
+                      class="question-option"
+                      disabled={!isLatestQuestion || answeredQuestionKeys.has(String(event.id))}
+                      onclick={() => answerQuestion(String(event.id), option.label)}
+                    >
+                      <span class="question-option-label">{option.label}</span>
+                      {#if option.description}
+                        <span class="question-option-desc">{option.description}</span>
+                      {/if}
+                    </button>
+                  {/each}
+                </div>
+              </div>
+            {:else}
+              <p>{messageText(event.payload)}</p>
+            {/if}
           </div>
         {/each}
       {/if}
@@ -1139,6 +1263,63 @@
   .bubble-live {
     border-style: dashed;
     opacity: 0.85;
+  }
+  .question-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 8px;
+    padding: 10px;
+    border-radius: 9px;
+    border: 1px solid var(--line);
+    background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  }
+  /* No longer the latest turn in the thread (or a send is already in flight):
+     the options are kept visible for context but cannot be clicked, so a
+     stale question never sends an out-of-context answer. */
+  .question-card.question-card-static {
+    background: var(--surface);
+    opacity: 0.85;
+  }
+  .question-text {
+    margin: 0;
+    font-size: 0.85rem;
+    line-height: 1.5;
+  }
+  .question-options {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .question-option {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    align-items: flex-start;
+    padding: 7px 10px;
+    border-radius: 7px;
+    border: 1px solid var(--line);
+    background: var(--surface-2);
+    color: var(--text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .question-option:hover:not(:disabled) {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
+  }
+  .question-option:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+  .question-option-label {
+    font-size: 0.8rem;
+    font-weight: 600;
+  }
+  .question-option-desc {
+    font-size: 0.7rem;
+    color: var(--muted);
   }
   .progress-strip {
     display: flex;

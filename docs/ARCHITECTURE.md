@@ -287,6 +287,18 @@ agents cannot reach Studio through this mechanism at all.
     `after` query parameter) from the database, then subscribes to the hub for new ones, sending a
     heartbeat comment every 15 seconds and disconnecting a client whose 256-event buffer overflows.
 
+A note on the `status` event type: it is shared. The scheduler emits its own lifecycle changes under
+raw type `scheduler.state` (and the initial queueing under `scheduler.queued`), but provider adapters
+also classify their subprocess's `system`-class lines as `status` and pass that JSON through
+unmodified as the payload. Sub-agents run inside the parent's process and so publish under the parent's
+run ID, which means a payload like `{"subtype":"task_notification","status":"completed"}` describes a
+sub-agent, not the run. Consumers deciding whether a run has ended must therefore key off the
+`scheduler.state` raw type rather than the event type or a bare `status` field — see `endsRun` in
+`web/src/lib/runStatus.ts`. `waiting_decision` — the status a run parks in when a completed assistant
+message carries a `studioforge-question` fenced block (step 5 above) — ends the live stream the same
+way: the run's process has already exited, even though the thread stays resumable and picks up the
+same session once the operator answers.
+
 ## Configuration flow
 
 - **CLI flags** (`cmd/studioforge/main.go`): `--host`, `--port`, `--data-dir`, `--no-open`,

@@ -36,12 +36,16 @@ func (s *Store) EnsureDefaultThread(ctx context.Context, projectID string) (mode
 }
 
 // LatestThreadSession is the Claude session to resume for the next message in a
-// thread. It resumes only when the thread's most recent run completed cleanly
-// and recorded a session; if that run failed or was cancelled it returns empty
-// so the next message starts fresh. This lets a thread self-heal from a dead or
-// expired session instead of resuming it forever (a resume of a bad session
-// fails, records no new session, and would otherwise resume the same stale id
-// on every following message).
+// thread. It resumes when the thread's most recent run either completed
+// cleanly or is waiting on the user to answer an interactive question
+// (waiting_decision) and recorded a session; if that run failed or was
+// cancelled it returns empty so the next message starts fresh. This lets a
+// thread self-heal from a dead or expired session instead of resuming it
+// forever (a resume of a bad session fails, records no new session, and would
+// otherwise resume the same stale id on every following message). A run
+// parked in waiting_decision is really the same turn paused mid-flight, so
+// the next message — whether a clicked option or free text — continues that
+// session exactly like resuming a completed run does.
 func (s *Store) LatestThreadSession(ctx context.Context, threadID string) (string, error) {
 	var status, session string
 	err := s.db.SQL.QueryRowContext(ctx, `SELECT status, COALESCE(provider_session_id,'') FROM runs WHERE thread_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1`, threadID).Scan(&status, &session)
@@ -51,7 +55,7 @@ func (s *Store) LatestThreadSession(ctx context.Context, threadID string) (strin
 	if err != nil {
 		return "", err
 	}
-	if status != "completed" {
+	if status != "completed" && status != "waiting_decision" {
 		return "", nil
 	}
 	return session, nil

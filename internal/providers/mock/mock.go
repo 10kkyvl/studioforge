@@ -4,11 +4,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/10kkyvl/studioforge/internal/providers"
 )
+
+// questionTestBlock is a deterministic, easily-triggerable demo of the
+// studioforge-question fenced-block contract: whenever the incoming prompt
+// contains "question test" (case-insensitive), the final assistant message
+// carries this block through the normal message event path so it flows
+// through the shared question-detection logic elsewhere.
+const questionTestBlock = "```studioforge-question\n" +
+	`{"question": "Which mesh format should I import for the new prop?", "options": [{"label": "FBX", "description": "Standard interchange format with full material and rig support"}, {"label": "OBJ", "description": "Simpler format, wider tool support but no animation data"}]}` +
+	"\n```"
 
 type Provider struct {
 	mu        sync.Mutex
@@ -50,7 +60,11 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, sessio
 	defer close(h.events)
 	defer close(h.done)
 	defer func() { p.mu.Lock(); delete(p.runs, req.RunID); p.mu.Unlock() }()
-	steps := []providers.Event{{Type: "status", RawType: "mock.start", Payload: map[string]any{"message": "Agent session started"}}, {Type: "message", RawType: "assistant.partial", Payload: map[string]any{"text": "Reading project constitution and task contract…"}}, {Type: "tool", RawType: "tool.use", Payload: map[string]any{"tool": "Read", "target": ".agent/constitution.yaml"}}, {Type: "message", RawType: "assistant.partial", Payload: map[string]any{"text": "Implementing the bounded milestone change…"}}, {Type: "artifact", RawType: "artifact.created", Payload: map[string]any{"kind": "handoff", "name": "task-handoff.json"}}, {Type: "usage", RawType: "result.usage", Payload: map[string]any{"inputTokens": 1200, "outputTokens": 680, "cost": 0.42}, Cost: 0.42, Usage: providers.Usage{InputTokens: 1200, OutputTokens: 680, CacheReadTokens: 4400}}, {Type: "message", RawType: "assistant.final", Payload: map[string]any{"text": "Acceptance criteria verified in mock mode."}}}
+	finalText := "Acceptance criteria verified in mock mode."
+	if strings.Contains(strings.ToLower(req.Prompt), "question test") {
+		finalText = "Acceptance criteria verified in mock mode.\n\n" + questionTestBlock
+	}
+	steps := []providers.Event{{Type: "status", RawType: "mock.start", Payload: map[string]any{"message": "Agent session started"}}, {Type: "message", RawType: "assistant.partial", Payload: map[string]any{"text": "Reading project constitution and task contract…"}}, {Type: "tool", RawType: "tool.use", Payload: map[string]any{"tool": "Read", "target": ".agent/constitution.yaml"}}, {Type: "message", RawType: "assistant.partial", Payload: map[string]any{"text": "Implementing the bounded milestone change…"}}, {Type: "artifact", RawType: "artifact.created", Payload: map[string]any{"kind": "handoff", "name": "task-handoff.json"}}, {Type: "usage", RawType: "result.usage", Payload: map[string]any{"inputTokens": 1200, "outputTokens": 680, "cost": 0.42}, Cost: 0.42, Usage: providers.Usage{InputTokens: 1200, OutputTokens: 680, CacheReadTokens: 4400}}, {Type: "message", RawType: "assistant.final", Payload: map[string]any{"text": finalText}}}
 	if req.Scenario == "hang" {
 		<-ctx.Done()
 		h.result = providers.Result{SessionID: session, Err: ctx.Err(), ExitCode: -1}

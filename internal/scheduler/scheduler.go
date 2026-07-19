@@ -2,9 +2,12 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,6 +16,102 @@ import (
 	"github.com/10kkyvl/studioforge/internal/providers"
 	"github.com/10kkyvl/studioforge/internal/resources"
 )
+
+// questionFencePattern matches a complete studioforge-question fenced block:
+// the info-string on its own line, a JSON body, and a closing fence alone on
+// its own line. Because it requires the closing fence, a block that is still
+// mid-stream (opening fence seen, closing fence not yet arrived) simply does
+// not match, so a partial chunk can never be mistaken for a real question.
+var questionFencePattern = regexp.MustCompile("(?s)```studioforge-question\r?\n(.*?)\r?\n```")
+
+// questionOption and questionBlock mirror the two-field JSON contract a coding
+// agent emits when it wants the user to pick between discrete options; see
+// the fenced-block format documented alongside the scheduler run loop.
+type questionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description"`
+}
+type questionBlock struct {
+	Question string           `json:"question"`
+	Options  []questionOption `json:"options"`
+}
+
+// detectQuestion looks for a studioforge-question fenced block in a fully
+// buffered message's text. Malformed JSON inside the fence, or a fence
+// missing a question/options, is treated as ordinary text: it returns
+// ok=false rather than an error, so callers never treat it as a crash or a
+// false transition.
+func detectQuestion(text string) (questionBlock, bool) {
+	match := questionFencePattern.FindStringSubmatch(text)
+	if match == nil {
+		return questionBlock{}, false
+	}
+	var block questionBlock
+	if err := json.Unmarshal([]byte(match[1]), &block); err != nil {
+		return questionBlock{}, false
+	}
+	if strings.TrimSpace(block.Question) == "" || len(block.Options) == 0 {
+		return questionBlock{}, false
+	}
+	return block, true
+}
+
+// messageText pulls the human-readable text out of a provider message
+// event's payload, whatever shape that provider uses: the mock provider and
+// Codex's item events carry a flat "text" field (Codex nests it one level
+// under "item"), and Claude's assistant messages carry it in
+// message.content[].text. This mirrors database.agentEventText, which
+// extracts the same text from a persisted event for the chat transcript.
+func messageText(payload any) string {
+	decoded, ok := payload.(map[string]any)
+	if !ok {
+		return ""
+	}
+	if text, ok := decoded["text"].(string); ok && text != "" {
+		return text
+	}
+	if item, ok := decoded["item"].(map[string]any); ok {
+		if text, ok := item["text"].(string); ok && text != "" {
+			return text
+		}
+	}
+	if message, ok := decoded["message"].(map[string]any); ok {
+		if content, ok := message["content"].([]any); ok {
+			var parts []string
+			for _, entryAny := range content {
+				entry, ok := entryAny.(map[string]any)
+				if !ok || entry["type"] != "text" {
+					continue
+				}
+				if text, ok := entry["text"].(string); ok && text != "" {
+					parts = append(parts, text)
+				}
+			}
+			if len(parts) > 0 {
+				return strings.Join(parts, "\n")
+			}
+		}
+	}
+	if text, ok := decoded["message"].(string); ok && text != "" {
+		return text
+	}
+	return ""
+}
+
+// isFullyBufferedMessage reports whether a "message" event's raw provider
+// type represents a complete message rather than a streaming delta chunk.
+// Claude's stream_event and Codex's item.started/item.updated carry a
+// message as it is still being assembled; the mock provider's own
+// "assistant.partial" steps do the same for its deterministic demo. Only a
+// complete message can be checked for a question block — checking a partial
+// one risks matching on a fence that has not fully arrived yet.
+func isFullyBufferedMessage(rawType string) bool {
+	switch rawType {
+	case "stream_event", "item.started", "item.updated":
+		return false
+	}
+	return !strings.HasSuffix(rawType, ".partial")
+}
 
 type RunStore interface {
 	CreateRun(context.Context, models.Run, string) (models.Run, bool, error)
@@ -89,6 +188,10 @@ type execution struct {
 	provider providers.Provider
 	handle   providers.RunHandle
 	job      *Job
+	// question is set once a fully-buffered assistant message in this run
+	// carried a studioforge-question fenced block, so the run's final
+	// transition lands on waiting_decision instead of completed.
+	question bool
 }
 
 func New(parent context.Context, store RunStore, hub *events.Hub, leases *resources.Manager, adapters map[string]providers.Provider) *Manager {
@@ -274,13 +377,25 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 				m.transition(context.Background(), j, "cancelling", "cancelled", "cancelled", "", "")
 				return
 			}
-			m.emitEvent(ctx, j, event)
+			m.emitEvent(ctx, e, event)
 		}
 	}
 	result := handle.Wait()
 	_ = m.store.SetRunUsage(ctx, j.RunID, result.SessionID, result.Cost, models.TokenUsage(result.Usage))
 	if result.Err != nil {
 		m.fail(ctx, j, result.Err.Error())
+		return
+	}
+	m.mu.Lock()
+	asksQuestion := e.question
+	m.mu.Unlock()
+	if asksQuestion {
+		// A studioforge-question fenced block appeared during this turn: the
+		// run stops here to let the user pick an option instead of reporting
+		// a normal completion. waiting_decision is resumable exactly like
+		// completed (see database.LatestThreadSession), so the next message —
+		// whether a clicked option or free text — continues this session.
+		m.transition(ctx, j, "running", "waiting_decision", "waiting_decision", "", "")
 		return
 	}
 	m.transition(ctx, j, "running", "completed", "verified", "", "")
@@ -348,7 +463,8 @@ func (m *Manager) emit(run models.Run, agent, eventType, raw string, payload any
 	defer cancel()
 	_, _ = m.hub.Publish(ctx, models.RunEvent{ProjectID: run.ProjectID, RunID: run.ID, AgentID: agent, Type: eventType, RawType: raw, Payload: payload, CreatedAt: time.Now().UTC()})
 }
-func (m *Manager) emitEvent(ctx context.Context, j *Job, event providers.Event) {
+func (m *Manager) emitEvent(ctx context.Context, e *execution, event providers.Event) {
+	j := e.job
 	// Providers report tokens in their own shapes and on their own events
 	// (Claude on assistant messages and the result, Codex on turn.completed),
 	// so the totals are republished once in a normalized usage event and the
@@ -359,6 +475,21 @@ func (m *Manager) emitEvent(ctx context.Context, j *Job, event providers.Event) 
 		// delivered; anything else still has its own payload to publish.
 		if event.Type == "usage" {
 			return
+		}
+	}
+	// A fully-buffered assistant message may carry a studioforge-question
+	// fenced block asking the user to choose between discrete options. When
+	// it does, a "question" event is published alongside the normal message
+	// event (so the transcript still shows what the agent said) and the run
+	// is flagged so its final transition lands on waiting_decision instead
+	// of completed. Streaming delta chunks are skipped: a question fence
+	// that has not fully arrived yet must never be matched early.
+	if event.Type == "message" && isFullyBufferedMessage(event.RawType) {
+		if block, ok := detectQuestion(messageText(event.Payload)); ok {
+			m.mu.Lock()
+			e.question = true
+			m.mu.Unlock()
+			_, _ = m.hub.Publish(ctx, models.RunEvent{ProjectID: j.ProjectID, RunID: j.RunID, AgentID: j.AgentID, Type: "question", RawType: event.RawType, Payload: map[string]any{"question": block.Question, "options": block.Options}, CreatedAt: event.At})
 		}
 	}
 	_, _ = m.hub.Publish(ctx, models.RunEvent{ProjectID: j.ProjectID, RunID: j.RunID, AgentID: j.AgentID, Type: event.Type, RawType: event.RawType, Payload: event.Payload, CreatedAt: event.At})
