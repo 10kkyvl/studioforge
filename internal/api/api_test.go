@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -362,5 +363,69 @@ func TestSSEReplaysPersistedEvents(t *testing.T) {
 	}
 	if !strings.Contains(writer.body.String(), "replayed") || !strings.Contains(writer.body.String(), "id: ") {
 		t.Fatalf("stream=%s", writer.body.String())
+	}
+}
+func TestSSELastEventIDHeaderTakesPriorityOverAfterQueryParam(t *testing.T) {
+	a := newTestAPI(t)
+	appended, err := a.store.AppendEvents(context.Background(), []models.RunEvent{
+		{ProjectID: "demo-obby", RunID: "demo-obby-history", AgentID: "demo-obby-orch", Type: "message", Payload: map[string]string{"text": "seen-already"}},
+		{ProjectID: "demo-obby", RunID: "demo-obby-history", AgentID: "demo-obby-orch", Type: "message", Payload: map[string]string{"text": "not-yet-seen"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	writer := &cancelWriter{cancel: cancel}
+	request := httptest.NewRequest("GET", "http://127.0.0.1:1234/api/v1/events?runId=demo-obby-history&after=0", nil).WithContext(ctx)
+	request.Header.Set("Last-Event-ID", strconv.FormatInt(appended[0].ID, 10))
+	done := make(chan struct{})
+	go func() { a.server.sse(writer, request); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SSE did not stop")
+	}
+	if strings.Contains(writer.body.String(), "seen-already") {
+		t.Fatalf("Last-Event-ID header was not honored, replayed an already-seen event: stream=%s", writer.body.String())
+	}
+	if !strings.Contains(writer.body.String(), "not-yet-seen") {
+		t.Fatalf("expected the event after Last-Event-ID to be replayed: stream=%s", writer.body.String())
+	}
+}
+func TestStaticMissingAssetWithExtensionReturns404(t *testing.T) {
+	a := newTestAPI(t)
+	request := httptest.NewRequest("GET", "http://127.0.0.1:1234/_app/immutable/chunks/DOESNOTEXIST.js", nil)
+	recorder := httptest.NewRecorder()
+	a.handler.ServeHTTP(recorder, request)
+	if recorder.Code != 404 {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+func TestStaticNavigationalRouteFallsBackToIndexHTML(t *testing.T) {
+	a := newTestAPI(t)
+	request := httptest.NewRequest("GET", "http://127.0.0.1:1234/settings", nil)
+	recorder := httptest.NewRecorder()
+	a.handler.ServeHTTP(recorder, request)
+	if recorder.Code != 200 {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if contentType := recorder.Header().Get("Content-Type"); contentType != "text/html; charset=utf-8" {
+		t.Fatalf("content-type=%s", contentType)
+	}
+	if !strings.Contains(strings.ToLower(recorder.Body.String()), "<!doctype html>") {
+		t.Fatalf("body=%s", recorder.Body.String())
+	}
+}
+func TestStaticExistingJSAssetServedWithCorrectContentType(t *testing.T) {
+	a := newTestAPI(t)
+	request := httptest.NewRequest("GET", "http://127.0.0.1:1234/bootstrap.js", nil)
+	recorder := httptest.NewRecorder()
+	a.handler.ServeHTTP(recorder, request)
+	if recorder.Code != 200 {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	contentType := recorder.Header().Get("Content-Type")
+	if !strings.HasPrefix(contentType, "text/javascript") && !strings.HasPrefix(contentType, "application/javascript") {
+		t.Fatalf("content-type=%s", contentType)
 	}
 }

@@ -936,8 +936,14 @@ func (s *Server) sse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, 500, "stream_unsupported", "Streaming is unavailable", nil)
 		return
 	}
-	after, _ := strconv.ParseInt(r.Header.Get("Last-Event-ID"), 10, 64)
-	if value := r.URL.Query().Get("after"); value != "" {
+	// The browser's native EventSource reconnect sends Last-Event-ID and must win
+	// over a stale query-string "after", or reconnects would replay already-seen
+	// events. The query parameter only applies when there is no header, e.g. an
+	// explicit initial deep-link load that isn't a native EventSource reconnect.
+	var after int64
+	if header := r.Header.Get("Last-Event-ID"); header != "" {
+		after, _ = strconv.ParseInt(header, 10, 64)
+	} else if value := r.URL.Query().Get("after"); value != "" {
 		after, _ = strconv.ParseInt(value, 10, 64)
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -1002,16 +1008,53 @@ func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := fs.ReadFile(s.assets, path)
 	if err != nil {
-		body, err = fs.ReadFile(s.assets, "index.html")
+		// Only client-side routes (paths with no file extension, e.g. /settings or
+		// /projects/abc) fall back to index.html so the SvelteKit router can take over.
+		// A missing asset that DOES have an extension (.js, .css, .woff2, ...) is a real
+		// 404: silently serving index.html for it used to make the browser try to execute
+		// HTML as a JS module, and the app never booted.
+		if filepath.Ext(path) != "" {
+			http.NotFound(w, r)
+			return
+		}
+		path = "index.html"
+		body, err = fs.ReadFile(s.assets, path)
 	}
 	if err != nil {
 		http.Error(w, "embedded frontend unavailable", 500)
 		return
 	}
-	if contentType := mime.TypeByExtension(filepath.Ext(path)); contentType != "" {
-		w.Header().Set("Content-Type", contentType)
-	}
+	// path is reassigned to "index.html" above on fallback, so the content type below is
+	// always derived from what was actually written, never from the originally requested path.
+	w.Header().Set("Content-Type", contentTypeFor(path))
 	_, _ = w.Write(body)
+}
+
+// contentTypeFor hardcodes the MIME types for the file kinds the frontend actually ships
+// instead of trusting mime.TypeByExtension: on Windows that function reads type associations
+// out of the registry, and machines with a stripped-down or mangled registry can report bogus
+// types for .js/.css (observed: text/plain). Responses carry X-Content-Type-Options: nosniff
+// (see the security middleware), so a wrong type here doesn't just mislead the browser, it
+// hard-fails module loading. Anything outside this ship list still falls back to the registry.
+func contentTypeFor(path string) string {
+	switch filepath.Ext(path) {
+	case ".js", ".mjs":
+		return "text/javascript; charset=utf-8"
+	case ".css":
+		return "text/css; charset=utf-8"
+	case ".json":
+		return "application/json; charset=utf-8"
+	case ".svg":
+		return "image/svg+xml"
+	case ".woff2":
+		return "font/woff2"
+	case ".html":
+		return "text/html; charset=utf-8"
+	}
+	if contentType := mime.TypeByExtension(filepath.Ext(path)); contentType != "" {
+		return contentType
+	}
+	return "application/octet-stream"
 }
 
 func decodeJSON(r *http.Request, target any) error {
