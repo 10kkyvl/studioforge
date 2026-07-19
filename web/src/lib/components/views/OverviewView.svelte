@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Bot, CircleDollarSign, Gauge, GitBranch, Play, Waypoints } from '@lucide/svelte';
+  import { Bot, CircleDollarSign, Gauge, GitBranch, Play, Plug, Waypoints } from '@lucide/svelte';
   import { formatMoney, locale, translate } from '$lib/i18n';
   import type { Project, Snapshot } from '$lib/types';
 
@@ -7,6 +7,8 @@
   export let project: Project | undefined;
   export let busy: string;
   export let onRun: () => void;
+
+  $: studioMcpCheck = snapshot.diagnostics.dependencies.studioMcp;
 </script>
 
 <section class="page-heading">
@@ -41,6 +43,14 @@
       <Waypoints /><span>{$translate('overview.rojo')}</span><strong
         >{snapshot.diagnostics.dependencies.rojo?.status ?? $translate('common.none')}</strong
       >
+    </article>
+    <article class="panel" class:panel-warning={studioMcpCheck?.status === 'missing'}>
+      <Plug /><span>{$translate('overview.studioMcp')}</span><strong
+        >{studioMcpCheck?.status ?? $translate('common.none')}</strong
+      >
+      {#if studioMcpCheck?.status === 'missing'}
+        <p class="panel-hint">{$translate('overview.studioMcpMissing')}</p>
+      {/if}
     </article>
     <article class="panel">
       <Bot /><span>{$translate('overview.studio')}</span><strong

@@ -269,6 +269,7 @@
           <code>{check.path || id}</code>
           {#if check.version}<small>{check.version}</small>{/if}
           {#if check.message}<p>{check.message}</p>{/if}
+          {#if check.help}<p class="help">{check.help}</p>{/if}
         </section>
       {/each}
     </div>

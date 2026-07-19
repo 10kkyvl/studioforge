@@ -73,6 +73,9 @@ export const en = {
   'overview.git': 'Git checkpointing',
   'overview.rojo': 'Rojo synchronization',
   'overview.studio': 'Studio binding',
+  'overview.studioMcp': 'Studio MCP',
+  'overview.studioMcpMissing':
+    'Update Roblox Studio, open the Assistant menu, then Manage MCP Servers, and enable Studio as MCP server.',
   'team.title': 'Team builder',
   'team.subtitle': 'Provider-neutral roles, models, permissions, and ceilings.',
   'team.permission': 'Permission profile',
@@ -294,6 +297,9 @@ export const ru: Record<TranslationKey, string> = {
   'overview.git': 'Git checkpoints',
   'overview.rojo': 'Синхронизация Rojo',
   'overview.studio': 'Привязка Studio',
+  'overview.studioMcp': 'Studio MCP',
+  'overview.studioMcpMissing':
+    'Обновите Roblox Studio, откройте меню Assistant → Manage MCP Servers и включите Studio как MCP server.',
   'team.title': 'Конструктор команды',
   'team.subtitle': 'Независимые от provider роли, модели, разрешения и лимиты.',
   'team.permission': 'Профиль разрешений',
