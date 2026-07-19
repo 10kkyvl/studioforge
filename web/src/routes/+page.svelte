@@ -80,6 +80,31 @@
   let newProject = { name: '', path: '', description: '', create: true, openStudio: false };
   let disconnect = () => {};
   let restored = false;
+  // The id of the last event this tab actually received, used to replay any
+  // gap (via the SSE `after` param) whenever the stream is reopened, e.g.
+  // after being closed while the tab was hidden.
+  let lastEventId: number | undefined;
+  // True once this tab holds a live subscription registered via connectEvents.
+  // connectEvents/openSharedStream (api.ts) already reuse one shared
+  // EventSource across calls instead of tearing it down, specifically so that
+  // connectStream() below can be invoked repeatedly (on mount, on every
+  // visibilitychange-to-visible, and defensively from ChatView on every chat
+  // send) without thrashing the connection — but only if connectStream()
+  // actually leans on that idempotency instead of working around it. This
+  // flag is what lets it skip re-subscribing when the tab is already
+  // connected.
+  let streaming = false;
+  let statusRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  // Coalesces concurrent refresh() callers (the header button, the debounced
+  // status-event refresh, and every action() handler all call it) onto one
+  // in-flight /snapshot request, so a second click can't queue a second
+  // fetch behind a connection pool that's already maxed out by the SSE
+  // stream (Chrome allows only 6 concurrent connections per origin).
+  let refreshPromise: Promise<void> | null = null;
+  // At most one refresh chained behind the in-flight one, shared by every
+  // caller that arrives while it runs — see refresh() for why they can't just
+  // reuse refreshPromise itself.
+  let queuedRefresh: Promise<void> | null = null;
 
   const nav: { id: View; icon: typeof Activity; key: TranslationKey }[] = [
     { id: 'chat', icon: MessagesSquare, key: 'nav.chat' },
@@ -115,20 +140,116 @@
     restored = true;
     void initialize();
     const keyHandler = (event: KeyboardEvent) => {
-      if (event.altKey && event.key >= '1' && event.key <= '9') {
-        const target = nav[Number(event.key) - 1];
-        if (target) {
-          event.preventDefault();
-          view = target.id;
-        }
+      if (!event.altKey || event.key < '1' || event.key > '9') return;
+      // AltGr (common on non-US/RU keyboards) reports as ctrlKey and altKey
+      // both true on Windows; require a plain Alt combo so it isn't mistaken
+      // for one of these shortcuts.
+      if (event.ctrlKey || event.metaKey) return;
+      if (event.getModifierState && event.getModifierState('AltGraph')) return;
+      // Don't hijack the shortcut while the user is typing into an editable
+      // element (input, textarea, select, or contenteditable).
+      const active = document.activeElement;
+      if (
+        active &&
+        (active.tagName === 'INPUT' ||
+          active.tagName === 'TEXTAREA' ||
+          active.tagName === 'SELECT' ||
+          (active as HTMLElement).isContentEditable)
+      )
+        return;
+      const target = nav[Number(event.key) - 1];
+      if (target) {
+        event.preventDefault();
+        view = target.id;
       }
     };
     window.addEventListener('keydown', keyHandler);
+    // Chrome's 6-connections-per-origin cap (HTTP/1.1, shared across every
+    // tab in the profile) is shared with the standing SSE stream each tab
+    // holds open, so a background tab's stream is pure waste — it can't
+    // update anything the user can see, yet it still occupies a slot needed
+    // by whichever tab IS visible. Closing it while hidden and reopening on
+    // return limits live streams to visible tabs instead of all open ones.
+    // This is purely a resource-conservation optimization, though:
+    // connectStream() no longer gates its first attempt on document.hidden,
+    // so a tab that is hidden for its entire life still gets — and keeps —
+    // a live connection; it just isn't closed-and-reopened by this handler
+    // along the way.
+    const visibilityHandler = () => {
+      if (document.hidden) {
+        disconnect();
+        disconnect = () => {};
+        streaming = false;
+        // EventSource.close() fires no error event, so connectEvents' status
+        // callback never runs on a deliberate close and the presence dot would
+        // keep claiming a live stream that is gone. Say so explicitly.
+        streamOnline = false;
+      } else {
+        connectStream();
+      }
+    };
+    document.addEventListener('visibilitychange', visibilityHandler);
     return () => {
       disconnect();
+      if (statusRefreshTimer) clearTimeout(statusRefreshTimer);
+      document.removeEventListener('visibilitychange', visibilityHandler);
       window.removeEventListener('keydown', keyHandler);
     };
   });
+
+  // (Re)opens the event stream, replaying from lastEventId so a reconnect
+  // never silently drops events. Called unconditionally from initialize() at
+  // mount, from every visibilitychange-to-visible, and defensively from
+  // ChatView's submitRun() on every send — deliberately NEVER gated on
+  // document.hidden. A tab opened in the background (or restored by the
+  // browser) can sit at document.hidden === true for its whole session with
+  // no visibilitychange ever firing, because there is no hidden -> visible
+  // transition to fire it. This function used to bail out early whenever
+  // document.hidden was true, which left exactly that tab permanently
+  // without a live stream: no error, no console warning, just a chat whose
+  // "Working…" never resolved. The visibilitychange handler below still
+  // closes the connection reactively once a tab genuinely becomes hidden (so
+  // an abandoned background tab doesn't hold one of Chrome's 6
+  // connections-per-origin forever) and calls back in here on return — but
+  // establishing a connection in the first place must never depend on that
+  // event ever firing.
+  //
+  // Because it is now called from several places, it must first check
+  // whether this tab is already connected: connectEvents/openSharedStream
+  // (api.ts) reuse a live EventSource instead of recreating it, but that
+  // idempotency only helps if THIS function stops disconnecting before every
+  // call. This tab is normally the sole subscriber, so an unconditional
+  // disconnect() here drops eventSubscribers to zero, which closes the
+  // shared EventSource — i.e. it would still tear down and reopen the
+  // connection on every redundant call, exactly what the shared-stream
+  // design in api.ts was meant to avoid.
+  function connectStream() {
+    if (streaming) return;
+    streamOnline = false;
+    streaming = true;
+    disconnect = connectEvents(
+      (event) => {
+        lastEventId = event.id;
+        events = [...events.slice(-999), event];
+        if (event.type === 'status') scheduleStatusRefresh();
+      },
+      (online) => (streamOnline = online),
+      lastEventId,
+    );
+  }
+
+  // Debounced: an agent emits a burst of status events in quick succession
+  // while working, and firing one /snapshot request per event is exactly the
+  // kind of queue that exhausts the connection pool the SSE stream already
+  // eats into. Only the last event in a burst actually triggers a refresh,
+  // and the timer restarts on every event rather than stacking timeouts.
+  function scheduleStatusRefresh() {
+    if (statusRefreshTimer) clearTimeout(statusRefreshTimer);
+    statusRefreshTimer = setTimeout(() => {
+      statusRefreshTimer = undefined;
+      void refresh(false);
+    }, 120);
+  }
 
   async function initialize() {
     loading = true;
@@ -136,13 +257,13 @@
     try {
       await bootstrapFromHash();
       await refresh();
-      disconnect = connectEvents(
-        (event) => {
-          events = [...events.slice(-999), event];
-          if (event.type === 'status') window.setTimeout(() => void refresh(false), 120);
-        },
-        (online) => (streamOnline = online),
-      );
+      // refresh() swallows getSnapshot() failures (see startRefresh) so that a
+      // background poll never throws an unhandled rejection; that means the
+      // await above always resolves, even when the initial load actually
+      // failed. Only open the stream once a snapshot has actually landed —
+      // otherwise we'd hold open a live connection behind the "unavailable"
+      // error screen until the user manually retries.
+      if (snapshot) connectStream();
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
     } finally {
@@ -151,22 +272,49 @@
   }
 
   async function refresh(showSpinner = false) {
-    if (showSpinner) busy = 'refresh';
-    try {
-      const nextSnapshot = await getSnapshot();
-      snapshot = nextSnapshot;
-      if (!selectedProjectId)
-        // The remembered project wins over "first in the list", but only if it
-        // still exists — projects can be removed from another window, or the
-        // data directory swapped entirely, between sessions.
-        selectedProjectId =
-          loadProject(nextSnapshot.projects) || nextSnapshot.projects[0]?.id || '';
-      const configured = nextSnapshot.settings.locale;
-      locale.set(configured === 'ru' || configured === 'en' ? configured : detectLocale());
-      if (!selectedRunId && nextSnapshot.runs[0]) selectedRunId = nextSnapshot.runs[0].id;
-    } finally {
-      if (showSpinner) busy = '';
+    // A caller arriving mid-flight must not simply reuse refreshPromise: that
+    // request may have been issued before the caller's own mutation landed, so
+    // its snapshot would be missing the very thing the caller just created.
+    // They instead share ONE follow-up request chained after the current one —
+    // enough for every caller to observe its own write, while still never
+    // stacking a request per caller onto an already-saturated connection pool.
+    if (refreshPromise) {
+      queuedRefresh ??= refreshPromise.then(() => {
+        queuedRefresh = null;
+        return startRefresh(showSpinner);
+      });
+      return queuedRefresh;
     }
+    return startRefresh(showSpinner);
+  }
+
+  function startRefresh(showSpinner: boolean): Promise<void> {
+    if (showSpinner) busy = 'refresh';
+    refreshPromise = (async () => {
+      try {
+        const nextSnapshot = await getSnapshot();
+        snapshot = nextSnapshot;
+        if (!selectedProjectId)
+          // The remembered project wins over "first in the list", but only if it
+          // still exists — projects can be removed from another window, or the
+          // data directory swapped entirely, between sessions.
+          selectedProjectId =
+            loadProject(nextSnapshot.projects) || nextSnapshot.projects[0]?.id || '';
+        const configured = nextSnapshot.settings.locale;
+        locale.set(configured === 'ru' || configured === 'en' ? configured : detectLocale());
+        if (!selectedRunId && nextSnapshot.runs[0]) selectedRunId = nextSnapshot.runs[0].id;
+      } catch (cause) {
+        // refresh() is also called directly from click handlers (the header
+        // button, FirstRunWizard, SettingsView) with no surrounding
+        // try/catch, unlike action() below — without this it was an
+        // unhandled rejection and the failure was invisible to the user.
+        error = cause instanceof Error ? cause.message : String(cause);
+      } finally {
+        if (showSpinner) busy = '';
+        refreshPromise = null;
+      }
+    })();
+    return refreshPromise;
   }
 
   async function finishWizard() {
@@ -448,6 +596,7 @@
               selectedRunId = id;
             }}
             onSynced={() => void refresh()}
+            onEnsureStream={connectStream}
           />
         {:else if view === 'projects'}
           <ProjectsView

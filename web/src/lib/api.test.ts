@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   APIError,
   attachmentUrl,
+  connectEvents,
   getLead,
   getPace,
   getStudioStatus,
@@ -202,5 +203,42 @@ describe('attachment endpoints', () => {
     expect(attachmentUrl('proj-1', '.studioforge/attachments/2026-07-19-abc123.png')).toBe(
       '/api/v1/projects/proj-1/attachments/2026-07-19-abc123.png',
     );
+  });
+});
+
+class FakeEventSource {
+  static instances: FakeEventSource[] = [];
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSED = 2;
+  readyState = FakeEventSource.CONNECTING;
+  onopen: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  closeCalled = false;
+  constructor(public url: string) {
+    FakeEventSource.instances.push(this);
+  }
+  addEventListener() {}
+  close() {
+    this.closeCalled = true;
+    this.readyState = FakeEventSource.CLOSED;
+  }
+}
+
+describe('connectEvents', () => {
+  it('still closes the connection on disconnect after a transient error the browser auto-recovers from', () => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('EventSource', FakeEventSource);
+    const disconnect = connectEvents(
+      () => {},
+      () => {},
+    );
+    const stream = FakeEventSource.instances[0];
+    stream.onerror?.();
+    stream.readyState = FakeEventSource.OPEN;
+    stream.onopen?.();
+    disconnect();
+    expect(stream.closeCalled).toBe(true);
+    expect(FakeEventSource.instances).toHaveLength(1);
   });
 });
