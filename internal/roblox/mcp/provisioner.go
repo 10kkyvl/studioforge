@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -52,6 +53,28 @@ type Provisioner struct {
 	// client — the launcher lists no instances in both cases. A nil func means
 	// the question cannot be asked and the vaguer wording is used.
 	Running func(context.Context) bool
+	// attachWindow and retryEvery pace the wait for the Studio plugin to attach
+	// to a freshly spawned launcher; tests shrink them. See probe.
+	attachWindow time.Duration
+	retryEvery   time.Duration
+}
+
+// The plugin dials the WS host a beat after the launcher spawns, so the first
+// listing on a fresh launcher routinely fails. attachWait bounds how long a
+// probe waits for the attach; past it a running Studio whose plugin never
+// showed up means another client holds the WS host.
+const attachWait = 8 * time.Second
+
+// errWSHostUnreachable means Studio is running but its plugin never attached to
+// our launcher within the attach window — the signature of a WS host held by
+// another MCP client.
+var errWSHostUnreachable = errors.New("Studio MCP plugin never attached to the launcher")
+
+// notConnected recognises the launcher's tool error for a missing plugin
+// connection, which arrives as a well-formed tool result rather than a distinct
+// error code.
+func notConnected(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "Not connected to the WS host")
 }
 
 // blocked reports whether an empty instance list means "another MCP client owns
@@ -115,6 +138,9 @@ func (p *Provisioner) Provision(ctx context.Context, runID, permissionProfile st
 		return Grant{}
 	}
 	instances, state, err := p.probe(ctx, launch)
+	if errors.Is(err, errWSHostUnreachable) {
+		return Grant{Notice: hostTakenNotice}
+	}
 	if err != nil {
 		return Grant{Notice: "Studio MCP withheld: " + err.Error()}
 	}
@@ -296,6 +322,9 @@ func (p *Provisioner) Status(ctx context.Context, placeName string) (Status, err
 		return Status{}, nil
 	}
 	instances, _, err := p.probe(ctx, launch)
+	if errors.Is(err, errWSHostUnreachable) {
+		return Status{Blocked: true}, nil
+	}
 	if err != nil {
 		return Status{}, err
 	}
@@ -346,7 +375,34 @@ func (p *Provisioner) probe(ctx context.Context, launch LaunchConfig) ([]Instanc
 	// zero tools for as long as it lives, yet its calls still succeed through
 	// the host. Asking anyway would also cost ten seconds per probe, because the
 	// launcher waits that long for a push that never comes.
+	var attach <-chan time.Time
 	instances, err := client.ListStudios(ctx)
+	for notConnected(err) {
+		// No Studio process means no plugin will ever attach: the ordinary
+		// "Studio closed" case, silent and without sitting out the window.
+		if !p.blocked(ctx) {
+			return nil, "", nil
+		}
+		if attach == nil {
+			window := p.attachWindow
+			if window <= 0 {
+				window = attachWait
+			}
+			attach = time.After(window)
+		}
+		retry := p.retryEvery
+		if retry <= 0 {
+			retry = time.Second
+		}
+		select {
+		case <-time.After(retry):
+		case <-attach:
+			return nil, "", errWSHostUnreachable
+		case <-ctx.Done():
+			return nil, "", errWSHostUnreachable
+		}
+		instances, err = client.ListStudios(ctx)
+	}
 	if err != nil {
 		if IsMethodNotFound(err) {
 			return nil, "", fmt.Errorf("Studio MCP exposes no instance listing; update Roblox Studio")

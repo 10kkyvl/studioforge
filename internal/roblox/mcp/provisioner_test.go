@@ -185,6 +185,85 @@ func TestProvisionScopesToolsToTheProfile(t *testing.T) {
 	}
 }
 
+// attachingTransport answers list_roblox_studios with the launcher's "Not
+// connected to the WS host" tool error until the plugin attaches, which in a
+// real handoff takes a second or two after the launcher spawns.
+type attachingTransport struct {
+	studioTransport
+	failures int // calls to fail before the plugin attaches; negative fails forever
+}
+
+func (a *attachingTransport) Call(ctx context.Context, name string, args map[string]any) (json.RawMessage, error) {
+	if name == "list_roblox_studios" && a.failures != 0 {
+		if a.failures > 0 {
+			a.failures--
+		}
+		return json.RawMessage(`{"content":[{"type":"text","text":"Not connected to the WS host"}],"isError":true}`), nil
+	}
+	return a.studioTransport.Call(ctx, name, args)
+}
+
+// The plugin attaches to a freshly spawned launcher a beat after the probe's
+// first call, so a single immediate listing withheld Studio on every run.
+func TestProbeWaitsForThePluginToAttach(t *testing.T) {
+	p := newProvisioner(t, &attachingTransport{
+		studioTransport: studioTransport{instances: []Instance{{ID: "one", Name: "Place.rbxl"}}},
+		failures:        2,
+	})
+	p.Running = func(context.Context) bool { return true }
+	p.retryEvery = 10 * time.Millisecond
+	grant := p.Provision(context.Background(), "run-attach", "workspace-write", Target{})
+	if grant.ConfigPath == "" {
+		t.Fatalf("Studio withheld though the plugin attached after a retry: %q", grant.Notice)
+	}
+}
+
+// A plugin that never attaches while Studio runs means another client holds the
+// WS host; the notice must say so instead of echoing the raw launcher error.
+func TestProvisionExplainsAPluginThatNeverAttaches(t *testing.T) {
+	p := newProvisioner(t, &attachingTransport{failures: -1})
+	p.Running = func(context.Context) bool { return true }
+	p.attachWindow = 100 * time.Millisecond
+	p.retryEvery = 10 * time.Millisecond
+	grant := p.Provision(context.Background(), "run-held", "workspace-write", Target{})
+	if grant.ConfigPath != "" {
+		t.Fatal("an unreachable WS host must not receive access")
+	}
+	if !strings.Contains(grant.Notice, "another MCP client") {
+		t.Errorf("notice must name the cause the operator can act on, got %q", grant.Notice)
+	}
+}
+
+// The same launcher error with no Studio process is the ordinary "Studio
+// closed" case: stay silent and do not sit out the attach window.
+func TestProvisionStaysSilentWhenNotConnectedAndStudioClosed(t *testing.T) {
+	p := newProvisioner(t, &attachingTransport{failures: -1})
+	p.Running = func(context.Context) bool { return false }
+	start := time.Now()
+	grant := p.Provision(context.Background(), "run-closed", "workspace-write", Target{})
+	if grant.ConfigPath != "" || grant.Notice != "" {
+		t.Errorf("a closed Studio must stay silent, got path=%q notice=%q", grant.ConfigPath, grant.Notice)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Error("a closed Studio must not wait out the attach window")
+	}
+}
+
+// The badge must show the held connection, not an error.
+func TestStatusReportsAnUnattachedPluginAsBlocked(t *testing.T) {
+	p := newProvisioner(t, &attachingTransport{failures: -1})
+	p.Running = func(context.Context) bool { return true }
+	p.attachWindow = 100 * time.Millisecond
+	p.retryEvery = 10 * time.Millisecond
+	status, err := p.Status(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Open != 0 || !status.Blocked {
+		t.Errorf("expected open=0 blocked=true, got open=%d blocked=%v", status.Open, status.Blocked)
+	}
+}
+
 // hangingTransport accepts the connection and then never answers, which is what
 // a Studio busy compiling or showing a modal looks like.
 type hangingTransport struct{ ctxSeen chan struct{} }
