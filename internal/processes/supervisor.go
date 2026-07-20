@@ -31,11 +31,11 @@ type Result struct {
 	Err                 error
 }
 type Process struct {
-	spec       Spec
-	cmd        *exec.Cmd
-	lines      chan Line
-	done       chan struct{}
-	cancel     context.CancelFunc
+	spec         Spec
+	cmd          *exec.Cmd
+	lines        chan Line
+	done         chan struct{}
+	cancel       context.CancelFunc
 	mu           sync.RWMutex
 	result       Result
 	once         sync.Once
@@ -143,7 +143,7 @@ func (p *Process) collect(reader io.Reader, stream string) {
 		}
 	}
 }
-func (p *Process) Lines() <-chan Line { return p.lines }
+func (p *Process) Lines() <-chan Line  { return p.lines }
 func (p *Process) DroppedLines() int64 { return p.droppedLines.Load() }
 func (p *Process) PID() int {
 	if p.cmd.Process == nil {

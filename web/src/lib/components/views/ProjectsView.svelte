@@ -1,7 +1,14 @@
 <script lang="ts">
   import { Archive, Bot, Boxes, FolderKanban, Play, Plus, Rocket, Search } from '@lucide/svelte';
   import { brand } from '$lib/brand';
-  import { cacheTokens, formatMoney, formatTokens, locale, spendTokens, translate } from '$lib/i18n';
+  import {
+    cacheTokens,
+    formatMoney,
+    formatTokens,
+    locale,
+    spendTokens,
+    translate,
+  } from '$lib/i18n';
   import type { Project } from '$lib/types';
 
   export let projects: Project[];

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { extractQuestionFence, normalizeQuestionPayload, shouldAnswerQuestion } from './questionCard';
+import {
+  extractQuestionFence,
+  normalizeQuestionPayload,
+  shouldAnswerQuestion,
+} from './questionCard';
 
 describe('normalizeQuestionPayload', () => {
   it('normalizes a well-formed payload, defaulting a missing description to empty', () => {

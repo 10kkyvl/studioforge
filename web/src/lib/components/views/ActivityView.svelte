@@ -1,5 +1,12 @@
 <script lang="ts">
-  import { cacheTokens, formatMoney, formatTokens, locale, spendTokens, translate } from '$lib/i18n';
+  import {
+    cacheTokens,
+    formatMoney,
+    formatTokens,
+    locale,
+    spendTokens,
+    translate,
+  } from '$lib/i18n';
   import type { Run } from '$lib/types';
 
   export let runs: Run[];

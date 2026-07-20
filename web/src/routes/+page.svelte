@@ -118,7 +118,10 @@
 
   $: projects = snapshot?.projects ?? [];
   $: activeProjects = projects.filter((project) => !project.archived);
-  $: if (activeProjects.length && !activeProjects.some((project) => project.id === selectedProjectId)) {
+  $: if (
+    activeProjects.length &&
+    !activeProjects.some((project) => project.id === selectedProjectId)
+  ) {
     selectedProjectId = activeProjects[0].id;
   }
   $: selectedProject =

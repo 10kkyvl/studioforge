@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { cacheTokens, en, formatDate, formatMoney, formatTokens, ru, spendTokens, totalTokens } from './i18n';
+import {
+  cacheTokens,
+  en,
+  formatDate,
+  formatMoney,
+  formatTokens,
+  ru,
+  spendTokens,
+  totalTokens,
+} from './i18n';
 
 describe('i18n catalogs', () => {
   it('have exact key parity', () => expect(Object.keys(ru).sort()).toEqual(Object.keys(en).sort()));
