@@ -160,8 +160,6 @@ cannot reach the behavior below through the UI or CLI, even though the code exis
   endpoint exposes them. `DiffHead`, on the same `Client`, is now wired — see the Git section of the
   component map above. (`internal/gitops` is a separate package from `internal/gitcheckpoint`, which
   has always been wired.)
-- **Real Studio instance discovery** — the Studio Sessions view is not populated from a live launcher
-  probe; its rows are `--mock` demo data only.
 
 ## Process boundaries
 
@@ -257,6 +255,25 @@ outcome is propagated one hop up (`corrected` or `correction_failed` on its dire
 the agent's `max_correction_runs`. The loop renews the project's write lease itself, on its own ticker
 sized to a safe fraction of the lease manager's configured TTL (`resources.Manager.TTL`), because the
 run's ordinary 5-second heartbeat loop stops draining once the provider process has already exited.
+
+**Real Studio session discovery** (`mcp.Provisioner.ListSessions`, `POST /api/v1/studio/sessions/refresh`,
+`internal/app/studiosessions.go`) is a third kind of daemon-initiated Studio MCP connection, on demand
+rather than per-run: it lists every open instance via `list_roblox_studios`, then — unlike `Provision` and
+`Validate` — deliberately does *not* refuse on more than one open instance, since showing every one of
+them is the whole point of a listing rather than an access grant. For each instance it best-effort selects
+it (`set_active_studio`) and reads `get_studio_state` to classify a play/edit state; a failure on one
+instance leaves that instance's state unknown rather than dropping it from the list or failing the whole
+pass. `internal/app.resolveSessionProjects` matches each discovered instance's reported name against every
+registered project's expected place name (`studio.PlaceName`, the same rule `Provision`'s `Target` already
+matches on); an unambiguous match auto-binds a brand-new instance to that project.
+`database.Store.UpsertRealStudioSessions` then replaces the daemon's view of real (non-mock, `mock=0`)
+sessions with the freshly discovered set — deleting any instance no longer open — while guaranteeing an
+instance already bound to a project (whether by a previous auto-match or an operator's manual
+**Bind project** action, `POST /api/v1/studios/{id}/bind`) keeps that binding regardless of what a later
+pass resolves for it. Nothing polls the launcher in the background; every refresh is either the operator's
+own click or a probe explicitly requested through the endpoint, because each one spawns a launcher process
+that competes for Studio's single WS host slot. Under `--mock`, the refresh hook is never wired at all, so
+the Studio Sessions view keeps showing only the seeded demo rows.
 
 ## Data flow: one chat message, end to end
 

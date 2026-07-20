@@ -15,8 +15,6 @@ adding new surface area:
   (`internal/gitops.SafeRollback`/`Tag` — `Status` and `DiffHead` are wired). Rojo live-sync sessions
   (`internal/rojo` session manager) are wired (`POST`/`DELETE /api/v1/projects/{id}/sync`); recent log
   lines from a live session are not yet surfaced to the API or UI.
-- Replace the demo-only rows in the Studio Sessions view with real Roblox Studio instance discovery;
-  today those rows are seeded only by the mock demo.
 - Add automatic pruning for persisted run events. Retention is schema-ready today but depends on
   manual database maintenance.
 
@@ -48,3 +46,7 @@ description if it ever does.
   already provides natively.
 - Autonomous, long-running agent loops beyond the bounded correction-run chain the validation loop
   now schedules.
+- Background polling for the Studio Sessions view, instead of the operator's own **Refresh** click.
+  Deliberately not done yet: every probe spawns a launcher process that competes with a running agent
+  for Studio's single WS host slot, so an unattended poll interval trades that risk for convenience
+  this alpha does not yet need.

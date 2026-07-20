@@ -296,6 +296,37 @@ automatically before a run** in Settings).
 | Badge reads "Playtest inconclusive" every time | The console produced no usable text, or Studio became unreachable mid-playtest (closed, crashed, or another MCP client took the connection) — this is fail-open by design, not a bug; check `docs/KNOWN_LIMITATIONS.md` for the heuristic classifier's caveats. |
 | No correction run appears after a failure | Check the agent's **Max correction runs** — a value of 0 disables corrections entirely, and a lineage that already reached the limit stops scheduling more. |
 
+## Track D: real Studio session discovery
+
+This does not require a run at all — just an open Roblox Studio holding some project's place (see
+**Open in Studio** on a project card).
+
+1. Open the **Studio Sessions** view and click **Refresh**. This is a manual action deliberately: every
+   refresh spawns the Studio MCP launcher, which competes with a running agent for Studio's single WS
+   host slot, so nothing polls it in the background.
+2. A real, open Studio instance now appears as a card showing its reported name, play/edit state, and
+   (if its name unambiguously matches a registered project's expected place file name) that project
+   already selected in the **Bind project** dropdown.
+3. For an instance that did not auto-match, pick a project manually from **Bind project**. Click
+   **Refresh** again — the manual choice is not overridden by the new discovery pass.
+4. With no Studio MCP launcher installed at all, the view shows **Studio MCP not detected** instead of
+   an empty list or an error.
+
+### Expected output
+
+- Every open Studio instance appears as its own card, even with several open at once — this view lists,
+  it does not gate access the way a run's own Studio grant does.
+- A manual **Bind project** choice survives repeated refreshes.
+- Under `--mock`, **Refresh** is a no-op; the seeded demo rows are unaffected.
+
+### If it does not work
+
+| Symptom | Check |
+|---|---|
+| "Studio MCP not detected" always shows, even with Studio open | Confirm Roblox Studio's own MCP launcher is installed/enabled (`docs/KNOWN_LIMITATIONS.md` — this is the same launcher detection `Provision` uses); an operator-configured `studio_mcp_path` override in Settings may also be pointed at the wrong location. |
+| An instance's play state is blank | Best-effort only — a failure reading that one instance's state leaves it unknown rather than dropping the instance from the list. |
+| A newly opened Studio never auto-binds | Its reported file name must exactly match the registered project's expected place name (case-insensitively); a place opened from somewhere other than **Open in Studio** will not match, and needs a manual **Bind project** instead. |
+
 ## See also
 
 - [GETTING_STARTED.md](GETTING_STARTED.md) — installation and first run.

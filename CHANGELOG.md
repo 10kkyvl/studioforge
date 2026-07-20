@@ -25,6 +25,15 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   folded into the prompt. A run's `validation` field (`none`/`passed`/`failed`/`inconclusive`/
   `corrected`/`correction_failed`) and correction-run linkage (`parentRunId`/`correctionDepth`) are
   now part of every run record and shown as a badge and link on the Runs view.
+- Real Studio session discovery. The Studio Sessions view's new **Refresh** button
+  (`POST /api/v1/studio/sessions/refresh`) opens a live Studio MCP connection, lists every open Roblox
+  Studio instance, and persists them — replacing the `--mock`-only demo rows the view previously
+  always showed on a real install. Unlike granting Studio access to a run, this listing deliberately
+  does not refuse when more than one instance is open. An instance is auto-bound to a registered
+  project when its reported name unambiguously matches that project's expected place file name, and a
+  later refresh never overrides an existing manual **Bind project** choice. Refresh is manual, not a
+  background poll, and is a no-op under `--mock`. An absent Studio MCP launcher now shows a clear
+  "Studio MCP not detected" state instead of an empty list.
 
 ## [0.2.0-alpha.1] - 2026-07-20
 

@@ -113,6 +113,21 @@ directly, and does not open any listener other than the one loopback (or explici
   further gated behind an explicit per-agent opt-in (`validate_after_run`, off by default) and only
   triggers when the run's own Studio grant succeeded, so a `read-only` run, a Codex run, a plan-mode
   run, or an agent that never opted in never causes the daemon to touch Play mode on its own.
+- **Real Studio session discovery is a third kind of daemon-initiated Studio MCP connection**
+  (`internal/roblox/mcp/sessions.go`, `Provisioner.ListSessions`), run only on explicit request
+  (`POST /api/v1/studio/sessions/refresh`) rather than per-run or on a background timer. It calls
+  exactly three read-only-tier tools — `list_roblox_studios`, `set_active_studio`,
+  `get_studio_state` — never a tool that changes the open place or reaches beyond it, and it is not
+  gated by an agent's permission profile at all, because it never runs as part of a Claude or Codex
+  run in the first place. Unlike `Provision` and `Validate`, it deliberately does **not** refuse when
+  more than one Studio instance is open: showing every open instance is what a listing view is for,
+  not an access grant, so the fail-closed-on-ambiguity rule that governs Studio *access* does not
+  apply here. A discovered instance is auto-bound to a registered project only when its reported name
+  unambiguously matches that project's expected place file name (the same `PlaceName` rule
+  `Provision`'s `Target` already matches on), and only when it was not already bound — an existing
+  manual **Bind project** choice (`POST /api/v1/studios/{id}/bind`) is never overridden by a later
+  refresh. Under `--mock`, the refresh hook is never wired at all, so a mock install cannot spawn a
+  real launcher process by clicking it.
 
 ## Command execution
 
