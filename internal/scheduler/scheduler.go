@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/10kkyvl/studioforge/internal/events"
+	"github.com/10kkyvl/studioforge/internal/memory"
 	"github.com/10kkyvl/studioforge/internal/models"
 	"github.com/10kkyvl/studioforge/internal/providers"
 	"github.com/10kkyvl/studioforge/internal/resources"
@@ -154,6 +155,12 @@ func (m *Manager) SetMCPProvisioner(p MCPProvisioner) {
 	m.mu.Unlock()
 }
 
+func (m *Manager) SetMemory(store *memory.Store) {
+	m.mu.Lock()
+	m.memoryStore = store
+	m.mu.Unlock()
+}
+
 func (m *Manager) Diagnose(ctx context.Context, provider string) (providers.Diagnostics, bool) {
 	m.mu.Lock()
 	adapter, ok := m.providers[provider]
@@ -173,6 +180,7 @@ type Manager struct {
 	providers                                                     map[string]providers.Provider
 	globalLimit, perProjectLimit, perProviderLimit, perModelLimit int
 	provision                                                     MCPProvisioner
+	memoryStore                                                   *memory.Store
 	mu                                                            sync.Mutex
 	queue                                                         *fairQueue
 	active                                                        map[string]*execution
@@ -398,7 +406,29 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 		m.transition(ctx, j, "running", "waiting_decision", "waiting_decision", "", "")
 		return
 	}
+	m.mu.Lock()
+	mem := m.memoryStore
+	m.mu.Unlock()
+	if mem != nil {
+		entry := memory.Entry{ProjectID: j.ProjectID, RunID: j.RunID, AgentID: j.AgentID, Content: truncate(j.Prompt, 2000), Summary: truncate(firstLine(j.Prompt), 140), Source: "run"}
+		if err := mem.Put(ctx, entry); err != nil {
+			slog.Warn("failed to persist run memory", "run_id", j.RunID, "error", err)
+		}
+	}
 	m.transition(ctx, j, "running", "completed", "verified", "", "")
+}
+func firstLine(s string) string {
+	if idx := strings.IndexAny(s, "\r\n"); idx >= 0 {
+		return s[:idx]
+	}
+	return s
+}
+func truncate(s string, limit int) string {
+	r := []rune(s)
+	if len(r) <= limit {
+		return s
+	}
+	return string(r[:limit])
 }
 func first(values []string) string {
 	if len(values) == 0 {

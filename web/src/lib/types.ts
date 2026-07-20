@@ -86,6 +86,7 @@ export type Run = TokenUsage & {
   projectId: string;
   agentId: string;
   taskId?: string;
+  threadId?: string;
   provider: string;
   modelAlias: string;
   status: string;
@@ -95,6 +96,11 @@ export type Run = TokenUsage & {
   cost: number;
   createdAt: string;
   updatedAt: string;
+};
+export type RunDiff = {
+  diff: string;
+  status?: string;
+  note?: string;
 };
 export type RunEvent = {
   id: number;

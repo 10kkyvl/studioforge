@@ -117,7 +117,12 @@
   $: if (restored) saveProject(selectedProjectId);
 
   $: projects = snapshot?.projects ?? [];
-  $: selectedProject = projects.find((project) => project.id === selectedProjectId) ?? projects[0];
+  $: activeProjects = projects.filter((project) => !project.archived);
+  $: if (activeProjects.length && !activeProjects.some((project) => project.id === selectedProjectId)) {
+    selectedProjectId = activeProjects[0].id;
+  }
+  $: selectedProject =
+    activeProjects.find((project) => project.id === selectedProjectId) ?? activeProjects[0];
   $: selectedRun = snapshot?.runs.find((run) => run.id === selectedRunId);
   $: selectedEvents = events.filter((event) => event.runId === selectedRunId).slice(-250);
 
@@ -528,7 +533,7 @@
           ><span>{$translate('common.project')}</span><select
             bind:value={selectedProjectId}
             aria-label={$translate('common.project')}
-            >{#each projects as project}<option value={project.id}>{project.name}</option
+            >{#each activeProjects as project}<option value={project.id}>{project.name}</option
               >{/each}</select
           ></label
         >
@@ -574,6 +579,7 @@
             tasks={snapshot.tasks.filter(
               (t) => selectedProject && t.projectId === selectedProject.id,
             )}
+            runs={snapshot.runs}
             {agentName}
             {statusLabel}
             onSent={(id) => {

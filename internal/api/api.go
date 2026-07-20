@@ -25,6 +25,7 @@ import (
 	"github.com/10kkyvl/studioforge/internal/diagnostics"
 	"github.com/10kkyvl/studioforge/internal/events"
 	"github.com/10kkyvl/studioforge/internal/gitcheckpoint"
+	"github.com/10kkyvl/studioforge/internal/memory"
 	"github.com/10kkyvl/studioforge/internal/models"
 	"github.com/10kkyvl/studioforge/internal/platform/toolpath"
 	"github.com/10kkyvl/studioforge/internal/projects"
@@ -41,6 +42,14 @@ var apiFiles embed.FS
 // *studio.Opener satisfies it; tests substitute a fake so no Studio is spawned.
 type StudioOpener interface {
 	OpenProject(ctx context.Context, projectPath, name, id string) (placePath string, err error)
+}
+
+type Differ interface {
+	DiffHead(ctx context.Context, projectPath string) (string, error)
+}
+
+type Memory interface {
+	Search(ctx context.Context, projectID, query string, limit int) ([]memory.Entry, error)
 }
 
 type Server struct {
@@ -64,6 +73,8 @@ type Server struct {
 	studio       StudioOpener
 	studioStatus func(context.Context, string) (StudioStatus, error)
 	syncer       Syncer
+	differ       Differ
+	memory       Memory
 }
 type Dependencies struct {
 	Store                *database.Store
@@ -80,6 +91,8 @@ type Dependencies struct {
 	Studio               StudioOpener
 	StudioStatus         func(context.Context, string) (StudioStatus, error)
 	Sync                 Syncer
+	Diff                 Differ
+	Memory               Memory
 }
 
 func New(d Dependencies) (*Server, error) {
@@ -90,7 +103,7 @@ func New(d Dependencies) (*Server, error) {
 	if d.Logger == nil {
 		d.Logger = slog.Default()
 	}
-	return &Server{store: d.Store, db: d.DB, scheduler: d.Scheduler, hub: d.Hub, doctor: d.Doctor, sessions: d.Sessions, guard: d.Guard, safeMode: d.SafeMode, allowedHost: d.AllowedHost, dataDir: d.DataDir, logger: d.Logger, applySetting: d.ApplySetting, studio: d.Studio, studioStatus: d.StudioStatus, syncer: d.Sync, assets: assets, csp: contentSecurityPolicy(assets)}, nil
+	return &Server{store: d.Store, db: d.DB, scheduler: d.Scheduler, hub: d.Hub, doctor: d.Doctor, sessions: d.Sessions, guard: d.Guard, safeMode: d.SafeMode, allowedHost: d.AllowedHost, dataDir: d.DataDir, logger: d.Logger, applySetting: d.ApplySetting, studio: d.Studio, studioStatus: d.StudioStatus, syncer: d.Sync, differ: d.Diff, memory: d.Memory, assets: assets, csp: contentSecurityPolicy(assets)}, nil
 }
 
 func contentSecurityPolicy(assets fs.FS) string {
@@ -128,6 +141,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/threads/{threadId}/messages", s.threadMessages)
 	mux.HandleFunc("POST /api/v1/runs", s.createRun)
 	mux.HandleFunc("POST /api/v1/runs/{id}/{action}", s.runAction)
+	mux.HandleFunc("GET /api/v1/runs/{id}/diff", s.runDiff)
 	mux.HandleFunc("POST /api/v1/studios/{id}/bind", s.bindStudio)
 	mux.HandleFunc("POST /api/v1/backups", s.backup)
 	mux.HandleFunc("GET /api/v1/openapi.yaml", s.openapi)
@@ -792,6 +806,13 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	projectContext := projects.LoadContext(project.Path)
+	if s.memory != nil {
+		if entries, err := s.memory.Search(r.Context(), project.ID, body.Prompt, 5); err != nil {
+			s.logger.Warn("memory search failed", "project_id", project.ID, "error", err)
+		} else if block := memoryBlock(entries); block != "" {
+			projectContext = strings.TrimSpace(projectContext + "\n\n" + block)
+		}
+	}
 	var subagents []providers.Subagent
 	if strings.Contains(strings.ToLower(agent.Role), "orchestrator") {
 		for _, candidate := range enabled {
@@ -827,6 +848,23 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, run)
 }
 
+func memoryBlock(entries []memory.Entry) string {
+	var b strings.Builder
+	b.WriteString("## Relevant project memory\n\n")
+	found := false
+	for _, entry := range entries {
+		summary := strings.TrimSpace(entry.Summary)
+		if summary == "" {
+			continue
+		}
+		b.WriteString("- " + summary + "\n")
+		found = true
+	}
+	if !found {
+		return ""
+	}
+	return strings.TrimSpace(b.String())
+}
 func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 	id, action := r.PathValue("id"), r.PathValue("action")
 	// Safe mode disables AI workers. Pause and cancel stay available because they only

@@ -14,6 +14,10 @@ const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled', 'waiting_
 // run finishing and the progress strip vanishes mid-run.
 const SCHEDULER_STATE = 'scheduler.state';
 
+export function isRunTerminal(status: string): boolean {
+  return TERMINAL_STATUSES.has(status);
+}
+
 /** Reports whether this event is the scheduler declaring `runId` finished. */
 export function endsRun(event: RunEvent, runId: string): boolean {
   if (!runId || event.runId !== runId) return false;

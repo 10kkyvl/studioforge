@@ -2,6 +2,7 @@ import type {
   ChatMessage,
   ChatThread,
   DetectedPaths,
+  RunDiff,
   RunEvent,
   Snapshot,
   StudioStatus,
@@ -104,6 +105,7 @@ export const setLead = (projectId: string, agentId: string): Promise<void> =>
   post<{ agentId: string }>(`/projects/${projectId}/lead`, { agentId }).then(() => undefined);
 export const getPace = (projectId: string) =>
   request<{ typicalSeconds: number; samples: number }>(`/projects/${projectId}/pace`);
+export const getRunDiff = (runId: string) => request<RunDiff>(`/runs/${runId}/diff`);
 export const getStudioStatus = (projectId?: string) =>
   request<StudioStatus>(
     projectId ? `/studio-status?project=${encodeURIComponent(projectId)}` : '/studio-status',

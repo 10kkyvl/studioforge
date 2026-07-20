@@ -19,6 +19,8 @@ import (
 	"github.com/10kkyvl/studioforge/internal/database"
 	"github.com/10kkyvl/studioforge/internal/diagnostics"
 	"github.com/10kkyvl/studioforge/internal/events"
+	"github.com/10kkyvl/studioforge/internal/gitops"
+	"github.com/10kkyvl/studioforge/internal/memory"
 	"github.com/10kkyvl/studioforge/internal/platform"
 	"github.com/10kkyvl/studioforge/internal/processes"
 	"github.com/10kkyvl/studioforge/internal/projects"
@@ -61,6 +63,7 @@ func Run(ctx context.Context, opts config.Options) error {
 	}
 	defer db.Close()
 	store := database.NewStore(db)
+	memoryStore := memory.New(db)
 	setting := func(key, fallback string) string {
 		value, ok, _ := store.Setting(ctx, key)
 		if !ok || value == "" {
@@ -110,6 +113,7 @@ func Run(ctx context.Context, opts config.Options) error {
 	codexProvider := codex.New(setting("codex_path", ""))
 	adapters := map[string]providers.Provider{"mock": mockProvider, "claude": claudeProvider, "codex": codexProvider}
 	schedulerManager := scheduler.New(ctx, store, hub, leases, adapters)
+	schedulerManager.SetMemory(memoryStore)
 	if count, err := strconv.Atoi(setting("concurrency", "6")); err == nil {
 		schedulerManager.SetLimits(count, 0, 0, 0)
 	}
@@ -123,6 +127,7 @@ func Run(ctx context.Context, opts config.Options) error {
 	// (supervisor.Close) already stops a live sync session and frees its port
 	// without anything here having to track sessions separately.
 	syncer := &syncAdapter{manager: rojoManager}
+	differ := &diffAdapter{client: gitops.New()}
 
 	// Grant Claude runs access to Roblox Studio. Only Claude: the Codex adapter
 	// has no --mcp-config equivalent, so a grant there would spawn the launcher
@@ -220,7 +225,7 @@ func Run(ctx context.Context, opts config.Options) error {
 	}
 	defer listener.Close()
 	baseURL := url.URL{Scheme: "http", Host: listener.Addr().String()}
-	apiServer, err := api.New(api.Dependencies{Store: store, DB: db, Scheduler: schedulerManager, Hub: hub, Doctor: doctor, Sessions: sessions, Guard: guard, SafeMode: opts.SafeMode, AllowedHost: listener.Addr().String(), DataDir: dataDir, Logger: slog.Default(), ApplySetting: applySetting, Studio: studioOpener, StudioStatus: studioStatus, Sync: syncer})
+	apiServer, err := api.New(api.Dependencies{Store: store, DB: db, Scheduler: schedulerManager, Hub: hub, Doctor: doctor, Sessions: sessions, Guard: guard, SafeMode: opts.SafeMode, AllowedHost: listener.Addr().String(), DataDir: dataDir, Logger: slog.Default(), ApplySetting: applySetting, Studio: studioOpener, StudioStatus: studioStatus, Sync: syncer, Diff: differ, Memory: memoryStore})
 	if err != nil {
 		return err
 	}

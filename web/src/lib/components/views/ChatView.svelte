@@ -8,6 +8,7 @@
     createThread,
     getLead,
     getPace,
+    getRunDiff,
     getStudioStatus,
     getThreadMessages,
     getThreads,
@@ -18,7 +19,7 @@
     uploadAttachment,
   } from '$lib/api';
   import { parseAttachments } from '$lib/attachments';
-  import { endsRun } from '$lib/runStatus';
+  import { endsRun, isRunTerminal } from '$lib/runStatus';
   import {
     extractQuestionFence,
     normalizeQuestionPayload,
@@ -32,6 +33,7 @@
     ChatThread,
     Project,
     Run,
+    RunDiff,
     RunEvent,
     StudioStatus,
     Task,
@@ -62,6 +64,7 @@
   export let onEnsureStream: () => void = () => {};
   export let agents: Agent[] = [];
   export let tasks: Task[] = [];
+  export let runs: Run[] = [];
 
   let threads: ChatThread[] = [];
   let selectedThreadId = '';
@@ -75,6 +78,8 @@
   let mode: 'do' | 'plan' = 'do';
   let error = '';
   let sentRunId: string | null = null;
+  let runDiff: RunDiff | null = null;
+  let loadingDiff = false;
   let loadedProjectId: string | undefined;
   // Bumped once per project switch. Every async load below captures it before
   // its await and only applies the result if it is still current afterward —
@@ -119,7 +124,7 @@
     threads = [];
     selectedThreadId = '';
     messages = [];
-    sentRunId = null;
+    restoreActiveRun('');
     leadAgentId = '';
     typicalSeconds = 0;
     paceSamples = 0;
@@ -485,6 +490,35 @@
       void loadMessages(threadAtSend).then(() => {
         if (sentRunId === currentRunId) sentRunId = null;
       });
+      void loadRunDiff(currentRunId);
+    }
+  }
+
+  $: if (selectedThreadId && !sentRunId && runs.length) {
+    const active = runs.find(
+      (run) =>
+        run.threadId === selectedThreadId && !isRunTerminal(run.status) && run.id !== handledRunId,
+    );
+    if (active) {
+      sentRunId = active.id;
+      sendStartMs = Date.parse(active.createdAt);
+    }
+  }
+
+  function restoreActiveRun(threadId: string) {
+    runDiff = null;
+    loadingDiff = false;
+    const active = threadId
+      ? runs.find(
+          (run) =>
+            run.threadId === threadId && !isRunTerminal(run.status) && run.id !== handledRunId,
+        )
+      : undefined;
+    if (active) {
+      sentRunId = active.id;
+      sendStartMs = Date.parse(active.createdAt);
+    } else {
+      sentRunId = null;
     }
   }
 
@@ -496,13 +530,13 @@
       const result = await getThreads(id);
       if (isStaleGeneration(generation, projectGeneration)) return;
       threads = result;
-      sentRunId = null;
       if (threads[0]) {
         await selectThread(threads[0].id);
       } else {
         selectedThreadId = '';
         messages = [];
         atBottom = true;
+        restoreActiveRun('');
       }
     } catch (cause) {
       if (!isStaleGeneration(generation, projectGeneration)) {
@@ -515,7 +549,7 @@
 
   async function selectThread(id: string) {
     selectedThreadId = id;
-    sentRunId = null;
+    restoreActiveRun(id);
     await loadMessages(id);
     // Opening a thread lands on its newest message regardless of where the
     // previous thread was scrolled to.
@@ -568,6 +602,17 @@
     }
   }
 
+  async function loadRunDiff(runId: string) {
+    loadingDiff = true;
+    try {
+      runDiff = await getRunDiff(runId);
+    } catch (cause) {
+      if (cause instanceof APIError) runDiff = null;
+    } finally {
+      loadingDiff = false;
+    }
+  }
+
   async function changeLead(agentId: string) {
     if (!projectId) return;
     const previous = leadAgentId;
@@ -590,6 +635,8 @@
       selectedThreadId = thread.id;
       messages = [];
       sentRunId = null;
+      runDiff = null;
+      loadingDiff = false;
       atBottom = true;
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
@@ -638,6 +685,7 @@
       // needed once the real message reloads with server-backed thumbnails.
       for (const attachment of attachments) URL.revokeObjectURL(attachment.previewUrl);
       sentRunId = run.id;
+      runDiff = null;
       onSent(run.id);
     } catch (cause) {
       // The send failed: drop the optimistic bubble and give the text and
@@ -917,6 +965,18 @@
           </button>
         </div>
       </div>
+    {/if}
+    {#if loadingDiff}
+      <p class="diff-muted">{$translate('common.loading')}</p>
+    {:else if runDiff}
+      {#if runDiff.diff.trim() !== '' && !runDiff.note}
+        <details class="diff-panel">
+          <summary>{$translate('chat.diffChangedFiles')}</summary>
+          <pre class="diff-pre">{runDiff.diff}</pre>
+        </details>
+      {:else}
+        <p class="diff-muted">{runDiff.note || $translate('chat.diffNoChanges')}</p>
+      {/if}
     {/if}
     {#if attachedTask}
       <div class="attached-task-chip">
@@ -1401,6 +1461,37 @@
   .progress-cache {
     font-size: 0.66rem;
     opacity: 0.75;
+  }
+  .diff-panel {
+    margin: 10px 18px 0;
+  }
+  .diff-panel summary {
+    color: var(--muted);
+    font-size: 0.78rem;
+    cursor: pointer;
+  }
+  .diff-panel summary:hover {
+    color: var(--text);
+  }
+  .diff-pre {
+    margin: 8px 0 0;
+    max-height: 260px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface-2);
+    color: var(--text);
+    font-family: 'Cascadia Code', Consolas, monospace;
+    font-size: 0.72rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    overflow-y: auto;
+  }
+  .diff-muted {
+    margin: 10px 18px 0;
+    color: var(--muted);
+    font-size: 0.72rem;
   }
   .attached-task-chip {
     display: inline-flex;

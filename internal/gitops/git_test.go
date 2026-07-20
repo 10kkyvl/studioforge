@@ -49,3 +49,51 @@ func TestSafeRollbackUsesNewBranchAndPreservesUntracked(t *testing.T) {
 		t.Fatalf("head=%s target=%s", head, target)
 	}
 }
+func TestDiffHeadShowsChangesSinceHead(t *testing.T) {
+	root := t.TempDir()
+	git(t, root, "init")
+	git(t, root, "config", "user.email", "test@example.invalid")
+	git(t, root, "config", "user.name", "StudioForge Test")
+	file := filepath.Join(root, "game.lua")
+	_ = os.WriteFile(file, []byte("v1"), 0o600)
+	git(t, root, "add", "game.lua")
+	git(t, root, "commit", "-m", "one")
+	_ = os.WriteFile(file, []byte("v2"), 0o600)
+	client := New()
+	diff, err := client.DiffHead(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(diff, "-v1") || !strings.Contains(diff, "+v2") {
+		t.Fatalf("diff=%s", diff)
+	}
+}
+func TestDiffHeadNotARepoIsEmpty(t *testing.T) {
+	root := t.TempDir()
+	client := New()
+	diff, err := client.DiffHead(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff != "" {
+		t.Fatalf("diff=%s", diff)
+	}
+}
+func TestDiffHeadNoChangesIsEmpty(t *testing.T) {
+	root := t.TempDir()
+	git(t, root, "init")
+	git(t, root, "config", "user.email", "test@example.invalid")
+	git(t, root, "config", "user.name", "StudioForge Test")
+	file := filepath.Join(root, "game.lua")
+	_ = os.WriteFile(file, []byte("v1"), 0o600)
+	git(t, root, "add", "game.lua")
+	git(t, root, "commit", "-m", "one")
+	client := New()
+	diff, err := client.DiffHead(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff != "" {
+		t.Fatalf("diff=%s", diff)
+	}
+}
