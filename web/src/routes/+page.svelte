@@ -72,6 +72,10 @@
   let streamOnline = false;
   let theme = 'dark';
   let notice = '';
+  // True until a refresh reports otherwise, so a daemon that has never run a
+  // real discovery pass (e.g. --mock, or before the operator's first click)
+  // does not read as "Studio MCP not detected" by default.
+  let studioSessionsDetected = true;
   let newProject = { name: '', path: '', description: '', create: true, openStudio: false };
   let disconnect = () => {};
   let restored = false;
@@ -442,6 +446,13 @@
       await refresh();
     });
   }
+  async function refreshStudioSessions() {
+    await action('studio-sessions-refresh', async () => {
+      const result = await post<{ detected: boolean }>('/studio/sessions/refresh', {});
+      studioSessionsDetected = result.detected;
+      await refresh();
+    });
+  }
   async function createBackup() {
     await action('backup', async () => {
       const result = await post<{ path: string }>('/backups', {});
@@ -656,7 +667,15 @@
             onSend={(prompt) => startRun(selectedProject, '', prompt)}
           />
         {:else if view === 'studios'}
-          <StudiosView studios={snapshot.studios} {projects} {projectName} onBind={bindStudio} />
+          <StudiosView
+            studios={snapshot.studios}
+            {projects}
+            {projectName}
+            onBind={bindStudio}
+            detected={studioSessionsDetected}
+            onRefresh={refreshStudioSessions}
+            busy={busy === 'studio-sessions-refresh'}
+          />
         {:else if view === 'settings'}
           <SettingsView
             diagnostics={snapshot.diagnostics}

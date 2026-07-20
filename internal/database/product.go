@@ -30,6 +30,67 @@ func (s *Store) ListStudioSessions(ctx context.Context) ([]models.StudioSession,
 	return out, rows.Err()
 }
 
+// UpsertRealStudioSessions replaces the daemon's view of real (non-mock) open
+// Studio instances with a freshly discovered one. An instance already bound to
+// a project keeps that binding no matter what this call resolved for it — a
+// refresh must never silently undo an operator's manual BindStudio choice, or
+// override it with a different auto-match; only an instance with no existing
+// binding picks up whatever project_id the caller resolved (which may itself
+// be empty, leaving it unbound for a manual pick). An instance from a previous
+// pass that is absent here is deleted outright: its Studio closed, so nothing
+// keeps a stale row around to bind against later. Mock rows are never touched.
+func (s *Store) UpsertRealStudioSessions(ctx context.Context, sessions []models.StudioSession) error {
+	tx, err := s.db.SQL.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	existing := map[string]string{}
+	rows, err := tx.QueryContext(ctx, `SELECT instance_id, COALESCE(project_id,'') FROM studio_sessions WHERE mock=0`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var instanceID, projectID string
+		if err := rows.Scan(&instanceID, &projectID); err != nil {
+			rows.Close()
+			return err
+		}
+		existing[instanceID] = projectID
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	now := formatTime(time.Now())
+	seen := make(map[string]bool, len(sessions))
+	for _, session := range sessions {
+		seen[session.InstanceID] = true
+		projectID := session.ProjectID
+		if bound, ok := existing[session.InstanceID]; ok && bound != "" {
+			projectID = bound
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO studio_sessions(id,project_id,instance_id,name,place_id,game_id,active,play_state,mock,last_seen_at)
+VALUES(?,?,?,?,?,?,?,?,0,?)
+ON CONFLICT(instance_id) DO UPDATE SET project_id=excluded.project_id,name=excluded.name,active=excluded.active,play_state=excluded.play_state,last_seen_at=excluded.last_seen_at`,
+			"live-"+session.InstanceID, nullText(projectID), session.InstanceID, session.Name, session.PlaceID, session.GameID, boolInt(session.Active), session.PlayState, now); err != nil {
+			return err
+		}
+	}
+
+	for instanceID := range existing {
+		if !seen[instanceID] {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM studio_sessions WHERE instance_id=? AND mock=0`, instanceID); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) BindStudio(ctx context.Context, sessionID, projectID string) error {
 	tx, err := s.db.SQL.BeginTx(ctx, nil)
 	if err != nil {

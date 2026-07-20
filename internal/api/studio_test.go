@@ -115,3 +115,67 @@ func TestStudioStatusSurfacesAProbeFailure(t *testing.T) {
 		t.Fatalf("body=%s", rec.Body.String())
 	}
 }
+
+// Under --mock, or on any daemon that never wired a refresher, the endpoint
+// must behave as a no-op that reflects whatever is already stored, not an
+// error and not a claim that discovery ran.
+func TestRefreshStudioSessionsWithNoRefresherWiredReportsDetected(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	rec := postJSON(t, a, cookie, "/api/v1/studio/sessions/refresh", map[string]any{})
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Detected bool `json:"detected"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.Detected {
+		t.Error("with no refresher wired, detected must default true rather than reading as an absent launcher")
+	}
+}
+
+func TestRefreshStudioSessionsCallsTheHookAndReportsDetection(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	called := false
+	a.server.refreshStudioSessions = func(context.Context) (bool, error) {
+		called = true
+		return false, nil
+	}
+	rec := postJSON(t, a, cookie, "/api/v1/studio/sessions/refresh", map[string]any{})
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !called {
+		t.Error("the refresher hook must be called")
+	}
+	var body struct {
+		Detected bool `json:"detected"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Detected {
+		t.Error("detected must reflect what the hook reported, not default true once a hook is wired")
+	}
+}
+
+// A failed discovery pass (the launcher misbehaved mid-probe) must not fail
+// the request - the operator still needs to see whatever is already stored.
+func TestRefreshStudioSessionsSurfacesAHookErrorWithoutFailingTheRequest(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	a.server.refreshStudioSessions = func(context.Context) (bool, error) {
+		return false, errors.New("launcher crashed mid-probe")
+	}
+	rec := postJSON(t, a, cookie, "/api/v1/studio/sessions/refresh", map[string]any{})
+	if rec.Code != 200 {
+		t.Fatalf("a refresh failure must not fail the request, status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "launcher crashed mid-probe") {
+		t.Errorf("body=%s, want the failure explained", rec.Body.String())
+	}
+}

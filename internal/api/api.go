@@ -53,46 +53,48 @@ type Memory interface {
 }
 
 type Server struct {
-	store        *database.Store
-	db           *database.DB
-	scheduler    *scheduler.Manager
-	hub          *events.Hub
-	doctor       *diagnostics.Doctor
-	sessions     *SessionManager
-	guard        *projects.PathGuard
-	safeMode     bool
-	allowedHost  string
-	dataDir      string
-	logger       *slog.Logger
-	applySetting func(string, string) error
-	assets       fs.FS
-	csp          string
-	detectMu     sync.Mutex
-	detected     map[string][]toolpath.Candidate
-	detectedAt   time.Time
-	studio       StudioOpener
-	studioStatus func(context.Context, string) (StudioStatus, error)
-	syncer       Syncer
-	differ       Differ
-	memory       Memory
+	store                 *database.Store
+	db                    *database.DB
+	scheduler             *scheduler.Manager
+	hub                   *events.Hub
+	doctor                *diagnostics.Doctor
+	sessions              *SessionManager
+	guard                 *projects.PathGuard
+	safeMode              bool
+	allowedHost           string
+	dataDir               string
+	logger                *slog.Logger
+	applySetting          func(string, string) error
+	assets                fs.FS
+	csp                   string
+	detectMu              sync.Mutex
+	detected              map[string][]toolpath.Candidate
+	detectedAt            time.Time
+	studio                StudioOpener
+	studioStatus          func(context.Context, string) (StudioStatus, error)
+	refreshStudioSessions StudioSessionsRefresher
+	syncer                Syncer
+	differ                Differ
+	memory                Memory
 }
 type Dependencies struct {
-	Store                *database.Store
-	DB                   *database.DB
-	Scheduler            *scheduler.Manager
-	Hub                  *events.Hub
-	Doctor               *diagnostics.Doctor
-	Sessions             *SessionManager
-	Guard                *projects.PathGuard
-	SafeMode             bool
-	AllowedHost, DataDir string
-	Logger               *slog.Logger
-	ApplySetting         func(string, string) error
-	Studio               StudioOpener
-	StudioStatus         func(context.Context, string) (StudioStatus, error)
-	Sync                 Syncer
-	Diff                 Differ
-	Memory               Memory
+	Store                 *database.Store
+	DB                    *database.DB
+	Scheduler             *scheduler.Manager
+	Hub                   *events.Hub
+	Doctor                *diagnostics.Doctor
+	Sessions              *SessionManager
+	Guard                 *projects.PathGuard
+	SafeMode              bool
+	AllowedHost, DataDir  string
+	Logger                *slog.Logger
+	ApplySetting          func(string, string) error
+	Studio                StudioOpener
+	StudioStatus          func(context.Context, string) (StudioStatus, error)
+	RefreshStudioSessions StudioSessionsRefresher
+	Sync                  Syncer
+	Diff                  Differ
+	Memory                Memory
 }
 
 func New(d Dependencies) (*Server, error) {
@@ -103,7 +105,7 @@ func New(d Dependencies) (*Server, error) {
 	if d.Logger == nil {
 		d.Logger = slog.Default()
 	}
-	return &Server{store: d.Store, db: d.DB, scheduler: d.Scheduler, hub: d.Hub, doctor: d.Doctor, sessions: d.Sessions, guard: d.Guard, safeMode: d.SafeMode, allowedHost: d.AllowedHost, dataDir: d.DataDir, logger: d.Logger, applySetting: d.ApplySetting, studio: d.Studio, studioStatus: d.StudioStatus, syncer: d.Sync, differ: d.Diff, memory: d.Memory, assets: assets, csp: contentSecurityPolicy(assets)}, nil
+	return &Server{store: d.Store, db: d.DB, scheduler: d.Scheduler, hub: d.Hub, doctor: d.Doctor, sessions: d.Sessions, guard: d.Guard, safeMode: d.SafeMode, allowedHost: d.AllowedHost, dataDir: d.DataDir, logger: d.Logger, applySetting: d.ApplySetting, studio: d.Studio, studioStatus: d.StudioStatus, refreshStudioSessions: d.RefreshStudioSessions, syncer: d.Sync, differ: d.Diff, memory: d.Memory, assets: assets, csp: contentSecurityPolicy(assets)}, nil
 }
 
 func contentSecurityPolicy(assets fs.FS) string {
@@ -143,6 +145,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/runs/{id}/{action}", s.runAction)
 	mux.HandleFunc("GET /api/v1/runs/{id}/diff", s.runDiff)
 	mux.HandleFunc("POST /api/v1/studios/{id}/bind", s.bindStudio)
+	mux.HandleFunc("POST /api/v1/studio/sessions/refresh", s.refreshStudioSessionsHandler)
 	mux.HandleFunc("POST /api/v1/backups", s.backup)
 	mux.HandleFunc("GET /api/v1/openapi.yaml", s.openapi)
 	mux.HandleFunc("/", s.static)
@@ -920,6 +923,36 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// StudioSessionsRefresher runs one live discovery pass over the Studio MCP
+// launcher and persists what it finds, reporting whether a launcher could be
+// reached at all — Detected, not Open, is what tells the UI "Studio MCP not
+// detected" apart from "detected, nothing open right now". A nil hook (under
+// --mock, where there is nothing real to discover, or on any daemon that never
+// wired one) leaves the endpoint a no-op that only reports what is already
+// stored.
+type StudioSessionsRefresher func(context.Context) (bool, error)
+
+// refreshStudioSessionsHandler never fails the request over a failed
+// discovery pass — the operator still needs to see whatever is already
+// stored, the same fail-open posture Studio access itself takes.
+func (s *Server) refreshStudioSessionsHandler(w http.ResponseWriter, r *http.Request) {
+	detected := true
+	var refreshErr error
+	if s.refreshStudioSessions != nil {
+		detected, refreshErr = s.refreshStudioSessions(r.Context())
+	}
+	sessions, err := s.store.ListStudioSessions(r.Context())
+	if err != nil {
+		writeError(w, r, 500, "studio_sessions_list_failed", err.Error(), nil)
+		return
+	}
+	body := map[string]any{"detected": detected, "studios": sessions}
+	if refreshErr != nil {
+		body["error"] = refreshErr.Error()
+	}
+	writeJSON(w, 200, body)
 }
 
 func (s *Server) bindStudio(w http.ResponseWriter, r *http.Request) {

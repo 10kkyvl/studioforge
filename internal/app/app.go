@@ -206,6 +206,13 @@ func Run(ctx context.Context, opts config.Options) error {
 		result := studioProvisioner.Validate(ctx, mcp.ValidateRequest{Target: studioTarget(ctx, j.ProjectID), Window: window})
 		return scheduler.ValidationResult{Outcome: scheduler.ValidationOutcome(result.Outcome), Console: result.Console, Errors: result.Errors, Screenshot: result.Screenshot, Notice: result.Notice}
 	})
+	// refreshStudioSessions discovers real open Studio instances on demand.
+	// Left unwired under --mock: there is no real launcher to discover, and
+	// the demo's own seeded rows are the point of that mode.
+	var refreshStudioSessions api.StudioSessionsRefresher
+	if !opts.MockMode {
+		refreshStudioSessions = studioSessionsRefresher(studioProvisioner, store)
+	}
 
 	applySetting := func(key, value string) error {
 		switch key {
@@ -247,7 +254,7 @@ func Run(ctx context.Context, opts config.Options) error {
 	}
 	defer listener.Close()
 	baseURL := url.URL{Scheme: "http", Host: listener.Addr().String()}
-	apiServer, err := api.New(api.Dependencies{Store: store, DB: db, Scheduler: schedulerManager, Hub: hub, Doctor: doctor, Sessions: sessions, Guard: guard, SafeMode: opts.SafeMode, AllowedHost: listener.Addr().String(), DataDir: dataDir, Logger: slog.Default(), ApplySetting: applySetting, Studio: studioOpener, StudioStatus: studioStatus, Sync: syncer, Diff: differ, Memory: memoryStore})
+	apiServer, err := api.New(api.Dependencies{Store: store, DB: db, Scheduler: schedulerManager, Hub: hub, Doctor: doctor, Sessions: sessions, Guard: guard, SafeMode: opts.SafeMode, AllowedHost: listener.Addr().String(), DataDir: dataDir, Logger: slog.Default(), ApplySetting: applySetting, Studio: studioOpener, StudioStatus: studioStatus, RefreshStudioSessions: refreshStudioSessions, Sync: syncer, Diff: differ, Memory: memoryStore})
 	if err != nil {
 		return err
 	}

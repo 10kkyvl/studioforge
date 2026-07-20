@@ -169,6 +169,10 @@ export const en = {
   'studios.place': 'Place',
   'studios.playState': 'Play state',
   'studios.bind': 'Bind project',
+  'studios.refresh': 'Refresh',
+  'studios.refreshing': 'Refreshing…',
+  'studios.notDetected':
+    'Studio MCP not detected. Install or update Roblox Studio, and enable Studio MCP in Assistant settings, then refresh.',
   'settings.title': 'Settings',
   'settings.subtitle': 'Local preferences, diagnostics, backups, and safety.',
   'settings.language': 'Language',
@@ -395,6 +399,10 @@ export const ru: Record<TranslationKey, string> = {
   'studios.place': 'Place',
   'studios.playState': 'Состояние игры',
   'studios.bind': 'Привязать проект',
+  'studios.refresh': 'Обновить',
+  'studios.refreshing': 'Обновление…',
+  'studios.notDetected':
+    'Studio MCP не обнаружен. Установите или обновите Roblox Studio и включите Studio MCP в настройках Assistant, затем обновите список.',
   'settings.title': 'Настройки',
   'settings.subtitle': 'Локальные параметры, диагностика, backup и безопасность.',
   'settings.language': 'Язык',
