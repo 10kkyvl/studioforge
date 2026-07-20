@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   extractQuestionFence,
+  isStuckEscalation,
   normalizeQuestionPayload,
   shouldAnswerQuestion,
+  STUCK_ESCALATION_RAW_TYPE,
 } from './questionCard';
 
 describe('normalizeQuestionPayload', () => {
@@ -98,6 +100,46 @@ describe('extractQuestionFence', () => {
       '```';
     const result = extractQuestionFence(text);
     expect(result?.card.question).toBe('Which mesh format?');
+  });
+});
+
+// ChatView renders the Stop option (see stuck-question-card/stuck-stop-option
+// in ChatView.svelte) exactly when isStuckEscalation(rawType) is true for a
+// message that also carries a parseable question fence. These are the two
+// building blocks that decide it — this is the unit that stands in for "does
+// a stuck-escalation card render a working Stop button distinct from a
+// normal agent question's card", exercised the same way every other
+// presentation-decision in this file already is (as a pure function of the
+// event data), rather than a full component render.
+describe('isStuckEscalation and its interaction with extractQuestionFence', () => {
+  const fenceText =
+    'StudioForge paused this run to check in before it keeps going.\n\n' +
+    '```studioforge-question\n' +
+    '{"question": "This run looks stuck. Continue, or should it stop here?", ' +
+    '"options": [{"label": "Continue testing", "description": "Resume the same session and keep going."}]}\n' +
+    '```';
+
+  it('marks a scheduler-synthesized stuck escalation, whose fence offers only Continue', () => {
+    expect(isStuckEscalation(STUCK_ESCALATION_RAW_TYPE)).toBe(true);
+    const extracted = extractQuestionFence(fenceText);
+    expect(extracted).not.toBeNull();
+    expect(extracted?.card.options).toEqual([
+      { label: 'Continue testing', description: 'Resume the same session and keep going.' },
+    ]);
+  });
+
+  it('does not mark the agent asking its own natural question', () => {
+    for (const rawType of [undefined, null, '', 'assistant', 'stream_event', 'item.completed']) {
+      expect(isStuckEscalation(rawType)).toBe(false);
+    }
+    // A natural question's own fence still extracts fine — the distinction is
+    // rawType alone, never the fence's own {question, options} shape, which
+    // is intentionally identical for both cases.
+    const naturalText =
+      '```studioforge-question\n' +
+      '{"question": "Which mesh format?", "options": [{"label": "FBX", "description": ""}]}\n' +
+      '```';
+    expect(extractQuestionFence(naturalText)).not.toBeNull();
   });
 });
 

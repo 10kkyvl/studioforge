@@ -114,6 +114,12 @@ export type RunDiff = {
   diff: string;
   status?: string;
   note?: string;
+  checkpoint?: {
+    commitHash: string;
+    branch: string;
+    label: string;
+    createdAt: string;
+  };
 };
 export type RunEvent = {
   id: number;
@@ -140,6 +146,11 @@ export type ChatMessage = {
   at: string;
   runId: string;
   status?: string;
+  // Survives from the scheduler event's own RawType (e.g. "scheduler.stuck")
+  // when this message was scheduler-synthesized rather than the agent's own
+  // text, so a stuck-escalation question card can be told apart from the
+  // agent's own natural question identically live and after a reload.
+  rawType?: string;
 };
 export type StudioSession = {
   id: string;

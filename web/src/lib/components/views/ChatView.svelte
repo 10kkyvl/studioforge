@@ -13,15 +13,17 @@
     getThreadMessages,
     getThreads,
     post,
+    rollbackRun,
     setLead,
     startSync,
     stopSync,
     uploadAttachment,
   } from '$lib/api';
   import { parseAttachments } from '$lib/attachments';
-  import { endsRun, isRunTerminal } from '$lib/runStatus';
+  import { endsRun, isRunTerminal, mcpWithheldMessage } from '$lib/runStatus';
   import {
     extractQuestionFence,
+    isStuckEscalation,
     normalizeQuestionPayload,
     shouldAnswerQuestion,
   } from '$lib/questionCard';
@@ -77,9 +79,14 @@
   let atBottom = true;
   let mode: 'do' | 'plan' = 'do';
   let error = '';
+  let errorRetry: (() => void) | null = null;
   let sentRunId: string | null = null;
   let runDiff: RunDiff | null = null;
   let loadingDiff = false;
+  let confirmingRollback = false;
+  let rollingBack = false;
+  let rollbackError = '';
+  let rollbackResult: { branch: string; commitHash: string } | null = null;
   let loadedProjectId: string | undefined;
   // Bumped once per project switch. Every async load below captures it before
   // its await and only applies the result if it is still current afterward —
@@ -157,6 +164,11 @@
     }
   }
 
+  function setError(message: string, retry: (() => void) | null = null) {
+    error = message;
+    errorRetry = retry;
+  }
+
   // Stop the run this chat is waiting on. The strip stays up until a terminal
   // status arrives over SSE rather than being cleared here, because the run is
   // only really over once the scheduler says so — cancelling is not instant, and
@@ -173,10 +185,46 @@
       // went wrong — the run is stopped, which is what was asked for — so this
       // must not raise a red banner. Anything else is worth saying out loud.
       if (cause instanceof APIError && cause.code === 'run_action_failed') stopping = false;
-      else {
-        error = cause instanceof Error ? cause.message : String(cause);
+      else if (cause instanceof APIError && cause.code === 'network') {
+        setError($translate('error.network'), () => void stopRun());
+        stopping = false;
+      } else {
+        setError(cause instanceof Error ? cause.message : String(cause));
         stopping = false;
       }
+    }
+  }
+
+  // Stops for a stuck-escalation question card. sentRunId is normally already
+  // cleared by the time this card renders — waiting_decision is terminal for
+  // "is this run still live" purposes (see runStatus.ts's endsRun), so
+  // stopRun's own sentRunId-only path cannot reach it — so each card carries
+  // and cancels its own run id directly, independent of whichever run is
+  // currently "active" in the composer.
+  let stoppingWaitingRunIds = new Set<string>();
+
+  async function stopWaitingRun(runId: string) {
+    if (!runId || stoppingWaitingRunIds.has(runId)) return;
+    stoppingWaitingRunIds = new Set(stoppingWaitingRunIds).add(runId);
+    try {
+      await post(`/runs/${runId}/cancel`, {});
+      if (selectedThreadId) await loadMessages(selectedThreadId);
+    } catch (cause) {
+      // A run that reached a terminal state between the click and the request is
+      // the common race, and the scheduler rejects it as "not active" — nothing
+      // went wrong, so this must not raise a red banner. Anything else is worth
+      // saying out loud.
+      if (cause instanceof APIError && cause.code === 'run_action_failed') {
+        // no-op
+      } else if (cause instanceof APIError && cause.code === 'network') {
+        setError($translate('error.network'), () => void stopWaitingRun(runId));
+      } else {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
+    } finally {
+      const next = new Set(stoppingWaitingRunIds);
+      next.delete(runId);
+      stoppingWaitingRunIds = next;
     }
   }
 
@@ -193,11 +241,11 @@
   }
 
   async function openStudioFromBadge() {
-    error = '';
+    setError('');
     try {
       await openStudio();
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      setError(cause instanceof Error ? cause.message : String(cause));
     }
   }
 
@@ -208,7 +256,7 @@
   async function toggleSync() {
     if (!projectId || syncBusy) return;
     syncBusy = true;
-    error = '';
+    setError('');
     try {
       if (project?.sync.active) {
         await stopSync(projectId);
@@ -217,7 +265,7 @@
       }
       onSynced();
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       syncBusy = false;
     }
@@ -254,7 +302,7 @@
     // pushing it into the new project's chip row after the fact would be
     // silently wrong, not just late.
     const generation = projectGeneration;
-    error = '';
+    setError('');
     uploadingCount += 1;
     const previewUrl = URL.createObjectURL(file);
     try {
@@ -264,7 +312,7 @@
     } catch (cause) {
       URL.revokeObjectURL(previewUrl);
       if (!isStaleGeneration(generation, projectGeneration)) {
-        error = cause instanceof Error ? cause.message : String(cause);
+        setError(cause instanceof Error ? cause.message : String(cause));
       }
     } finally {
       uploadingCount -= 1;
@@ -290,7 +338,7 @@
     const [name, ...rest] = text.slice(1).split(' ');
     const arg = rest.join(' ').trim();
     draft = '';
-    error = '';
+    setError('');
     try {
       if (name === 'task' && arg && projectId) {
         await createTask(projectId, { title: arg });
@@ -317,7 +365,7 @@
       }
     } catch (cause) {
       commandInfo = '';
-      error = cause instanceof Error ? cause.message : String(cause);
+      setError(cause instanceof Error ? cause.message : String(cause));
     }
     return true;
   }
@@ -426,7 +474,8 @@
   $: activeLiveEvents = activeRunEvents.filter(
     (event) =>
       (event.type === 'message' && messageText(event.payload).trim() !== '') ||
-      (event.type === 'question' && normalizeQuestionPayload(event.payload) !== null),
+      (event.type === 'question' && normalizeQuestionPayload(event.payload) !== null) ||
+      mcpWithheldMessage(event) !== null,
   );
 
   // A card only offers live buttons while it is the very last thing in the
@@ -508,6 +557,7 @@
   function restoreActiveRun(threadId: string) {
     runDiff = null;
     loadingDiff = false;
+    resetRollbackState();
     const active = threadId
       ? runs.find(
           (run) =>
@@ -525,7 +575,7 @@
   async function loadThreads(id: string) {
     const generation = projectGeneration;
     loadingThreads = true;
-    error = '';
+    setError('');
     try {
       const result = await getThreads(id);
       if (isStaleGeneration(generation, projectGeneration)) return;
@@ -540,7 +590,7 @@
       }
     } catch (cause) {
       if (!isStaleGeneration(generation, projectGeneration)) {
-        error = cause instanceof Error ? cause.message : String(cause);
+        setError(cause instanceof Error ? cause.message : String(cause));
       }
     } finally {
       if (!isStaleGeneration(generation, projectGeneration)) loadingThreads = false;
@@ -560,14 +610,14 @@
     if (!id) return;
     const generation = projectGeneration;
     loadingMessages = true;
-    error = '';
+    setError('');
     try {
       const result = await getThreadMessages(id);
       if (isStaleGeneration(generation, projectGeneration)) return;
       messages = result;
     } catch (cause) {
       if (!isStaleGeneration(generation, projectGeneration)) {
-        error = cause instanceof Error ? cause.message : String(cause);
+        setError(cause instanceof Error ? cause.message : String(cause));
       }
     } finally {
       if (!isStaleGeneration(generation, projectGeneration)) loadingMessages = false;
@@ -582,7 +632,7 @@
       leadAgentId = result;
     } catch (cause) {
       if (!isStaleGeneration(generation, projectGeneration)) {
-        error = cause instanceof Error ? cause.message : String(cause);
+        setError(cause instanceof Error ? cause.message : String(cause));
       }
     }
   }
@@ -602,14 +652,35 @@
     }
   }
 
+  function resetRollbackState() {
+    confirmingRollback = false;
+    rollingBack = false;
+    rollbackError = '';
+    rollbackResult = null;
+  }
+
   async function loadRunDiff(runId: string) {
     loadingDiff = true;
+    resetRollbackState();
     try {
       runDiff = await getRunDiff(runId);
     } catch (cause) {
       if (cause instanceof APIError) runDiff = null;
     } finally {
       loadingDiff = false;
+    }
+  }
+
+  async function doRollback() {
+    if (!sentRunId || rollingBack) return;
+    rollingBack = true;
+    rollbackError = '';
+    try {
+      rollbackResult = await rollbackRun(sentRunId);
+    } catch (cause) {
+      rollbackError = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      rollingBack = false;
     }
   }
 
@@ -621,14 +692,14 @@
       await setLead(projectId, agentId);
     } catch (cause) {
       leadAgentId = previous;
-      error = cause instanceof Error ? cause.message : String(cause);
+      setError(cause instanceof Error ? cause.message : String(cause));
     }
   }
 
   async function newThread() {
     if (!projectId || creatingThread) return;
     creatingThread = true;
-    error = '';
+    setError('');
     try {
       const thread = await createThread(projectId, '');
       threads = [thread, ...threads];
@@ -637,9 +708,10 @@
       sentRunId = null;
       runDiff = null;
       loadingDiff = false;
+      resetRollbackState();
       atBottom = true;
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       creatingThread = false;
     }
@@ -649,7 +721,7 @@
     if (!projectId || !selectedThreadId || sending) return;
     onEnsureStream();
     sending = true;
-    error = '';
+    setError('');
     commandInfo = '';
     draft = '';
     // Captured before clearing: on failure both need to reappear exactly as
@@ -686,6 +758,7 @@
       for (const attachment of attachments) URL.revokeObjectURL(attachment.previewUrl);
       sentRunId = run.id;
       runDiff = null;
+      resetRollbackState();
       onSent(run.id);
     } catch (cause) {
       // The send failed: drop the optimistic bubble and give the text and
@@ -693,7 +766,7 @@
       messages = messages.filter((m) => m !== optimistic);
       draft = prompt;
       pendingAttachments = attachments;
-      error = cause instanceof Error ? cause.message : String(cause);
+      setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       sending = false;
     }
@@ -813,7 +886,16 @@
         </label>
       {/if}
     </header>
-    {#if error}<p class="chat-error">{error}</p>{/if}
+    {#if error}
+      <div class="chat-error">
+        <span>{error}</span>
+        {#if errorRetry}
+          <button type="button" class="retry-button" onclick={errorRetry}
+            >{$translate('common.retry')}</button
+          >
+        {/if}
+      </div>
+    {/if}
     <div class="message-list" aria-live="polite" bind:this={messageListEl} onscroll={trackScroll}>
       {#if loadingMessages}
         <div class="empty"><p>{$translate('common.loading')}</p></div>
@@ -854,7 +936,12 @@
               </div>
             {/if}
             {#if question}
-              <div class="question-card" class:question-card-static={!isLatestQuestion}>
+              {@const stuck = isStuckEscalation(message.rawType)}
+              <div
+                class="question-card"
+                class:question-card-static={!isLatestQuestion}
+                class:stuck-question-card={stuck}
+              >
                 <p class="question-text">{question.card.question}</p>
                 <div class="question-options">
                   {#each question.card.options as option, optionIndex (optionIndex)}
@@ -870,51 +957,115 @@
                       {/if}
                     </button>
                   {/each}
+                  {#if stuck}
+                    <button
+                      type="button"
+                      class="question-option stuck-stop-option"
+                      disabled={!isLatestQuestion || stoppingWaitingRunIds.has(message.runId)}
+                      title={$translate('chat.stuckStopTitle')}
+                      onclick={() => stopWaitingRun(message.runId)}
+                    >
+                      <span class="question-option-label"
+                        >{stoppingWaitingRunIds.has(message.runId)
+                          ? $translate('chat.stopping')
+                          : $translate('chat.stuckStop')}</span
+                      >
+                    </button>
+                  {/if}
                 </div>
               </div>
             {/if}
           </div>
         {/each}
         {#each activeLiveEvents as event, eventIndex (event.id)}
-          {@const liveQuestion =
-            event.type === 'question' ? normalizeQuestionPayload(event.payload) : null}
-          {@const isLatestQuestion = isLatestQuestionCard(
-            eventIndex === activeLiveEvents.length - 1,
-          )}
-          <div class="bubble bubble-agent bubble-live">
-            <div class="bubble-meta">
-              <span class="bubble-label"
-                >{event.agentId ? agentName(event.agentId) : $translate('chat.agent')}</span
-              >
-              <time
-                >{new Intl.DateTimeFormat($locale, { timeStyle: 'medium' }).format(
-                  new Date(event.createdAt),
-                )}</time
-              >
+          {@const withheldMessage = mcpWithheldMessage(event)}
+          {#if withheldMessage !== null}
+            <div class="mcp-withheld-banner" role="status">
+              <strong>{$translate('chat.studioWithheld')}</strong>
+              {withheldMessage}
             </div>
-            {#if liveQuestion}
-              <div class="question-card" class:question-card-static={!isLatestQuestion}>
-                <p class="question-text">{liveQuestion.question}</p>
-                <div class="question-options">
-                  {#each liveQuestion.options as option, optionIndex (optionIndex)}
+          {:else}
+            {@const stuckQuestion = isStuckEscalation(event.rawType)
+              ? extractQuestionFence(messageText(event.payload))
+              : null}
+            {@const liveQuestion =
+              !stuckQuestion && event.type === 'question'
+                ? normalizeQuestionPayload(event.payload)
+                : null}
+            {@const isLatestQuestion = isLatestQuestionCard(
+              eventIndex === activeLiveEvents.length - 1,
+            )}
+            <div class="bubble bubble-agent bubble-live">
+              <div class="bubble-meta">
+                <span class="bubble-label"
+                  >{event.agentId ? agentName(event.agentId) : $translate('chat.agent')}</span
+                >
+                <time
+                  >{new Intl.DateTimeFormat($locale, { timeStyle: 'medium' }).format(
+                    new Date(event.createdAt),
+                  )}</time
+                >
+              </div>
+              {#if stuckQuestion}
+                {#if stuckQuestion.remainder}<p>{stuckQuestion.remainder}</p>{/if}
+                <div
+                  class="question-card stuck-question-card"
+                  class:question-card-static={!isLatestQuestion}
+                >
+                  <p class="question-text">{stuckQuestion.card.question}</p>
+                  <div class="question-options">
+                    {#each stuckQuestion.card.options as option, optionIndex (optionIndex)}
+                      <button
+                        type="button"
+                        class="question-option"
+                        disabled={!isLatestQuestion || answeredQuestionKeys.has(String(event.id))}
+                        onclick={() => answerQuestion(String(event.id), option.label)}
+                      >
+                        <span class="question-option-label">{option.label}</span>
+                        {#if option.description}
+                          <span class="question-option-desc">{option.description}</span>
+                        {/if}
+                      </button>
+                    {/each}
                     <button
                       type="button"
-                      class="question-option"
-                      disabled={!isLatestQuestion || answeredQuestionKeys.has(String(event.id))}
-                      onclick={() => answerQuestion(String(event.id), option.label)}
+                      class="question-option stuck-stop-option"
+                      disabled={!isLatestQuestion || stoppingWaitingRunIds.has(event.runId)}
+                      title={$translate('chat.stuckStopTitle')}
+                      onclick={() => stopWaitingRun(event.runId)}
                     >
-                      <span class="question-option-label">{option.label}</span>
-                      {#if option.description}
-                        <span class="question-option-desc">{option.description}</span>
-                      {/if}
+                      <span class="question-option-label"
+                        >{stoppingWaitingRunIds.has(event.runId)
+                          ? $translate('chat.stopping')
+                          : $translate('chat.stuckStop')}</span
+                      >
                     </button>
-                  {/each}
+                  </div>
                 </div>
-              </div>
-            {:else}
-              <p>{messageText(event.payload)}</p>
-            {/if}
-          </div>
+              {:else if liveQuestion}
+                <div class="question-card" class:question-card-static={!isLatestQuestion}>
+                  <p class="question-text">{liveQuestion.question}</p>
+                  <div class="question-options">
+                    {#each liveQuestion.options as option, optionIndex (optionIndex)}
+                      <button
+                        type="button"
+                        class="question-option"
+                        disabled={!isLatestQuestion || answeredQuestionKeys.has(String(event.id))}
+                        onclick={() => answerQuestion(String(event.id), option.label)}
+                      >
+                        <span class="question-option-label">{option.label}</span>
+                        {#if option.description}
+                          <span class="question-option-desc">{option.description}</span>
+                        {/if}
+                      </button>
+                    {/each}
+                  </div>
+                </div>
+              {:else}
+                <p>{messageText(event.payload)}</p>
+              {/if}
+            </div>
+          {/if}
         {/each}
       {/if}
     </div>
@@ -976,6 +1127,54 @@
         </details>
       {:else}
         <p class="diff-muted">{runDiff.note || $translate('chat.diffNoChanges')}</p>
+      {/if}
+      {#if runDiff.checkpoint}
+        <div class="rollback-row">
+          {#if rollbackResult}
+            <p class="rollback-success">
+              {$translate('chat.rollbackDonePrefix')} <code>{rollbackResult.branch}</code>
+            </p>
+          {:else if confirmingRollback}
+            <div class="rollback-confirm">
+              <p class="rollback-confirm-text">
+                {$translate('chat.rollbackConfirmTitle')}
+                <code>{runDiff.checkpoint.commitHash.slice(0, 7)}</code>
+                ({runDiff.checkpoint.label})
+              </p>
+              <p class="rollback-explain">{$translate('chat.rollbackExplain')}</p>
+              {#if rollbackError}
+                <p class="rollback-error">{rollbackError}</p>
+              {/if}
+              <div class="rollback-actions">
+                <button
+                  type="button"
+                  onclick={() => (confirmingRollback = false)}
+                  disabled={rollingBack}
+                >
+                  {$translate('common.cancel')}
+                </button>
+                <button
+                  type="button"
+                  class="rollback-confirm-button"
+                  disabled={rollingBack}
+                  onclick={doRollback}
+                >
+                  {rollingBack
+                    ? $translate('chat.rollbackWorking')
+                    : $translate('chat.rollbackConfirmButton')}
+                </button>
+              </div>
+            </div>
+          {:else}
+            <button
+              type="button"
+              class="rollback-button"
+              onclick={() => (confirmingRollback = true)}
+            >
+              {$translate('chat.rollbackButton')}
+            </button>
+          {/if}
+        </div>
       {/if}
     {/if}
     {#if attachedTask}
@@ -1184,10 +1383,41 @@
     font-size: 0.78rem;
   }
   .chat-error {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     margin: 0;
     padding: 9px 18px;
     color: var(--red);
     font-size: 0.78rem;
+  }
+  .retry-button {
+    flex: none;
+    padding: 3px 12px;
+    border: 1px solid var(--red);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--red);
+    font: inherit;
+    font-size: 0.72rem;
+    cursor: pointer;
+  }
+  .retry-button:hover {
+    background: color-mix(in srgb, var(--red) 16%, transparent);
+  }
+  .mcp-withheld-banner {
+    align-self: stretch;
+    margin: 0;
+    padding: 10px 13px;
+    border-radius: 9px;
+    border: 1px solid color-mix(in srgb, var(--yellow) 45%, var(--line));
+    background: color-mix(in srgb, var(--yellow) 12%, var(--surface));
+    color: var(--text);
+    font-size: 0.8rem;
+    line-height: 1.5;
+  }
+  .mcp-withheld-banner strong {
+    color: var(--yellow);
   }
   .studio-badge {
     display: inline-flex;
@@ -1381,6 +1611,22 @@
     font-size: 0.7rem;
     color: var(--muted);
   }
+  /* A stuck-escalation card is the scheduler stepping in, not the agent
+     asking its own question — a distinct border keeps that legible at a
+     glance, and its Stop option borrows the same red treatment as the
+     chat-error retry button so "end this run" reads as visually different
+     from "just another answer". */
+  .stuck-question-card {
+    border-color: color-mix(in srgb, var(--red) 35%, var(--line));
+  }
+  .stuck-stop-option {
+    border-color: var(--red);
+    color: var(--red);
+  }
+  .stuck-stop-option:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--red) 16%, var(--surface-2));
+    border-color: var(--red);
+  }
   .progress-strip {
     display: flex;
     flex: none;
@@ -1492,6 +1738,61 @@
     margin: 10px 18px 0;
     color: var(--muted);
     font-size: 0.72rem;
+  }
+  .rollback-row {
+    margin: 8px 18px 0;
+  }
+  .rollback-button {
+    padding: 3px 12px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--surface-2);
+    color: var(--muted);
+    font-size: 0.72rem;
+    cursor: pointer;
+  }
+  .rollback-button:hover {
+    border-color: var(--danger, #d9534f);
+    color: var(--danger, #d9534f);
+  }
+  .rollback-confirm {
+    max-width: 480px;
+    padding: 10px 12px;
+    border: 1px solid var(--danger, #d9534f);
+    border-radius: 8px;
+    background: var(--surface-2);
+  }
+  .rollback-confirm-text {
+    margin: 0;
+    color: var(--text);
+    font-size: 0.78rem;
+  }
+  .rollback-confirm-text code {
+    font-family: 'Cascadia Code', Consolas, monospace;
+  }
+  .rollback-explain {
+    margin: 6px 0 0;
+    color: var(--muted);
+    font-size: 0.72rem;
+  }
+  .rollback-error {
+    margin: 6px 0 0;
+    color: var(--danger, #d9534f);
+    font-size: 0.72rem;
+  }
+  .rollback-success {
+    margin: 0;
+    color: var(--text);
+    font-size: 0.78rem;
+  }
+  .rollback-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .rollback-confirm-button {
+    border-color: var(--danger, #d9534f);
+    color: var(--danger, #d9534f);
   }
   .attached-task-chip {
     display: inline-flex;

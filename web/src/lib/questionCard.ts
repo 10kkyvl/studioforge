@@ -19,6 +19,19 @@ export type QuestionCard = {
 
 const FENCE_RE = /```studioforge-question\r?\n([\s\S]*?)\r?\n```/;
 
+// The scheduler stamps a stuck-escalation's own message event with this
+// RawType (see scheduler.go's emit calls under "scheduler.stuck"), and it
+// survives into a persisted message's own rawType field the same way it
+// does on the live SSE event — this is the one marker that tells a
+// stuck-escalation question card apart from the agent's own natural
+// question, live or after a reload, without adding anything to the fence's
+// own {question, options} JSON contract.
+export const STUCK_ESCALATION_RAW_TYPE = 'scheduler.stuck';
+
+export function isStuckEscalation(rawType: string | undefined | null): boolean {
+  return rawType === STUCK_ESCALATION_RAW_TYPE;
+}
+
 /**
  * Validates and normalizes a parsed question payload — used both for a live
  * "question" event's payload (already JSON) and for JSON pulled out of a

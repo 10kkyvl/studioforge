@@ -18,6 +18,7 @@
   } from '@lucide/svelte';
   import { brand } from '$lib/brand';
   import {
+    APIError,
     bootstrapFromHash,
     connectEvents,
     createTask,
@@ -62,6 +63,7 @@
   let view: View = 'projects';
   let snapshot: Snapshot | null = null;
   let error = '';
+  let errorRetry: (() => void) | null = null;
   let loading = true;
   let busy = '';
   let search = '';
@@ -468,11 +470,17 @@
   async function action(id: string, work: () => Promise<unknown>) {
     busy = id;
     error = '';
+    errorRetry = null;
     notice = '';
     try {
       await work();
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      if (cause instanceof APIError && cause.code === 'network') {
+        error = $translate('error.network');
+        errorRetry = () => void action(id, work);
+      } else {
+        error = cause instanceof Error ? cause.message : String(cause);
+      }
     } finally {
       busy = '';
     }
@@ -581,9 +589,16 @@
       </header>
 
       {#if error}<div class="toast error-toast" role="alert">
-          <span>{error}</span><button
+          <span>{error}</span>
+          {#if errorRetry}
+            <button class="toast-retry" onclick={errorRetry}>{$translate('common.retry')}</button>
+          {/if}
+          <button
             aria-label={$translate('common.close')}
-            onclick={() => (error = '')}><X size={17} /></button
+            onclick={() => {
+              error = '';
+              errorRetry = null;
+            }}><X size={17} /></button
           >
         </div>{/if}
       {#if notice}<div class="toast success-toast" role="status">

@@ -36,6 +36,18 @@ describe('API client', () => {
     );
     await expect(request<{ ok: boolean }>('/test')).resolves.toEqual({ ok: true });
   });
+  it('accepts a 2xx response other than 200, e.g. 202 Accepted', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 202 })),
+    );
+    await expect(request<{ ok: boolean }>('/test')).resolves.toEqual({ ok: true });
+  });
+  it('maps a raw network failure to a retryable APIError instead of the bare browser error', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+    await expect(request('/test')).rejects.toBeInstanceOf(APIError);
+    await expect(request('/test')).rejects.toMatchObject({ code: 'network' });
+  });
 });
 
 describe('lead agent endpoints', () => {

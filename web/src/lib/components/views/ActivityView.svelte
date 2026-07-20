@@ -75,6 +75,10 @@
                 <button class="danger" onclick={() => onRunAction(run, 'cancel')}
                   >{$translate('common.cancel')}</button
                 >
+              {:else if run.status === 'waiting_decision'}
+                <button class="danger" onclick={() => onRunAction(run, 'cancel')}
+                  >{$translate('common.cancel')}</button
+                >
               {:else if ['interrupted', 'failed', 'cancelled'].includes(run.status)}
                 <button onclick={() => onRunAction(run, 'restart')}
                   >{$translate('common.restart')}</button

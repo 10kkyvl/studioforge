@@ -1157,6 +1157,21 @@ tbody tr:last-child td {
 .error-toast {
   border-color: color-mix(in srgb, var(--red) 40%, var(--line));
 }
+.toast button.toast-retry {
+  display: inline-flex;
+  flex: none;
+  padding: 3px 12px;
+  border: 1px solid var(--red);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--red);
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.toast button.toast-retry:hover {
+  background: color-mix(in srgb, var(--red) 16%, transparent);
+}
 .success-toast {
   border-color: color-mix(in srgb, var(--green) 40%, var(--line));
 }

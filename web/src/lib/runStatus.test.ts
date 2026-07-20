@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { RunEvent } from './types';
-import { endsRun } from './runStatus';
+import { endsRun, isRunTerminal, mcpWithheldMessage } from './runStatus';
 
 function event(patch: Partial<RunEvent>): RunEvent {
   return {
@@ -14,9 +14,32 @@ function event(patch: Partial<RunEvent>): RunEvent {
   };
 }
 
+describe('isRunTerminal', () => {
+  it('treats interrupted as terminal, the same as completed/failed/cancelled/waiting_decision', () => {
+    // A run left starting/running/cancelling when the daemon restarts is
+    // recovered to 'interrupted' (RecoverInterrupted, internal/database/runs.go).
+    // No process survived that restart, so a thread reopened afterward must
+    // not treat this run as still active with a live elapsed timer.
+    for (const status of [
+      'completed',
+      'failed',
+      'cancelled',
+      'waiting_decision',
+      'interrupted',
+    ]) {
+      expect(isRunTerminal(status)).toBe(true);
+    }
+  });
+  it('keeps the scheduler’s non-terminal states alive', () => {
+    for (const status of ['queued', 'waiting_resources', 'starting', 'running', 'paused']) {
+      expect(isRunTerminal(status)).toBe(false);
+    }
+  });
+});
+
 describe('endsRun', () => {
   it('ends the run on the scheduler’s own terminal states', () => {
-    for (const status of ['completed', 'failed', 'cancelled', 'waiting_decision']) {
+    for (const status of ['completed', 'failed', 'cancelled', 'waiting_decision', 'interrupted']) {
       expect(endsRun(event({ rawType: 'scheduler.state', payload: { status } }), 'run-1')).toBe(
         true,
       );
@@ -74,6 +97,35 @@ describe('endsRun', () => {
     ).toBe(false);
     for (const payload of [null, undefined, 'completed', { status: 7 }, {}]) {
       expect(endsRun(event({ rawType: 'scheduler.state', payload }), 'run-1')).toBe(false);
+    }
+  });
+});
+
+describe('mcpWithheldMessage', () => {
+  it('extracts the notice text from a scheduler.mcp status event', () => {
+    const notice = event({
+      rawType: 'scheduler.mcp',
+      payload: { message: 'Studio access withheld: multiple ambiguous instances open.' },
+    });
+    expect(mcpWithheldMessage(notice)).toBe(
+      'Studio access withheld: multiple ambiguous instances open.',
+    );
+  });
+  it('ignores events of other raw types under type status', () => {
+    expect(
+      mcpWithheldMessage(event({ rawType: 'scheduler.state', payload: { message: 'hi' } })),
+    ).toBeNull();
+  });
+  it('ignores events of other types even with a matching raw type', () => {
+    expect(
+      mcpWithheldMessage(
+        event({ type: 'message', rawType: 'scheduler.mcp', payload: { message: 'hi' } }),
+      ),
+    ).toBeNull();
+  });
+  it('ignores malformed or empty payloads', () => {
+    for (const payload of [null, undefined, 'hi', { message: 7 }, { message: '' }, {}]) {
+      expect(mcpWithheldMessage(event({ rawType: 'scheduler.mcp', payload }))).toBeNull();
     }
   });
 });

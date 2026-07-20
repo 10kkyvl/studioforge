@@ -59,7 +59,10 @@ async function fetchWithTimeout(input: string, init: RequestInit): Promise<Respo
     if (cause instanceof DOMException && cause.name === 'TimeoutError') {
       throw new APIError('Request timed out. Check your connection and try again.', 'timeout');
     }
-    throw cause;
+    throw new APIError(
+      'Could not reach the server. Check your connection and try again.',
+      'network',
+    );
   }
 }
 
@@ -106,6 +109,8 @@ export const setLead = (projectId: string, agentId: string): Promise<void> =>
 export const getPace = (projectId: string) =>
   request<{ typicalSeconds: number; samples: number }>(`/projects/${projectId}/pace`);
 export const getRunDiff = (runId: string) => request<RunDiff>(`/runs/${runId}/diff`);
+export const rollbackRun = (runId: string) =>
+  post<{ branch: string; commitHash: string }>(`/runs/${runId}/rollback`, {});
 export const getStudioStatus = (projectId?: string) =>
   request<StudioStatus>(
     projectId ? `/studio-status?project=${encodeURIComponent(projectId)}` : '/studio-status',
