@@ -1,6 +1,8 @@
 package scheduler
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -143,5 +145,176 @@ func TestQuestionEndToEnd(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("no question event was published for the question-test scenario")
+	}
+}
+
+// fence wraps a JSON body in a studioforge-question fenced block exactly as
+// a coding agent would emit it: the info string alone on its own line, the
+// JSON body, then the closing fence alone on its own line.
+func fence(body string) string {
+	return "```studioforge-question\n" + body + "\n```"
+}
+
+// TestDetectQuestionRejectsSingleOption enforces the v2 minimum of two
+// options: a block with only one option must not be treated as a question.
+func TestDetectQuestionRejectsSingleOption(t *testing.T) {
+	text := fence(`{"question": "Pick one", "options": [{"label": "A", "description": "aa"}]}`)
+	if _, ok := detectQuestion(text); ok {
+		t.Errorf("detectQuestion(%q) matched a single-option block, want no match", text)
+	}
+}
+
+// TestDetectQuestionRejectsFiveOptions enforces the v2 maximum of four
+// options: a block with five options must not be treated as a question.
+func TestDetectQuestionRejectsFiveOptions(t *testing.T) {
+	text := fence(`{"question": "Pick one", "options": [{"label": "A"}, {"label": "B"}, {"label": "C"}, {"label": "D"}, {"label": "E"}]}`)
+	if _, ok := detectQuestion(text); ok {
+		t.Errorf("detectQuestion(%q) matched a five-option block, want no match", text)
+	}
+}
+
+// TestDetectQuestionRejectsBlankLabel rejects an option whose label is empty
+// once whitespace is trimmed, even though the raw JSON field is non-empty.
+func TestDetectQuestionRejectsBlankLabel(t *testing.T) {
+	text := fence(`{"question": "Pick one", "options": [{"label": "   ", "description": "aa"}, {"label": "B", "description": "bb"}]}`)
+	if _, ok := detectQuestion(text); ok {
+		t.Errorf("detectQuestion(%q) matched a blank-label option, want no match", text)
+	}
+}
+
+// TestDetectQuestionRejectsDuplicateLabels rejects two options whose labels
+// are identical once trimmed, even though the raw JSON differs in
+// surrounding whitespace.
+func TestDetectQuestionRejectsDuplicateLabels(t *testing.T) {
+	text := fence(`{"question": "Pick one", "options": [{"label": "A", "description": "aa"}, {"label": " A ", "description": "bb"}]}`)
+	if _, ok := detectQuestion(text); ok {
+		t.Errorf("detectQuestion(%q) matched duplicate labels, want no match", text)
+	}
+}
+
+// TestDetectQuestionRejectsQuestionTooLong rejects a question whose trimmed
+// rune length exceeds the 2000-rune cap.
+func TestDetectQuestionRejectsQuestionTooLong(t *testing.T) {
+	longQuestion := strings.Repeat("q", maxQuestionLength+1)
+	body := fmt.Sprintf(`{"question": %q, "options": [{"label": "A", "description": "aa"}, {"label": "B", "description": "bb"}]}`, longQuestion)
+	if _, ok := detectQuestion(fence(body)); ok {
+		t.Errorf("detectQuestion matched a question over %d runes, want no match", maxQuestionLength)
+	}
+}
+
+// TestDetectQuestionRejectsLabelTooLong rejects an option label whose
+// trimmed rune length exceeds the 120-rune cap.
+func TestDetectQuestionRejectsLabelTooLong(t *testing.T) {
+	longLabel := strings.Repeat("a", maxOptionLabelLength+1)
+	body := fmt.Sprintf(`{"question": "Pick one", "options": [{"label": %q, "description": "aa"}, {"label": "B", "description": "bb"}]}`, longLabel)
+	if _, ok := detectQuestion(fence(body)); ok {
+		t.Errorf("detectQuestion matched a label over %d runes, want no match", maxOptionLabelLength)
+	}
+}
+
+// TestDetectQuestionRejectsDescriptionTooLong rejects an option description
+// whose rune length exceeds the 600-rune cap.
+func TestDetectQuestionRejectsDescriptionTooLong(t *testing.T) {
+	longDesc := strings.Repeat("d", maxOptionDescLength+1)
+	body := fmt.Sprintf(`{"question": "Pick one", "options": [{"label": "A", "description": %q}, {"label": "B", "description": "bb"}]}`, longDesc)
+	if _, ok := detectQuestion(fence(body)); ok {
+		t.Errorf("detectQuestion matched a description over %d runes, want no match", maxOptionDescLength)
+	}
+}
+
+// TestDetectQuestionRejectsInvalidJSONSyntax rejects a fence whose body is
+// not valid JSON at all (here, trailing commas), independent of the
+// missing-field cases already covered by TestDetectQuestionMalformedJSON.
+func TestDetectQuestionRejectsInvalidJSONSyntax(t *testing.T) {
+	text := fence(`{"question": "Pick one", "options": [{"label": "A",},]}`)
+	if _, ok := detectQuestion(text); ok {
+		t.Errorf("detectQuestion(%q) matched invalid JSON, want no match", text)
+	}
+}
+
+// TestDetectQuestionRejectsTwoFencedBlocks requires exactly one
+// studioforge-question fence per message: two valid blocks in the same
+// message must not be treated as a question, since it is ambiguous which one
+// the caller should act on.
+func TestDetectQuestionRejectsTwoFencedBlocks(t *testing.T) {
+	block := `{"question": "Pick one", "options": [{"label": "A", "description": "aa"}, {"label": "B", "description": "bb"}]}`
+	text := fence(block) + "\n\nActually, here is another one:\n\n" + fence(block)
+	if _, ok := detectQuestion(text); ok {
+		t.Errorf("detectQuestion(%q) matched a message with two fenced blocks, want no match", text)
+	}
+}
+
+// TestDetectQuestionRejectsOversizedBody rejects a fence whose JSON body
+// exceeds the 8192-byte cap, before it is even parsed as JSON.
+func TestDetectQuestionRejectsOversizedBody(t *testing.T) {
+	hugeDesc := strings.Repeat("x", maxQuestionBodyBytes)
+	body := fmt.Sprintf(`{"question": "Pick one", "options": [{"label": "A", "description": %q}, {"label": "B", "description": "bb"}]}`, hugeDesc)
+	if len(body) <= maxQuestionBodyBytes {
+		t.Fatalf("test body is %d bytes, want more than %d to exercise the cap", len(body), maxQuestionBodyBytes)
+	}
+	if _, ok := detectQuestion(fence(body)); ok {
+		t.Errorf("detectQuestion matched a body over %d bytes, want no match", maxQuestionBodyBytes)
+	}
+}
+
+// TestDetectQuestionRejectsNoFence confirms plain prose with no fence marker
+// at all is never mistaken for a question.
+func TestDetectQuestionRejectsNoFence(t *testing.T) {
+	text := "Just a plain message with no fence markers at all."
+	if _, ok := detectQuestion(text); ok {
+		t.Errorf("detectQuestion(%q) matched text with no fence, want no match", text)
+	}
+}
+
+// TestDetectQuestionAcceptsTwoOptions is the minimum valid shape: exactly
+// two options, and the parsed block must carry through the question text
+// and both options.
+func TestDetectQuestionAcceptsTwoOptions(t *testing.T) {
+	text := fence(`{"question": "Pick one", "options": [{"label": "A", "description": "aa"}, {"label": "B", "description": "bb"}]}`)
+	block, ok := detectQuestion(text)
+	if !ok {
+		t.Fatalf("expected a question to be detected in %q", text)
+	}
+	if block.Question != "Pick one" {
+		t.Errorf("question=%q", block.Question)
+	}
+	if len(block.Options) != 2 {
+		t.Fatalf("options=%+v, want 2", block.Options)
+	}
+}
+
+// TestDetectQuestionAcceptsFourOptions is the maximum valid shape: exactly
+// four options, and the parsed block must carry through the question text
+// and all four options.
+func TestDetectQuestionAcceptsFourOptions(t *testing.T) {
+	text := fence(`{"question": "Pick one", "options": [{"label": "A", "description": "aa"}, {"label": "B", "description": "bb"}, {"label": "C", "description": "cc"}, {"label": "D", "description": "dd"}]}`)
+	block, ok := detectQuestion(text)
+	if !ok {
+		t.Fatalf("expected a question to be detected in %q", text)
+	}
+	if block.Question != "Pick one" {
+		t.Errorf("question=%q", block.Question)
+	}
+	if len(block.Options) != 4 {
+		t.Fatalf("options=%+v, want 4", block.Options)
+	}
+}
+
+// TestDetectQuestionAcceptsEmbeddedInProse checks a valid block surrounded
+// by ordinary prose text is still detected: the fence does not need to be
+// the entire message.
+func TestDetectQuestionAcceptsEmbeddedInProse(t *testing.T) {
+	text := "Here is what I found, let me know which you prefer.\n\n" +
+		fence(`{"question": "Which mesh format should I use?", "options": [{"label": "FBX", "description": "Standard interchange format"}, {"label": "OBJ", "description": "Simpler, wider tool support"}]}`) +
+		"\n\nI can proceed once you pick one.\n"
+	block, ok := detectQuestion(text)
+	if !ok {
+		t.Fatalf("expected a question to be detected in %q", text)
+	}
+	if block.Question != "Which mesh format should I use?" {
+		t.Errorf("question=%q", block.Question)
+	}
+	if len(block.Options) != 2 {
+		t.Fatalf("options=%+v, want 2", block.Options)
 	}
 }

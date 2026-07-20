@@ -47,12 +47,26 @@ plugin loading or dynamic linking.
 - `internal/scheduler` — a fair per-project queue (`fairqueue.go`), the run lifecycle state machine
   (`state.go`), and `Manager` (`scheduler.go`), which enforces global/per-project/per-provider/per-model
   concurrency limits, checks budgets before starting a job, calls an installable `MCPProvisioner` hook,
-  and supports pause/resume/cancel/restart plus heartbeat-based interrupted-run detection. A second
+  and supports pause/resume/cancel/restart plus heartbeat-based interrupted-run detection. Pause is a
+  controlled cancel, not a live-process suspend: it stops the provider process the same safe way
+  `Cancel` does, records usage and the provider session, and releases the write lease before the store
+  is ever told `paused`; `POST /api/v1/runs/{id}/resume` then submits a fresh continuation run against
+  that saved session rather than un-parking a still-live process, so a `paused` row survives a daemon
+  restart and stays resumable. SQLite is the single source of truth for a run's lifecycle state:
+  `scheduler.transition` returns its store-write error to the caller instead of swallowing it, and
+  `Manager.run` publishes a run's status event only after that write succeeds — a failed write instead
+  publishes a distinct `scheduler.storage_error` event and leaves the row at its last persisted status,
+  for `RecoverInterrupted` to pick up as `interrupted` on the next restart. A second
   installable hook, `MCPValidator`, runs after a qualifying Claude run completes: `Manager.run`
   calls it, persists the resulting `passed`/`failed`/`inconclusive` outcome on the run, publishes it as
   a normal run event, and on `failed` schedules a follow-up correction run through the same `Submit`
   path (writer lease, budget check, and its own Git checkpoint all apply) — see "The self-correcting
-  playtest validation loop" below. A third installable hook, `DecisionProposer`, is called only when a
+  playtest validation loop" below. Validation runs under its own cancellable context and aborts to
+  `inconclusive` — never `passed` — the instant the run's write lease is lost, scheduling no correction
+  and proposing no decision. A correction run's Git checkpoint is bound to its own, already-created run
+  id before that run is admitted to the executable queue, so a failed admission never leaves an
+  orphaned checkpoint, and correction scheduling is idempotent, keyed on the parent run id. A third
+  installable hook, `DecisionProposer`, is called only when a
   failed validation's correction budget is exhausted (`CorrectionDepth >= MaxCorrectionRuns`): rather
   than only marking the lineage `correction_failed` (which still happens unconditionally), it hands the
   proposed follow-up correction `Job` to whatever persists it as a pending `Decision` — see "Operator
@@ -165,7 +179,10 @@ plugin loading or dynamic linking.
   no test files.
 - `internal/processes` — `Supervisor` (tracked, terminable child processes; used for Rojo serve sessions)
   and `MinimalEnvironment`, the allowlist that reduces what environment variables a provider subprocess
-  inherits.
+  inherits. `Supervisor.Start` reserves a process ID atomically before launching the (slower, unlocked)
+  child, and its reaper deletes a map entry only when that entry still refers to the same process
+  instance — closing a race where two concurrent `Start` calls for the same ID could both launch a
+  child and clobber each other's map entry.
 - `internal/platform` — data-directory resolution, the single-instance lock file, browser launching, a
   `SecretStore` interface with Windows Credential Manager and macOS Keychain adapter stubs (both
   currently return "unavailable"; StudioForge does not store Anthropic credentials), and

@@ -25,13 +25,14 @@ describe('isRunTerminal', () => {
       'failed',
       'cancelled',
       'waiting_decision',
+      'paused',
       'interrupted',
     ]) {
       expect(isRunTerminal(status)).toBe(true);
     }
   });
   it('keeps the scheduler’s non-terminal states alive', () => {
-    for (const status of ['queued', 'waiting_resources', 'starting', 'running', 'paused']) {
+    for (const status of ['queued', 'waiting_resources', 'starting', 'running']) {
       expect(isRunTerminal(status)).toBe(false);
     }
   });
@@ -39,11 +40,26 @@ describe('isRunTerminal', () => {
 
 describe('endsRun', () => {
   it('ends the run on the scheduler’s own terminal states', () => {
-    for (const status of ['completed', 'failed', 'cancelled', 'waiting_decision', 'interrupted']) {
+    for (const status of [
+      'completed',
+      'failed',
+      'cancelled',
+      'waiting_decision',
+      'paused',
+      'interrupted',
+    ]) {
       expect(endsRun(event({ rawType: 'scheduler.state', payload: { status } }), 'run-1')).toBe(
         true,
       );
     }
+  });
+  it('ends the run on a scheduler.storage_error infrastructure event', () => {
+    expect(
+      endsRun(
+        event({ type: 'error', rawType: 'scheduler.storage_error', payload: { message: 'x' } }),
+        'run-1',
+      ),
+    ).toBe(true);
   });
   it('keeps the run alive on the scheduler’s non-terminal states', () => {
     for (const status of ['queued', 'waiting_resources', 'starting', 'running']) {

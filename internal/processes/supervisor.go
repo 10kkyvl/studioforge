@@ -45,25 +45,24 @@ type Process struct {
 type Supervisor struct {
 	mu        sync.Mutex
 	processes map[string]*Process
+	reserving map[string]struct{}
 	closing   bool
 }
 
-func NewSupervisor() *Supervisor { return &Supervisor{processes: map[string]*Process{}} }
+func NewSupervisor() *Supervisor {
+	return &Supervisor{processes: map[string]*Process{}, reserving: map[string]struct{}{}}
+}
+
+func (s *Supervisor) unreserve(id string) {
+	s.mu.Lock()
+	delete(s.reserving, id)
+	s.mu.Unlock()
+}
 
 func (s *Supervisor) Start(parent context.Context, spec Spec) (*Process, error) {
 	if spec.ID == "" || spec.Executable == "" {
 		return nil, errors.New("process ID and executable are required")
 	}
-	s.mu.Lock()
-	if s.closing {
-		s.mu.Unlock()
-		return nil, errors.New("process supervisor is shutting down")
-	}
-	if _, ok := s.processes[spec.ID]; ok {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("process %s already exists", spec.ID)
-	}
-	s.mu.Unlock()
 	ctx := parent
 	cancel := func() {}
 	if spec.MaxRuntime > 0 {
@@ -77,25 +76,51 @@ func (s *Supervisor) Start(parent context.Context, spec Spec) (*Process, error) 
 		cmd.Env = append([]string(nil), spec.Environment...)
 	}
 	configureProcessTree(cmd)
+	p := &Process{spec: spec, cmd: cmd, lines: make(chan Line, 256), done: make(chan struct{}), cancel: cancel, result: Result{ExitCode: -1}}
+
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		cancel()
+		return nil, errors.New("process supervisor is shutting down")
+	}
+	_, hasProcess := s.processes[spec.ID]
+	_, hasReservation := s.reserving[spec.ID]
+	if hasProcess || hasReservation {
+		s.mu.Unlock()
+		cancel()
+		return nil, fmt.Errorf("process %s already exists", spec.ID)
+	}
+	s.reserving[spec.ID] = struct{}{}
+	s.mu.Unlock()
+
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		s.unreserve(spec.ID)
 		cancel()
 		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		s.unreserve(spec.ID)
 		cancel()
 		return nil, fmt.Errorf("stderr pipe: %w", err)
 	}
-	p := &Process{spec: spec, cmd: cmd, lines: make(chan Line, 256), done: make(chan struct{}), cancel: cancel, result: Result{ExitCode: -1}}
 	if err := cmd.Start(); err != nil {
+		s.unreserve(spec.ID)
 		cancel()
 		return nil, fmt.Errorf("start %s: %w", spec.Kind, err)
 	}
 	p.result.StartedAt = time.Now().UTC()
+
 	s.mu.Lock()
-	s.processes[spec.ID] = p
+	delete(s.reserving, spec.ID)
+	closing := s.closing
+	if !closing {
+		s.processes[spec.ID] = p
+	}
 	s.mu.Unlock()
+
 	p.collectors.Add(2)
 	go p.collect(stdout, "stdout")
 	go p.collect(stderr, "stderr")
@@ -113,9 +138,16 @@ func (s *Supervisor) Start(parent context.Context, spec Spec) (*Process, error) 
 		close(p.lines)
 		cancel()
 		s.mu.Lock()
-		delete(s.processes, spec.ID)
+		if s.processes[spec.ID] == p {
+			delete(s.processes, spec.ID)
+		}
 		s.mu.Unlock()
 	}()
+
+	if closing {
+		go func() { _ = p.Terminate(2 * time.Second) }()
+		return nil, errors.New("process supervisor is shutting down")
+	}
 	return p, nil
 }
 func (p *Process) collect(reader io.Reader, stream string) {

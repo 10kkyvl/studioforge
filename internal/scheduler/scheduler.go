@@ -43,17 +43,48 @@ type questionBlock struct {
 // missing a question/options, is treated as ordinary text: it returns
 // ok=false rather than an error, so callers never treat it as a crash or a
 // false transition.
+const (
+	maxQuestionLength    = 2000
+	minQuestionOptions   = 2
+	maxQuestionOptions   = 4
+	maxOptionLabelLength = 120
+	maxOptionDescLength  = 600
+	maxQuestionBodyBytes = 8192
+)
+
 func detectQuestion(text string) (questionBlock, bool) {
-	match := questionFencePattern.FindStringSubmatch(text)
-	if match == nil {
+	matches := questionFencePattern.FindAllStringSubmatch(text, -1)
+	if len(matches) != 1 {
+		return questionBlock{}, false
+	}
+	body := matches[0][1]
+	if len(body) > maxQuestionBodyBytes {
 		return questionBlock{}, false
 	}
 	var block questionBlock
-	if err := json.Unmarshal([]byte(match[1]), &block); err != nil {
+	if err := json.Unmarshal([]byte(body), &block); err != nil {
 		return questionBlock{}, false
 	}
-	if strings.TrimSpace(block.Question) == "" || len(block.Options) == 0 {
+	question := strings.TrimSpace(block.Question)
+	if question == "" || len([]rune(question)) > maxQuestionLength {
 		return questionBlock{}, false
+	}
+	if len(block.Options) < minQuestionOptions || len(block.Options) > maxQuestionOptions {
+		return questionBlock{}, false
+	}
+	seen := make(map[string]bool, len(block.Options))
+	for _, opt := range block.Options {
+		label := strings.TrimSpace(opt.Label)
+		if label == "" || len([]rune(label)) > maxOptionLabelLength {
+			return questionBlock{}, false
+		}
+		if len([]rune(opt.Description)) > maxOptionDescLength {
+			return questionBlock{}, false
+		}
+		if seen[label] {
+			return questionBlock{}, false
+		}
+		seen[label] = true
 	}
 	return block, true
 }
@@ -272,8 +303,8 @@ type Manager struct {
 }
 type execution struct {
 	cancel   context.CancelFunc
-	paused   bool
-	resume   chan struct{}
+	pausing  bool
+	running  bool
 	provider providers.Provider
 	job      *Job
 	// question is set once a fully-buffered assistant message in this run
@@ -330,12 +361,26 @@ func (m *Manager) SetLimits(global, project, provider, model int) {
 }
 
 func (m *Manager) Submit(ctx context.Context, j Job) (models.Run, bool, error) {
+	run, created, err := m.createRun(ctx, &j)
+	if err != nil || !created {
+		return run, created, err
+	}
+	if err := m.admit(&j, run); err != nil {
+		return models.Run{}, false, err
+	}
+	return run, true, nil
+}
+
+func (m *Manager) createRun(ctx context.Context, j *Job) (models.Run, bool, error) {
 	adapter, ok := m.providers[j.Provider]
 	if !ok || adapter == nil {
 		return models.Run{}, false, fmt.Errorf("provider %q is not configured", j.Provider)
 	}
-	if j.RunID == "" {
-		j.RunID = ""
+	m.mu.Lock()
+	closed := m.closed
+	m.mu.Unlock()
+	if closed {
+		return models.Run{}, false, errors.New("scheduler is closed")
 	}
 	run, created, err := m.store.CreateRun(ctx, models.Run{ID: j.RunID, ProjectID: j.ProjectID, AgentID: j.AgentID, TaskID: j.TaskID, Provider: j.Provider, ModelAlias: j.Model, Status: "queued", Phase: "queued", ThreadID: j.ThreadID, PromptSnapshot: j.Prompt, ParentRunID: j.ParentRunID, CorrectionDepth: j.CorrectionDepth}, j.IdempotencyKey)
 	if err != nil || !created {
@@ -345,16 +390,23 @@ func (m *Manager) Submit(ctx context.Context, j Job) (models.Run, bool, error) {
 	if len(j.Resources) == 0 {
 		j.Resources = []string{"project:" + j.ProjectID + ":write"}
 	}
+	return run, true, nil
+}
+
+func (m *Manager) admit(j *Job, run models.Run) error {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
-		return models.Run{}, false, errors.New("scheduler is closed")
+		if err := m.store.UpdateRun(context.Background(), run.ID, "failed", "failed", "", "scheduler closed before the run could be admitted"); err != nil {
+			slog.Error("failed to mark unadmitted run failed", "run_id", run.ID, "project_id", run.ProjectID, "error", err)
+		}
+		return errors.New("scheduler is closed")
 	}
-	m.queue.push(&j)
+	m.queue.push(j)
 	m.mu.Unlock()
 	m.signal()
 	m.emit(run, j.AgentID, "status", "scheduler.queued", map[string]any{"status": "queued"})
-	return run, true, nil
+	return nil
 }
 
 func (m *Manager) loop() {
@@ -373,7 +425,7 @@ func (m *Manager) loop() {
 				break
 			}
 			ctx, cancel := context.WithCancel(m.ctx)
-			exec := &execution{cancel: cancel, resume: make(chan struct{}), provider: m.providers[job.Provider], job: job}
+			exec := &execution{cancel: cancel, provider: m.providers[job.Provider], job: job}
 			m.active[job.RunID] = exec
 			m.projectActive[job.ProjectID]++
 			m.providerActive[job.Provider]++
@@ -408,7 +460,7 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 	lease, err := m.leases.Acquire(ctx, j.RunID, j.Resources)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			m.transition(context.Background(), j, "waiting_resources", "cancelled", "cancelled", "", "cancelled before resource acquisition")
+			m.finalizeStopped(e, "waiting_resources")
 		} else {
 			m.fail(context.Background(), j, err.Error())
 		}
@@ -441,9 +493,16 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 		handle, err = e.provider.Start(ctx, req)
 	}
 	if err != nil {
-		m.fail(ctx, j, err.Error())
+		if ctx.Err() != nil {
+			m.finalizeStopped(e, "starting")
+		} else {
+			m.fail(context.Background(), j, err.Error())
+		}
 		return
 	}
+	m.mu.Lock()
+	e.running = true
+	m.mu.Unlock()
 	m.transition(ctx, j, "starting", "running", "agent", "", "")
 	e.lastEventAt = time.Now()
 	interval := m.tick
@@ -456,14 +515,10 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 	for eventsCh != nil {
 		select {
 		case <-ctx.Done():
-			m.transition(context.Background(), j, "running", "cancelling", "cancelling", "", "")
 			handle.Cancel()
 			result := handle.Wait()
-			// A cancelled run still spent tokens and money before it was
-			// stopped, so it is recorded like any other. The run context is
-			// already dead, hence the background one for both writes.
 			_ = m.store.SetRunUsage(context.Background(), j.RunID, result.SessionID, result.Cost, models.TokenUsage(result.Usage))
-			m.transition(context.Background(), j, "cancelling", "cancelled", "cancelled", "", "")
+			m.finalizeStopped(e, "running")
 			return
 		case <-ticker.C:
 			if err := lease.Heartbeat(); err != nil {
@@ -487,7 +542,7 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 			}
 			if j.StuckDetectionEnabled {
 				m.mu.Lock()
-				skip := e.question || e.paused
+				skip := e.question
 				m.mu.Unlock()
 				if skip {
 					e.lastEventAt = time.Now()
@@ -501,22 +556,12 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 				eventsCh = nil
 				break
 			}
-			if err := m.waitIfPaused(ctx, e); err != nil {
-				m.transition(context.Background(), j, "paused", "cancelling", "cancelling", "", "")
-				handle.Cancel()
-				result := handle.Wait()
-				_ = m.store.SetRunUsage(context.Background(), j.RunID, result.SessionID, result.Cost, models.TokenUsage(result.Usage))
-				m.transition(context.Background(), j, "cancelling", "cancelled", "cancelled", "", "")
-				return
-			}
 			e.lastEventAt = time.Now()
 			m.emitEvent(ctx, e, event)
-			// Stuck detection only evaluates once waitIfPaused has already
-			// returned nil above (a run parked in a pause never reaches this
-			// line at all until resumed), and never on top of the agent's own
-			// natural question — that already has its own waiting_decision
-			// path once this turn ends, and racing two escalation mechanisms
-			// against the same run would be redundant at best.
+			// Stuck detection never fires on top of the agent's own natural
+			// question — that already has its own waiting_decision path once
+			// this turn ends, and racing two escalation mechanisms against the
+			// same run would be redundant at best.
 			if j.StuckDetectionEnabled {
 				m.trackStuckSignals(e, event)
 				m.mu.Lock()
@@ -533,9 +578,8 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 	}
 	result := handle.Wait()
 	if ctx.Err() != nil {
-		m.transition(context.Background(), j, "running", "cancelling", "cancelling", "", "")
 		_ = m.store.SetRunUsage(context.Background(), j.RunID, result.SessionID, result.Cost, models.TokenUsage(result.Usage))
-		m.transition(context.Background(), j, "cancelling", "cancelled", "cancelled", "", "")
+		m.finalizeStopped(e, "running")
 		return
 	}
 	// From here on the provider process has already exited and the usage/cost
@@ -579,14 +623,12 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 	// was running validate() already reacts to ctx.Done() promptly there,
 	// but its own outcome is irrelevant once this run is being cancelled).
 	if ctx.Err() != nil {
-		m.transition(context.Background(), j, "running", "cancelling", "cancelling", "", "")
-		m.transition(context.Background(), j, "cancelling", "cancelled", "cancelled", "", "")
+		m.finalizeStopped(e, "running")
 		return
 	}
 	m.runValidation(ctx, j, grant, lease, result.SessionID)
 	if ctx.Err() != nil {
-		m.transition(context.Background(), j, "running", "cancelling", "cancelling", "", "")
-		m.transition(context.Background(), j, "cancelling", "cancelled", "cancelled", "", "")
+		m.finalizeStopped(e, "running")
 		return
 	}
 	m.transition(context.Background(), j, "running", "completed", "verified", "", "")
@@ -631,10 +673,13 @@ func (m *Manager) runValidation(ctx context.Context, j *Job, grant MCPGrant, lea
 		return
 	}
 
+	valCtx, valCancel := context.WithCancel(ctx)
+	defer valCancel()
 	heartbeat := time.NewTicker(validationHeartbeatInterval(m.leases.TTL()))
 	defer heartbeat.Stop()
 	stopHeartbeat := make(chan struct{})
 	heartbeatDone := make(chan struct{})
+	leaseLost := make(chan struct{})
 	go func() {
 		defer close(heartbeatDone)
 		for {
@@ -643,15 +688,28 @@ func (m *Manager) runValidation(ctx context.Context, j *Job, grant MCPGrant, lea
 				return
 			case <-heartbeat.C:
 				if err := lease.Heartbeat(); err != nil {
-					slog.Error("failed to renew project lease during validation", "run_id", j.RunID, "project_id", j.ProjectID, "error", err)
+					slog.Error("lost project lease during validation; aborting the playtest", "run_id", j.RunID, "project_id", j.ProjectID, "error", err)
+					close(leaseLost)
+					valCancel()
 					return
 				}
 			}
 		}
 	}()
-	validation := validate(ctx, j)
+	validation := validate(valCtx, j)
 	close(stopHeartbeat)
 	<-heartbeatDone
+
+	select {
+	case <-leaseLost:
+		lost := ValidationResult{Outcome: ValidationInconclusive, Notice: "project lock was lost during playtest validation; Studio control was released and the outcome is inconclusive"}
+		m.emitValidation(*j, lost, ValidationInconclusive)
+		if err := m.store.SetRunValidation(context.Background(), j.RunID, string(ValidationInconclusive), ""); err != nil {
+			slog.Error("failed to persist run validation", "run_id", j.RunID, "error", err)
+		}
+		return
+	default:
+	}
 
 	outcome := validation.Outcome
 	if outcome == "" {
@@ -711,26 +769,34 @@ func (m *Manager) emitValidation(j Job, validation ValidationResult, outcome Val
 // takes before every other non-plan Claude run.
 func (m *Manager) scheduleCorrection(ctx context.Context, j *Job, sessionID string, validation ValidationResult) {
 	const checkpointLabel = "StudioForge checkpoint before correction run"
-	var checkpointHash, checkpointBranch string
-	if j.WorkingDirectory != "" {
-		hash, branch, err := gitcheckpoint.Checkpoint(j.WorkingDirectory, checkpointLabel)
-		if err != nil {
-			slog.Warn("git checkpoint before correction run failed", "run_id", j.RunID, "project_id", j.ProjectID, "error", err)
-		} else {
-			checkpointHash, checkpointBranch = hash, branch
-		}
-	}
 	correction := buildCorrectionJob(j, sessionID, validation)
-	run, created, err := m.Submit(ctx, correction)
+	run, created, err := m.createRun(ctx, &correction)
 	if err != nil {
-		slog.Error("failed to schedule correction run", "run_id", j.RunID, "project_id", j.ProjectID, "error", err)
+		slog.Error("failed to create correction run", "run_id", j.RunID, "project_id", j.ProjectID, "error", err)
 		return
 	}
-	if created && checkpointHash != "" {
-		checkpoint := models.Checkpoint{RunID: run.ID, ProjectID: j.ProjectID, CommitHash: checkpointHash, Branch: checkpointBranch, Label: checkpointLabel, CreatedAt: time.Now().UTC()}
-		if err := m.store.CreateCheckpoint(ctx, checkpoint); err != nil {
-			slog.Warn("persist checkpoint before correction run failed", "run_id", run.ID, "project_id", j.ProjectID, "error", err)
+	if !created {
+		return
+	}
+	if correction.WorkingDirectory != "" {
+		hash, branch, checkpointErr := gitcheckpoint.Checkpoint(correction.WorkingDirectory, checkpointLabel)
+		if checkpointErr != nil {
+			slog.Error("git checkpoint before correction run failed; abandoning correction rather than running it without a rollback point", "run_id", run.ID, "project_id", j.ProjectID, "error", checkpointErr)
+			m.fail(context.Background(), &correction, "correction aborted: could not create a Git checkpoint to roll back to")
+			return
 		}
+		if hash != "" {
+			checkpoint := models.Checkpoint{RunID: run.ID, ProjectID: j.ProjectID, CommitHash: hash, Branch: branch, Label: checkpointLabel, CreatedAt: time.Now().UTC()}
+			if err := m.store.CreateCheckpoint(ctx, checkpoint); err != nil {
+				slog.Error("persist checkpoint before correction run failed; abandoning correction", "run_id", run.ID, "project_id", j.ProjectID, "error", err)
+				m.fail(context.Background(), &correction, "correction aborted: could not record the rollback checkpoint")
+				return
+			}
+		}
+	}
+	if err := m.admit(&correction, run); err != nil {
+		slog.Error("failed to admit correction run", "run_id", run.ID, "project_id", j.ProjectID, "error", err)
+		return
 	}
 	m.emit(models.Run{ID: j.RunID, ProjectID: j.ProjectID}, j.AgentID, "status", "scheduler.correction_scheduled", map[string]any{"parentRunId": j.RunID})
 }
@@ -749,6 +815,7 @@ func buildCorrectionJob(j *Job, sessionID string, validation ValidationResult) J
 		MaxBudget: j.MaxBudget, Prompt: correctionPrompt(validation),
 		ParentRunID: j.RunID, CorrectionDepth: j.CorrectionDepth + 1,
 		MaxCorrectionRuns: j.MaxCorrectionRuns, ValidateAfterRun: j.ValidateAfterRun,
+		IdempotencyKey: "correction:" + j.RunID,
 	}
 }
 
@@ -821,22 +888,6 @@ func first(values []string) string {
 	}
 	return values[0]
 }
-func (m *Manager) waitIfPaused(ctx context.Context, e *execution) error {
-	for {
-		m.mu.Lock()
-		if !e.paused {
-			m.mu.Unlock()
-			return nil
-		}
-		resume := e.resume
-		m.mu.Unlock()
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-resume:
-		}
-	}
-}
 func (m *Manager) finished(j *Job) {
 	m.mu.Lock()
 	delete(m.active, j.RunID)
@@ -848,30 +899,55 @@ func (m *Manager) finished(j *Job) {
 }
 func (m *Manager) fail(ctx context.Context, j *Job, message string) {
 	if err := m.store.UpdateRun(ctx, j.RunID, "failed", "failed", "", message); err != nil {
-		// The event below still fires, so the stream will now claim the run
-		// failed even though the DB row disagrees — log loudly so that
-		// divergence leaves a trace instead of vanishing silently.
-		slog.Error("failed to persist run transition", "run_id", j.RunID, "status", "failed", "error", err)
-	}
-	m.emit(models.Run{ID: j.RunID, ProjectID: j.ProjectID}, j.AgentID, "error", "scheduler.failed", map[string]any{"message": message})
-	// Also surface a terminal status event. Consumers such as the chat UI key off
-	// status events to learn a run has ended; a failure that only emitted an
-	// error event would leave them waiting on the run forever.
-	m.emit(models.Run{ID: j.RunID, ProjectID: j.ProjectID}, j.AgentID, "status", "scheduler.state", map[string]any{"status": "failed", "phase": "failed"})
-}
-func (m *Manager) transition(ctx context.Context, j *Job, from, to, phase, resource, message string) {
-	if err := ValidateTransition(from, to); err != nil && from != "" {
-		m.emit(models.Run{ID: j.RunID, ProjectID: j.ProjectID}, j.AgentID, "error", "scheduler.transition", map[string]any{"message": err.Error()})
+		slog.Error("failed to persist run failure", "run_id", j.RunID, "project_id", j.ProjectID, "error", err)
+		m.emitStorageError(j, "failed")
 		return
 	}
+	m.emit(models.Run{ID: j.RunID, ProjectID: j.ProjectID}, j.AgentID, "error", "scheduler.failed", map[string]any{"message": message})
+	m.emit(models.Run{ID: j.RunID, ProjectID: j.ProjectID}, j.AgentID, "status", "scheduler.state", map[string]any{"status": "failed", "phase": "failed"})
+}
+func (m *Manager) transition(ctx context.Context, j *Job, from, to, phase, resource, message string) error {
+	if err := ValidateTransition(from, to); err != nil && from != "" {
+		m.emit(models.Run{ID: j.RunID, ProjectID: j.ProjectID}, j.AgentID, "error", "scheduler.transition", map[string]any{"message": err.Error()})
+		return err
+	}
 	if err := m.store.UpdateRun(ctx, j.RunID, to, phase, resource, message); err != nil {
-		// Same risk as in fail(): the status event fired below will report
-		// this transition as having happened even though the write that was
-		// supposed to record it failed, leaving the DB row and the event
-		// stream silently out of sync unless this is logged.
-		slog.Error("failed to persist run transition", "run_id", j.RunID, "status", to, "error", err)
+		slog.Error("failed to persist run transition", "run_id", j.RunID, "project_id", j.ProjectID, "status", to, "error", err)
+		m.emitStorageError(j, to)
+		return err
 	}
 	m.emit(models.Run{ID: j.RunID, ProjectID: j.ProjectID}, j.AgentID, "status", "scheduler.state", map[string]any{"status": to, "phase": phase, "resource": resource})
+	return nil
+}
+
+func (m *Manager) emitStorageError(j *Job, intended string) {
+	m.emit(models.Run{ID: j.RunID, ProjectID: j.ProjectID}, j.AgentID, "error", "scheduler.storage_error", map[string]any{
+		"message":        "failed to record the run's lifecycle state; it will be recovered on the next daemon restart",
+		"intendedStatus": intended,
+	})
+}
+
+func (m *Manager) finalizeStopped(e *execution, from string) {
+	j := e.job
+	m.mu.Lock()
+	pausing := e.pausing && !e.cancelling
+	m.mu.Unlock()
+	if pausing && from == "running" {
+		if err := m.transition(context.Background(), j, from, "paused", "paused", "", ""); err != nil {
+			return
+		}
+		m.mu.Lock()
+		racedCancel := e.cancelling
+		m.mu.Unlock()
+		if !racedCancel {
+			return
+		}
+		from = "paused"
+	}
+	if err := m.transition(context.Background(), j, from, "cancelling", "cancelling", "", ""); err != nil {
+		return
+	}
+	_ = m.transition(context.Background(), j, "cancelling", "cancelled", "cancelled", "", "")
 }
 func (m *Manager) emit(run models.Run, agent, eventType, raw string, payload any) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -910,7 +986,7 @@ func (m *Manager) emitEvent(ctx context.Context, e *execution, event providers.E
 	_, _ = m.hub.Publish(ctx, models.RunEvent{ProjectID: j.ProjectID, RunID: j.RunID, AgentID: j.AgentID, Type: event.Type, RawType: event.RawType, Payload: event.Payload, CreatedAt: event.At})
 }
 
-func (m *Manager) Pause(ctx context.Context, runID string) error {
+func (m *Manager) Pause(_ context.Context, runID string) error {
 	m.mu.Lock()
 	e, ok := m.active[runID]
 	if !ok {
@@ -921,61 +997,17 @@ func (m *Manager) Pause(ctx context.Context, runID string) error {
 		m.mu.Unlock()
 		return errors.New("run is being cancelled")
 	}
-	if e.paused {
+	if !e.running {
+		m.mu.Unlock()
+		return errors.New("run is not running yet")
+	}
+	if e.pausing {
 		m.mu.Unlock()
 		return nil
 	}
-	e.paused = true
-	myResume := make(chan struct{})
-	e.resume = myResume
+	e.pausing = true
+	e.cancel()
 	m.mu.Unlock()
-	applied, err := m.store.UpdateRunIfStatus(ctx, runID, []string{"running"}, "paused", "paused", "", "")
-	if err != nil {
-		return err
-	}
-	if !applied {
-		m.mu.Lock()
-		if e.paused && e.resume == myResume {
-			e.paused = false
-			close(e.resume)
-		}
-		m.mu.Unlock()
-		return errors.New("run status changed concurrently; refusing to pause")
-	}
-	return nil
-}
-func (m *Manager) Resume(ctx context.Context, runID string) error {
-	m.mu.Lock()
-	e, ok := m.active[runID]
-	if !ok {
-		m.mu.Unlock()
-		return errors.New("run is not active")
-	}
-	if e.cancelling {
-		m.mu.Unlock()
-		return errors.New("run is being cancelled")
-	}
-	if !e.paused {
-		m.mu.Unlock()
-		return nil
-	}
-	e.paused = false
-	myResume := e.resume
-	close(myResume)
-	m.mu.Unlock()
-	applied, err := m.store.UpdateRunIfStatus(ctx, runID, []string{"paused"}, "running", "agent", "", "")
-	if err != nil {
-		return err
-	}
-	if !applied {
-		m.mu.Lock()
-		if !e.paused && e.resume == myResume {
-			e.paused = true
-			e.resume = make(chan struct{})
-		}
-		m.mu.Unlock()
-		return errors.New("run status changed concurrently; refusing to resume")
-	}
 	return nil
 }
 func (m *Manager) Cancel(ctx context.Context, runID string) error {
@@ -995,25 +1027,26 @@ func (m *Manager) Cancel(ctx context.Context, runID string) error {
 	job, queued := m.queue.remove(runID)
 	m.mu.Unlock()
 	if queued {
-		m.transition(ctx, job, "queued", "cancelled", "cancelled", "", "cancelled while queued")
-		return nil
+		return m.transition(ctx, job, "queued", "cancelled", "cancelled", "", "cancelled while queued")
 	}
-	// Not active and not queued: the one remaining case where a run is still
-	// live from the operator's point of view but has no goroutine of its own
-	// is waiting_decision — the run's own goroutine already fully exited (the
-	// same way it does for the agent's own natural question) once it parked
-	// there, so there is nothing to signal, exactly like the queued case
-	// above, just against a different starting status and a two-step
-	// transition (waiting_decision itself is not a legal direct predecessor
-	// of cancelled; cancelling is the required intermediate step).
+	// Not active and not queued: the run may still be live from the operator's
+	// point of view while having no goroutine of its own — waiting_decision (the
+	// agent parked on its own question) or paused (a controlled-cancel pause).
+	// Both already fully stopped their provider process, so this is pure
+	// bookkeeping through the required intermediate cancelling step (neither is a
+	// legal direct predecessor of cancelled).
 	run, err := m.store.Run(ctx, runID)
-	if err != nil || run.Status != "waiting_decision" {
+	if err != nil {
+		return errors.New("run is not active")
+	}
+	if run.Status != "waiting_decision" && run.Status != "paused" {
 		return errors.New("run is not active")
 	}
 	pending := &Job{RunID: run.ID, ProjectID: run.ProjectID, AgentID: run.AgentID}
-	m.transition(context.Background(), pending, "waiting_decision", "cancelling", "cancelling", "", "")
-	m.transition(context.Background(), pending, "cancelling", "cancelled", "cancelled", "", "cancelled while waiting on a decision")
-	return nil
+	if err := m.transition(context.Background(), pending, run.Status, "cancelling", "cancelling", "", ""); err != nil {
+		return err
+	}
+	return m.transition(context.Background(), pending, "cancelling", "cancelled", "cancelled", "", "cancelled while stopped")
 }
 func (m *Manager) Close(ctx context.Context) error {
 	m.mu.Lock()

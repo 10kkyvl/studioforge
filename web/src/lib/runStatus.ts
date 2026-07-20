@@ -3,7 +3,10 @@ import type { RunEvent } from './types';
 // Statuses the scheduler uses to declare a run's live process has ended.
 // waiting_decision belongs here too: the run stops executing as soon as an
 // agent asks a closed question, even though the thread stays resumable and
-// will continue once the question is answered. interrupted belongs here too:
+// will continue once the question is answered. paused belongs here too: a
+// paused run is a controlled cancel that actually stops the agent process (see
+// scheduler.Pause), so its live timer must stop even though the saved session
+// stays resumable. interrupted belongs here too:
 // RecoverInterrupted (internal/database/runs.go) stamps it on every run still
 // starting/running/cancelling when the daemon restarts, precisely because no
 // process survived to keep running it — without it here, a thread reopened
@@ -15,6 +18,7 @@ const TERMINAL_STATUSES = new Set([
   'failed',
   'cancelled',
   'waiting_decision',
+  'paused',
   'interrupted',
 ]);
 // The scheduler is the only authority on a run's lifecycle: it stamps every
@@ -30,6 +34,7 @@ export function isRunTerminal(status: string): boolean {
 }
 
 const MCP_WITHHELD = 'scheduler.mcp';
+const STORAGE_ERROR = 'scheduler.storage_error';
 
 export function mcpWithheldMessage(event: RunEvent): string | null {
   if (event.type !== 'status' || event.rawType !== MCP_WITHHELD) return null;
@@ -42,6 +47,7 @@ export function mcpWithheldMessage(event: RunEvent): string | null {
 /** Reports whether this event is the scheduler declaring `runId` finished. */
 export function endsRun(event: RunEvent, runId: string): boolean {
   if (!runId || event.runId !== runId) return false;
+  if (event.rawType === STORAGE_ERROR) return true;
   if (event.type !== 'status' || event.rawType !== SCHEDULER_STATE) return false;
   const payload = event.payload;
   if (!payload || typeof payload !== 'object') return false;

@@ -37,9 +37,10 @@ func (s *Store) EnsureDefaultThread(ctx context.Context, projectID string) (mode
 
 // LatestThreadSession is the Claude session to resume for the next message in a
 // thread. It resumes when the thread's most recent run either completed
-// cleanly or is waiting on the user to answer an interactive question
-// (waiting_decision) and recorded a session; if that run failed or was
-// cancelled it returns empty so the next message starts fresh. This lets a
+// cleanly, is waiting on the user to answer an interactive question
+// (waiting_decision), or was paused mid-turn by the operator (paused) and
+// recorded a session; if that run failed or was cancelled it returns empty so
+// the next message starts fresh. This lets a
 // thread self-heal from a dead or expired session instead of resuming it
 // forever (a resume of a bad session fails, records no new session, and would
 // otherwise resume the same stale id on every following message). A run
@@ -55,7 +56,7 @@ func (s *Store) LatestThreadSession(ctx context.Context, threadID string) (strin
 	if err != nil {
 		return "", err
 	}
-	if status != "completed" && status != "waiting_decision" {
+	if status != "completed" && status != "waiting_decision" && status != "paused" {
 		return "", nil
 	}
 	return session, nil

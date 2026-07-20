@@ -116,6 +116,41 @@ func TestLatestThreadSessionResumesWaitingDecision(t *testing.T) {
 	}
 }
 
+func TestPausedRunSurvivesRecoveryAndStaysResumable(t *testing.T) {
+	store, ctx := newThreadStore(t)
+	thread, err := store.EnsureDefaultThread(ctx, "demo-obby")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", ModelAlias: "balanced", ThreadID: thread.ID}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetRunUsage(ctx, run.ID, "sess-paused", 0, models.TokenUsage{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateRun(ctx, run.ID, "paused", "paused", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecoverInterrupted(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Run(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "paused" {
+		t.Fatalf("a paused run must survive daemon recovery untouched, status=%q", got.Status)
+	}
+	session, err := store.LatestThreadSession(ctx, thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session != "sess-paused" {
+		t.Fatalf("a paused run must stay resumable after recovery, session=%q", session)
+	}
+}
+
 // LatestThreadStuckState is the sibling lookup api.createRun uses to decide
 // whether the next run's stuck detection is suppressed: same
 // latest-run-in-thread query LatestThreadSession already makes, but reading

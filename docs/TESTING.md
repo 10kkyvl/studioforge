@@ -9,6 +9,8 @@ go test -race ./...
 
 The suite covers migrations/pragmas, isolation, default-agent repair and agent CRUD, runtime settings, write bursts, backup, budgets, scheduler fairness and state machines, lease cancellation/deadlock, multi-project runs/recovery, SSE replay/slow clients, Host/Origin/session security, path traversal/symlinks, prompts/redaction, memory FTS/fallback, process termination, Codex JSONL/auth/resume argument handling, Claude stream/failures/resume capabilities, Studio binding, Rojo lifecycle, Git rollback, quarantine, and portable export. Browser E2E creates a real project, creates and launches its mock agent, saves integration settings, and checks for console errors.
 
+This pass added deterministic regression tests, with no sleep-based flakiness for the concurrency-sensitive ones: the supervisor duplicate-ID race (`internal/processes`), honest pause together with cancel/pause races and storage-write-failure consistency (`internal/scheduler`), validation aborting to `inconclusive` on write-lease loss, correction-checkpoint ordering and idempotency, and the shared `studioforge-question` contract between the backend's `detectQuestion` and the frontend's `questionCard` (`web/src/lib`).
+
 Vitest verifies i18n parity and the typed API error client. Playwright builds a real Go binary, performs secure first-run exchange, changes locale, starts a run, opens the Tasks DAG (including a task with no dependencies), and visits core screens with console-error assertions.
 
 The Roblox Studio adapter includes an in-process JSON-RPC stdio fixture test. With an MCP-enabled Studio place open, run the opt-in live handshake, capability discovery, and instance-list smoke:
@@ -90,6 +92,8 @@ go test -race ./...
 ```
 
 Набор покрывает миграции/pragma, изоляцию, восстановление default agent и agent CRUD, runtime settings, bursts записи, backup, budgets, справедливость scheduler и state machine, отмену/deadlock lease, многопроектные runs/recovery, SSE replay/медленных клиентов, безопасность Host/Origin/session, path traversal/symlink, prompts/redaction, memory FTS/fallback, завершение процессов, Codex JSONL/auth/resume args, Claude stream/failures/resume capabilities, Studio binding, жизненный цикл Rojo, Git rollback, quarantine и portable export. Browser E2E создаёт настоящий проект, создаёт и запускает его mock agent, сохраняет integration settings и проверяет отсутствие console errors.
+
+Этот проход добавил детерминированные регрессионные тесты без flakiness на sleep для тех, что связаны с конкурентностью: гонка дублирующихся ID в supervisor (`internal/processes`), честная пауза вместе с гонками cancel/pause и согласованностью при отказе записи в хранилище (`internal/scheduler`), прерывание валидации в `inconclusive` при потере write-lease, порядок и идемпотентность checkpoint коррекции, и общий контракт `studioforge-question` между backend'ным `detectQuestion` и frontend'ным `questionCard` (`web/src/lib`).
 
 Vitest проверяет паритет i18n и типизированный API client. Playwright собирает реальный Go binary, выполняет защищённый first-run exchange, меняет locale, запускает run и открывает core screens с проверкой console errors и базовой доступности.
 

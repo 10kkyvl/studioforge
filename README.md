@@ -59,7 +59,7 @@ The project is an alpha as a whole. The table below describes individual capabil
 | Local daemon + embedded SPA | Loopback bind, one-use bootstrap token, HttpOnly SameSite cookie |
 | Multi-project registry | Canonical project roots, path containment, symlink rejection |
 | SQLite storage | Pure-Go driver (no CGO), embedded migrations, WAL, integrity checks, backups |
-| Run scheduler | Fair queue, writer leases, per-project/provider/model limits, budgets, pause/resume/cancel/restart, interrupted-run recovery |
+| Run scheduler | Fair queue, writer leases, per-project/provider/model limits, budgets, pause (a controlled cancel that stops the agent and stays resumable)/resume (submits a new run continuing the saved session)/cancel/restart, interrupted-run recovery |
 | Persisted events + live stream | Server-sent events at `/api/v1/events` |
 | Claude Code provider | Real `claude` subprocess, runtime flag discovery, NDJSON streaming, session resume, classified failures |
 | Codex CLI provider | `codex exec --json`, JSONL events, workspace sandbox, thread resume |

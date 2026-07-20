@@ -1015,7 +1015,7 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 	case "pause":
 		err = s.scheduler.Pause(r.Context(), id)
 	case "resume":
-		err = s.scheduler.Resume(r.Context(), id)
+		err = s.resumeRun(r.Context(), id)
 	case "cancel":
 		err = s.scheduler.Cancel(r.Context(), id)
 	case "restart":
@@ -1061,6 +1061,81 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 		status = 202
 	}
 	writeJSON(w, status, map[string]bool{"ok": true})
+}
+
+func (s *Server) resumeRun(ctx context.Context, runID string) error {
+	run, err := s.store.Run(ctx, runID)
+	if err != nil {
+		return err
+	}
+	if run.Status != "paused" {
+		return fmt.Errorf("run in status %s cannot be resumed", run.Status)
+	}
+	project, err := s.store.Project(ctx, run.ProjectID)
+	if err != nil {
+		return err
+	}
+	agents, err := s.store.ListAgents(ctx, run.ProjectID)
+	if err != nil {
+		return err
+	}
+	var agent *models.Agent
+	enabled := make([]models.Agent, 0, len(agents))
+	for i := range agents {
+		if !agents[i].Enabled {
+			continue
+		}
+		enabled = append(enabled, agents[i])
+		if agents[i].ID == run.AgentID {
+			agent = &agents[i]
+		}
+	}
+	if agent == nil {
+		return errors.New("the original agent is missing or disabled")
+	}
+	systemPrompt := prompts.ForRun(agent.SystemPrompt, projects.LoadContext(project.Path))
+	var subagents []providers.Subagent
+	if strings.Contains(strings.ToLower(agent.Role), "orchestrator") {
+		for _, candidate := range enabled {
+			if candidate.ID == agent.ID {
+				continue
+			}
+			subagents = append(subagents, providers.Subagent{Name: candidate.Name, Description: candidate.Role, Prompt: prompts.ForRun(candidate.SystemPrompt, "")})
+		}
+	}
+	stuckSettings := scheduler.StuckSettings{Enabled: true, IdleSeconds: 600, RepetitionCap: 6}
+	if s.stuckSettings != nil {
+		stuckSettings = s.stuckSettings()
+	}
+	const checkpointLabel = "StudioForge checkpoint before agent run"
+	var checkpointHash, checkpointBranch string
+	if agent.Provider == "claude" {
+		if hash, branch, checkpointErr := gitcheckpoint.Checkpoint(project.Path, checkpointLabel); checkpointErr != nil {
+			s.logger.Warn("git checkpoint failed", "project_id", project.ID, "project_path", project.Path, "error", checkpointErr)
+		} else {
+			checkpointHash, checkpointBranch = hash, branch
+		}
+	}
+	newRun, created, err := s.scheduler.Submit(ctx, scheduler.Job{
+		ProjectID: project.ID, AgentID: agent.ID, TaskID: run.TaskID,
+		Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort,
+		PermissionProfile: agent.Permission, WorkingDirectory: project.Path,
+		Prompt:       "Continue the task you were working on before it was paused. Pick up where you left off and finish it, then report back.",
+		SystemPrompt: systemPrompt, ThreadID: run.ThreadID, ResumeSessionID: run.ProviderSession,
+		MaxBudget: agent.Budget, Resources: []string{"project:" + project.ID + ":write"},
+		Subagents: subagents, ValidateAfterRun: agent.ValidateAfterRun, MaxCorrectionRuns: agent.MaxCorrectionRuns,
+		StuckDetectionEnabled: stuckSettings.Enabled && !agent.StuckDetectionDisabled, StuckIdleSeconds: stuckSettings.IdleSeconds, StuckRepetitionCap: stuckSettings.RepetitionCap,
+	})
+	if err != nil {
+		return err
+	}
+	if created && checkpointHash != "" {
+		checkpoint := models.Checkpoint{RunID: newRun.ID, ProjectID: project.ID, CommitHash: checkpointHash, Branch: checkpointBranch, Label: checkpointLabel, CreatedAt: time.Now().UTC()}
+		if err := s.store.CreateCheckpoint(ctx, checkpoint); err != nil {
+			s.logger.Warn("persist checkpoint failed", "run_id", newRun.ID, "project_id", project.ID, "error", err)
+		}
+	}
+	return nil
 }
 
 // StudioSessionsRefresher runs one live discovery pass over the Studio MCP

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -51,6 +52,76 @@ func TestCollectDropsLinesUnderBackpressureAndCountsThem(t *testing.T) {
 	p.collect(strings.NewReader(strings.Repeat("line\n", 10)), "stdout")
 	if got := p.DroppedLines(); got != 9 {
 		t.Fatalf("DroppedLines() = %d, want 9", got)
+	}
+}
+func TestStartRejectsDuplicateIDConcurrently(t *testing.T) {
+	supervisor := NewSupervisor()
+	defer supervisor.Close(context.Background())
+	spec := Spec{ID: "dup-start", Kind: "test", Executable: os.Args[0], Args: []string{"-test.run=TestHelperProcess"}, Environment: append(MinimalEnvironment(nil), "STUDIOFORGE_HELPER=1")}
+
+	var ready sync.WaitGroup
+	ready.Add(2)
+	start := make(chan struct{})
+	var results [2]*Process
+	var errs [2]error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for i := 0; i < 2; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			ready.Done()
+			<-start
+			results[i], errs[i] = supervisor.Start(context.Background(), spec)
+		}()
+	}
+	ready.Wait()
+	close(start)
+	wg.Wait()
+
+	var winner *Process
+	var loserErr error
+	switch {
+	case errs[0] == nil && errs[1] != nil:
+		winner, loserErr = results[0], errs[1]
+	case errs[1] == nil && errs[0] != nil:
+		winner, loserErr = results[1], errs[0]
+	default:
+		t.Fatalf("expected exactly one Start to succeed, got errs=%v results=%v", errs, results)
+	}
+	if !strings.Contains(loserErr.Error(), "already exists") {
+		t.Fatalf("loser error = %q, want it to contain %q", loserErr.Error(), "already exists")
+	}
+	if winner == nil {
+		t.Fatal("winning Start returned a nil process")
+	}
+	if result := winner.Wait(); result.ExitCode != 7 {
+		t.Fatalf("winner result = %+v, want ExitCode 7", result)
+	}
+
+	process, err := supervisor.Start(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("Start after winner exited: %v", err)
+	}
+	if r := process.Wait(); r.ExitCode != 7 {
+		t.Fatalf("reused id result = %+v, want ExitCode 7", r)
+	}
+}
+func TestStartFailureLeavesNoLingeringReservation(t *testing.T) {
+	supervisor := NewSupervisor()
+	defer supervisor.Close(context.Background())
+	id := "reserve-fail"
+
+	if _, err := supervisor.Start(context.Background(), Spec{ID: id, Kind: "test", Executable: "studioforge-test-definitely-missing-binary"}); err == nil {
+		t.Fatal("expected Start with a missing executable to fail")
+	}
+
+	process, err := supervisor.Start(context.Background(), Spec{ID: id, Kind: "test", Executable: os.Args[0], Args: []string{"-test.run=TestHelperProcess"}, Environment: append(MinimalEnvironment(nil), "STUDIOFORGE_HELPER=1")})
+	if err != nil {
+		t.Fatalf("Start after failed start should succeed, got: %v", err)
+	}
+	if r := process.Wait(); r.ExitCode != 7 {
+		t.Fatalf("result = %+v, want ExitCode 7", r)
 	}
 }
 func TestSupervisorTerminatesProcessTree(t *testing.T) {

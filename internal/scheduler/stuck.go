@@ -20,6 +20,7 @@ import (
 // on the same run would only nag — or anything else (a genuine typed
 // clarification) that leaves detection enabled at the current settings.
 const StuckContinueLabel = "Continue testing"
+const StuckStopLabel = "Stop here"
 
 // StuckSettings is the resolved global stuck-detection configuration, read
 // once per run submission the same way ValidateAfterRun/MaxCorrectionRuns
@@ -241,7 +242,10 @@ func buildStuckMessage(j *Job, reason string, observations []string) string {
 	b.WriteString("\nReply to redirect it, or choose an option below.\n\n")
 	block := questionBlock{
 		Question: "This run looks stuck. Continue, or should it stop here?",
-		Options:  []questionOption{{Label: StuckContinueLabel, Description: "Resume the same session and keep going."}},
+		Options: []questionOption{
+			{Label: StuckContinueLabel, Description: "Resume the same session and keep going."},
+			{Label: StuckStopLabel, Description: "Stop the run here instead of continuing."},
+		},
 	}
 	// questionBlock only ever holds strings, so this can never fail.
 	encoded, _ := json.Marshal(block)
@@ -328,8 +332,7 @@ func (m *Manager) escalateStuck(ctx context.Context, j *Job, e *execution, handl
 	result := handle.Wait()
 	_ = m.store.SetRunUsage(context.Background(), j.RunID, result.SessionID, result.Cost, models.TokenUsage(result.Usage))
 	if ctx.Err() != nil {
-		m.transition(context.Background(), j, "running", "cancelling", "cancelling", "", "")
-		m.transition(context.Background(), j, "cancelling", "cancelled", "cancelled", "", "")
+		m.finalizeStopped(e, "running")
 		return
 	}
 	text := buildStuckMessage(j, reason, e.recentObservations)
@@ -347,7 +350,9 @@ func (m *Manager) transitionStuck(ctx context.Context, j *Job) {
 		return
 	}
 	if err := m.store.UpdateRunStuck(ctx, j.RunID, to, phase, "", ""); err != nil {
-		slog.Error("failed to persist stuck-escalation run transition", "run_id", j.RunID, "status", to, "error", err)
+		slog.Error("failed to persist stuck-escalation run transition", "run_id", j.RunID, "project_id", j.ProjectID, "status", to, "error", err)
+		m.emitStorageError(j, to)
+		return
 	}
 	m.emit(models.Run{ID: j.RunID, ProjectID: j.ProjectID}, j.AgentID, "status", "scheduler.state", map[string]any{"status": to, "phase": phase, "resource": ""})
 }

@@ -128,7 +128,9 @@ paths:
         "400": {description: "Empty prompt, unknown task, or task from another project"}
   /runs/{id}/{action}:
     post:
-      summary: Pause, resume, cancel, or restart a run
+      summary: >-
+        Pause, resume, cancel, or restart a run; resume submits a new run
+        that continues the target run's saved provider session
       parameters:
         - {name: id, in: path, required: true, schema: {type: string}}
         - {name: action, in: path, required: true, schema: {type: string, enum: [pause, resume, cancel, restart]}}

@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ## [Unreleased]
 
+## [0.3.0-alpha.1] - 2026-07-20
+
 ### Added
 
 - Runs are now linked to the git checkpoint taken before they started. Every checkpoint
@@ -82,6 +84,34 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   and is not a general pre-action approval gate — it never pauses a run before a file edit, a
   destructive command, or a publish.
 
+### Changed
+
+- Pause is now honest. It previously only stopped the daemon from draining the provider's events
+  while the agent process kept running — still spending tokens and editing files behind a row that
+  already claimed `paused`. Pausing a run now performs a controlled cancel: it stops the provider
+  process by the same safe path Cancel uses, records the real usage and the provider session,
+  releases the project write lease, and only then writes `paused`, so the store is never told
+  `paused` while the agent is still working. A paused run stays resumable — its saved session means
+  the next message in the thread continues it, and `POST /api/v1/runs/{id}/resume` now submits a
+  fresh continuation run that resumes that session rather than un-parking a still-live process.
+  Paused runs survive a daemon restart (`RecoverInterrupted` leaves them untouched) and stay
+  resumable, and cancelling a paused run works. The web UI now treats `paused` as a state whose live
+  process has stopped (the elapsed timer stops) while keeping the Resume action available. Because
+  the interrupted turn's partial edits stay on disk, a resume is a new turn continuing the same
+  conversation, not a byte-for-byte revival of the killed process.
+- SQLite is now the single source of truth for a run's lifecycle state. The scheduler publishes a
+  run's status event only after the store write that records it succeeds; if that write fails it no
+  longer publishes a false `completed`/`failed`/`cancelled`/`paused` status. Instead it publishes a
+  distinct `scheduler.storage_error` infrastructure-failure event (logged with the run and project
+  id) and leaves the row at its last persisted status, which `RecoverInterrupted` recovers as
+  `interrupted` on the next daemon restart. The web UI treats `scheduler.storage_error` as ending the
+  run so it never hangs on "Working…" after a storage failure, and `scheduler.transition` now returns
+  its write error to callers instead of swallowing it.
+- The scheduler's stuck-escalation question now offers two options, **Continue testing** and
+  **Stop here**, to satisfy the same 2-4-option `studioforge-question` contract now enforced for
+  every question card (see Fixed). Its behavior is otherwise unchanged: **Continue testing** still
+  resumes the session with detection suppressed, and free text still resumes it with detection armed.
+
 ### Removed
 
 - The dead `assets`/`asset_reviews` tables (migration `010_drop_assets.sql`), left over from the
@@ -143,12 +173,31 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   stream ends, not only which `select` case happened to fire. A run cancelled while it was in this
   post-stream tail (e.g. mid-playtest-validation) now correctly lands on `cancelled` instead of
   stubbornly finishing as `completed`.
-- Pause and Resume racing an in-flight Cancel (or a run's own normal completion) could leave a run's
-  database row permanently stuck at `paused` or `running` with no goroutine left to reconcile it,
-  making it uncancellable and unrestartable. `Pause`/`Resume` now write through a conditional
-  (compare-and-swap) update that only applies when the row's status still matches what the in-memory
-  state expected; a rejected write now returns an error and reverts the in-memory flip instead of
-  silently leaving a status the database never actually recorded.
+- A race starting two processes with the same ID in `processes.Supervisor`. The ID-uniqueness check
+  and the child-process start were not atomic, so two concurrent `Start` calls for the same ID could
+  both launch a child and clobber each other's map entry, leaking a supervised process; a slow reaper
+  could also delete a newer process's entry when an older same-ID process exited. IDs are now reserved
+  atomically before the (slow, unlocked) start, a failed start clears the reservation, and the reaper
+  deletes a map entry only when it still refers to the same process instance.
+- The post-run Studio playtest validation continuing to drive Studio after the project write lease
+  was lost. The separate validation heartbeat only logged the loss and stopped renewing while the
+  validator kept running. Validation now runs under its own cancellable context that is cancelled the
+  instant the lease is lost; it waits for the validator to stop, records the outcome as `inconclusive`
+  with an infrastructure notice (never `passed`), and schedules no correction run and proposes no
+  operator decision.
+- A correction run's Git checkpoint could be left orphaned. The checkpoint was committed before the
+  correction run was created, so a failed admission (provider not configured, scheduler closed, or a
+  create-run error) left a commit belonging to a run that never existed. A correction run is now
+  created first, its checkpoint is bound to that run id and recorded, and only then is it admitted to
+  the executable queue; a checkpoint that genuinely fails aborts the correction (marked `failed`,
+  never run) instead of running it as if a rollback point still existed, and correction scheduling is
+  idempotent (keyed on the parent run) so a retry never creates a second checkpoint.
+- Question-block (`studioforge-question`) validation is now enforced on the backend, matching the
+  frontend, instead of trusting the frontend alone. A fenced block parks a run in `waiting_decision`
+  only when it is the message's single block, its JSON body is within an 8 KB cap, its question is
+  non-empty (≤2000 chars), and it carries 2-4 options with non-empty, length-bounded (≤120 char
+  label, ≤600 char description), unique labels; a malformed, oversized, or multi-block message is
+  treated as ordinary text and never parks the run.
 - The Chat view no longer silently drops "Studio MCP withheld" notices (e.g. ambiguous or mismatched
   Studio instances) — they now render as a visible banner instead of only being discoverable in the
   raw run event log. A run-action ("Stop"/pause/resume/restart) that fails on a genuine network error

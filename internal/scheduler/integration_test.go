@@ -95,10 +95,6 @@ func TestMultiProjectIntegrationRecoveryAndIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitStatus(t, store, hanging.ID, "paused", 2*time.Second)
-	if err := manager.Resume(ctx, hanging.ID); err != nil {
-		t.Fatal(err)
-	}
-	waitStatus(t, store, hanging.ID, "running", 2*time.Second)
 	if err := manager.Cancel(ctx, hanging.ID); err != nil {
 		t.Fatal(err)
 	}

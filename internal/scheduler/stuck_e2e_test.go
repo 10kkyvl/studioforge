@@ -175,7 +175,7 @@ func assertWaitingDecisionWithStuckFence(t *testing.T, store *database.Store, ct
 		if !ok {
 			continue
 		}
-		if len(block.Options) == 1 && block.Options[0].Label == StuckContinueLabel {
+		if len(block.Options) == 2 && block.Options[0].Label == StuckContinueLabel && block.Options[1].Label == StuckStopLabel {
 			found = true
 		}
 		if event.RawType != "scheduler.stuck" {
@@ -183,7 +183,7 @@ func assertWaitingDecisionWithStuckFence(t *testing.T, store *database.Store, ct
 		}
 	}
 	if !found {
-		t.Fatalf("no scheduler.stuck message event with a valid Continue-only question fence found for run %s", runID)
+		t.Fatalf("no scheduler.stuck message event with a valid Continue/Stop question fence found for run %s", runID)
 	}
 }
 

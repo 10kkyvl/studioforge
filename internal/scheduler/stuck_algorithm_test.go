@@ -116,8 +116,8 @@ func TestBuildStuckMessageProducesAValidQuestionFence(t *testing.T) {
 	if !ok {
 		t.Fatalf("buildStuckMessage produced a fence detectQuestion could not parse: %q", text)
 	}
-	if len(block.Options) != 1 || block.Options[0].Label != StuckContinueLabel {
-		t.Errorf("options=%+v, want exactly one %q option", block.Options, StuckContinueLabel)
+	if len(block.Options) != 2 || block.Options[0].Label != StuckContinueLabel || block.Options[1].Label != StuckStopLabel {
+		t.Errorf("options=%+v, want %q then %q", block.Options, StuckContinueLabel, StuckStopLabel)
 	}
 	if !strings.Contains(text, "Playtest the new obstacle course and report back.") {
 		t.Error("message must mention what the run was asked to do")

@@ -2,16 +2,12 @@ package scheduler
 
 import (
 	"context"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/10kkyvl/studioforge/internal/database"
-	"github.com/10kkyvl/studioforge/internal/events"
 	"github.com/10kkyvl/studioforge/internal/providers"
 	"github.com/10kkyvl/studioforge/internal/providers/mock"
-	"github.com/10kkyvl/studioforge/internal/resources"
 )
 
 type slowCancelProvider struct {
@@ -238,7 +234,7 @@ func TestPauseAfterCancelReturnsErrorAndRunStillReachesCancelled(t *testing.T) {
 	waitStatus(t, store, run.ID, "cancelled", 5*time.Second)
 }
 
-func TestResumeAfterCancelReturnsErrorAndRunStillReachesCancelled(t *testing.T) {
+func TestCancelOfPausedRunReachesCancelled(t *testing.T) {
 	manager, provider, store, ctx := newHarness(t)
 	if inner, ok := provider.inner.(*mock.Provider); ok {
 		inner.StepDelay = 200 * time.Millisecond
@@ -256,131 +252,5 @@ func TestResumeAfterCancelReturnsErrorAndRunStillReachesCancelled(t *testing.T) 
 	if err := manager.Cancel(ctx, run.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Resume(ctx, run.ID); err == nil {
-		t.Fatal("Resume after Cancel must return an error, not race the cancelling run")
-	}
 	waitStatus(t, store, run.ID, "cancelled", 5*time.Second)
-}
-
-type delayedUpdateStore struct {
-	*database.Store
-	hold    chan struct{}
-	entered chan struct{}
-}
-
-func (s *delayedUpdateStore) UpdateRunIfStatus(ctx context.Context, id string, expectedStatuses []string, status, phase, resource, errText string) (bool, error) {
-	if s.entered != nil {
-		s.entered <- struct{}{}
-	}
-	if s.hold != nil {
-		<-s.hold
-	}
-	return s.Store.UpdateRunIfStatus(ctx, id, expectedStatuses, status, phase, resource, errText)
-}
-
-func newDelayedUpdateHarness(t *testing.T, provider providers.Provider) (*Manager, *delayedUpdateStore, context.Context) {
-	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "cas.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := database.NewStore(db).SeedDemo(ctx, t.TempDir()); err != nil {
-		t.Fatal(err)
-	}
-	store := &delayedUpdateStore{Store: database.NewStore(db)}
-	hub := events.NewHub(store)
-	t.Cleanup(hub.Close)
-	leases := resources.NewManager(time.Second)
-	t.Cleanup(leases.Close)
-	manager := New(ctx, store, hub, leases, map[string]providers.Provider{"mock": provider})
-	t.Cleanup(func() { _ = manager.Close(context.Background()) })
-	return manager, store, ctx
-}
-
-func TestPauseCASRejectedByConcurrentCancelLeavesTerminalStatusIntact(t *testing.T) {
-	provider := &slowCancelProvider{streamInterval: 2 * time.Millisecond}
-	manager, store, ctx := newDelayedUpdateHarness(t, provider)
-	run, _, err := manager.Submit(ctx, Job{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", Model: "balanced", WorkingDirectory: t.TempDir(), MaxBudget: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	waitStatus(t, store.Store, run.ID, "running", 5*time.Second)
-
-	store.entered = make(chan struct{}, 1)
-	store.hold = make(chan struct{})
-
-	pauseErr := make(chan error, 1)
-	go func() { pauseErr <- manager.Pause(ctx, run.ID) }()
-
-	select {
-	case <-store.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Pause never reached its guarded store write")
-	}
-
-	if err := manager.Cancel(ctx, run.ID); err != nil {
-		t.Fatal(err)
-	}
-	waitStatus(t, store.Store, run.ID, "cancelled", 5*time.Second)
-
-	close(store.hold)
-	if err := <-pauseErr; err == nil {
-		t.Fatal("Pause must return an error when its guarded write is rejected by a run that already reached a terminal status")
-	}
-
-	got, err := store.Run(ctx, run.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Status != "cancelled" {
-		t.Fatalf("run status=%q, want the concurrently-cancelled status to survive the delayed Pause write", got.Status)
-	}
-}
-
-func TestResumeCASRejectedByConcurrentCancelLeavesTerminalStatusIntact(t *testing.T) {
-	inner := mock.New()
-	inner.StepDelay = 200 * time.Millisecond
-	manager, store, ctx := newDelayedUpdateHarness(t, inner)
-	run, _, err := manager.Submit(ctx, Job{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", Model: "balanced", WorkingDirectory: t.TempDir(), MaxBudget: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	waitStatus(t, store.Store, run.ID, "running", 5*time.Second)
-	if err := manager.Pause(ctx, run.ID); err != nil {
-		t.Fatal(err)
-	}
-	waitStatus(t, store.Store, run.ID, "paused", 2*time.Second)
-
-	store.entered = make(chan struct{}, 1)
-	store.hold = make(chan struct{})
-
-	resumeErr := make(chan error, 1)
-	go func() { resumeErr <- manager.Resume(ctx, run.ID) }()
-
-	select {
-	case <-store.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Resume never reached its guarded store write")
-	}
-
-	if err := manager.Cancel(ctx, run.ID); err != nil {
-		t.Fatal(err)
-	}
-	waitStatus(t, store.Store, run.ID, "cancelled", 5*time.Second)
-
-	close(store.hold)
-	if err := <-resumeErr; err == nil {
-		t.Fatal("Resume must return an error when its guarded write is rejected by a run that already reached a terminal status")
-	}
-
-	got, err := store.Run(ctx, run.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Status != "cancelled" {
-		t.Fatalf("run status=%q, want the concurrently-cancelled status to survive the delayed Resume write", got.Status)
-	}
 }
