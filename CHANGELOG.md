@@ -34,6 +34,13 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   later refresh never overrides an existing manual **Bind project** choice. Refresh is manual, not a
   background poll, and is a no-op under `--mock`. An absent Studio MCP launcher now shows a clear
   "Studio MCP not detected" state instead of an empty list.
+- Recent Rojo live-sync log lines, surfaced on the project Overview. A live-sync session
+  (`rojo.Session.RecentLines`) now keeps its own bounded buffer (the last 100 lines) of its `rojo serve`
+  output, folded into `models.SyncStatus` the same way the project payload already carries port and
+  active state; the Overview's new **Rojo live-sync session** panel shows running/stopped, the
+  allocated port, and those recent log lines. Added a regression test proving a session the operator
+  never explicitly stopped still dies on daemon shutdown (`processes.Supervisor.Close`), the actual
+  restart/shutdown path, distinct from the existing explicit-Stop-then-Close test.
 
 ## [0.2.0-alpha.1] - 2026-07-20
 

@@ -69,7 +69,7 @@ The project is an alpha as a whole. The table below describes individual capabil
 | Interactive questions | An agent can pause a run on a closed 2-4 option question (a `studioforge-question` fenced block); the chat view renders clickable option buttons and answering resumes the same session |
 | Git checkpoints | Auto-commit before each non-plan Claude run |
 | Rojo build + open | Compiles a place file and opens it in Studio |
-| Rojo live-sync | `POST`/`DELETE /api/v1/projects/{id}/sync` start and stop a `rojo serve` session that pushes on-disk edits into an already-open Studio |
+| Rojo live-sync | `POST`/`DELETE /api/v1/projects/{id}/sync` start and stop a `rojo serve` session that pushes on-disk edits into an already-open Studio; the project Overview shows whether a session is running, its port, and its most recent log lines |
 | Static project context | Reads `.agent/constitution.yaml` and `.agent/requirements.md` verbatim into the system prompt |
 | Image attachments | Paste a screenshot into the chat composer; it uploads and is folded into the prompt as a file path the agent can read |
 | Run pace indicator | `GET /api/v1/projects/{id}/pace` averages a project's last ~20 completed runs into a typical duration; the chat progress bar scales against it |

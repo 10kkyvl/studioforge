@@ -101,7 +101,11 @@ plugin loading or dynamic linking.
   start and stop one — this is what delivers a `.lua` file the agent just edited on disk into an
   already-open Studio without restarting it. A session outlives the run that started it; it is torn down by
   `processes.Supervisor.Close` on daemon shutdown, the same path every other subprocess in this document's
-  process table stops through.
+  process table stops through. `Session.RecentLines` keeps a bounded, thread-safe buffer (the last 100
+  lines) of the session's own `rojo serve` output, fed by the same goroutine that already drained the
+  session's log channel for debug logging; `syncAdapter.Status`/`Start` fold it into `models.SyncStatus`,
+  which rides on the project payload the same way port and active state already do, so the project
+  Overview can show it without a dedicated polling endpoint.
 
 ### Git
 

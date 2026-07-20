@@ -12,9 +12,7 @@ adding new surface area:
   DAG at creation time (`internal/tasks/dag.go`), but nothing yet stops a run from starting against a
   task whose dependencies aren't done.
 - Wire up or deliberately remove the packages still implemented but unreachable: git rollback and tag
-  (`internal/gitops.SafeRollback`/`Tag` — `Status` and `DiffHead` are wired). Rojo live-sync sessions
-  (`internal/rojo` session manager) are wired (`POST`/`DELETE /api/v1/projects/{id}/sync`); recent log
-  lines from a live session are not yet surfaced to the API or UI.
+  (`internal/gitops.SafeRollback`/`Tag` — `Status` and `DiffHead` are wired).
 - Add automatic pruning for persisted run events. Retention is schema-ready today but depends on
   manual database maintenance.
 

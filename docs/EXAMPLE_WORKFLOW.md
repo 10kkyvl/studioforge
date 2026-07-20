@@ -327,6 +327,38 @@ This does not require a run at all — just an open Roblox Studio holding some p
 | An instance's play state is blank | Best-effort only — a failure reading that one instance's state leaves it unknown rather than dropping the instance from the list. |
 | A newly opened Studio never auto-binds | Its reported file name must exactly match the registered project's expected place name (case-insensitively); a place opened from somewhere other than **Open in Studio** will not match, and needs a manual **Bind project** instead. |
 
+## Track E: Rojo live-sync session
+
+Needs a project already open in Studio (**Open in Studio**) and the Rojo Studio plugin connected once
+per session (the plugin's own **Connect** button inside Studio — StudioForge cannot press it for you).
+
+1. In the chat header, click the sync badge to start a live-sync session
+   (`POST /api/v1/projects/{id}/sync`).
+2. Open the project's **Overview**. The new **Rojo live-sync session** panel now reads **Running**, with
+   the allocated port shown underneath, and a scrollable panel of the session's most recent `rojo serve`
+   log lines.
+3. Edit and save a `.lua`/`.luau` file under the project's Rojo tree. The edit reaches the already-open
+   Studio through the session without restarting it (the actual point of live-sync, not new in this
+   track); the Overview panel's log lines update to reflect it.
+4. Click the sync badge again to stop the session (`DELETE /api/v1/projects/{id}/sync`) — the Overview
+   panel reverts to **Stopped** and the log lines disappear, since they belong to that session, not a
+   history across sessions.
+
+### Expected output
+
+- The Overview panel's running/stopped state always matches the chat header's own sync badge — both
+  read the same `project.sync` status.
+- The log lines shown are this session's own most recent output (bounded to the last 100 lines), not a
+  file the operator has to go find on disk or in the daemon's own logs.
+
+### If it does not work
+
+| Symptom | Check |
+|---|---|
+| The Overview panel never shows **Running** | Confirm the sync badge in chat was actually toggled on — a session that failed to start (e.g. Rojo not installed) reports an error there rather than silently leaving the badge on. |
+| No log lines ever appear | `rojo serve` itself may not have printed anything yet — the fake used in tests emits one startup line immediately, but a real `rojo serve` may take a moment. |
+| Studio never receives the edit despite an active session | The Rojo Studio plugin still needs its own one-time **Connect** click inside Studio per session — the sync badge's hint exists for exactly this; see `docs/KNOWN_LIMITATIONS.md`. |
+
 ## See also
 
 - [GETTING_STARTED.md](GETTING_STARTED.md) — installation and first run.
