@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -201,13 +202,32 @@ func LaunchPlace(studioExe, placePath string) error {
 	return nil
 }
 
+// pendingGrace bounds how long a launch just kicked off blocks another
+// attempt for the same place. Studio builds the place and paints its window
+// after a launch returns, which routinely runs past the provisioner's own
+// openWait (45s, internal/roblox/mcp/provisioner.go); a caller that gave up
+// waiting for the place to appear must not read that as "nothing happened"
+// and open a second window on top of the first still booting.
+const pendingGrace = 90 * time.Second
+
 // Opener builds a project's place file and opens it in Studio. DetectStudio and
 // Launch are seams so tests can avoid touching the real filesystem or spawning
 // Studio; both default to the real implementations.
+//
+// A single *Opener is shared by every caller that can trigger a launch — the
+// provisioner's own auto-open and the manual "Open Studio" button's HTTP
+// handler alike — so the in-flight guard below lives here rather than in
+// either caller, and both get it for free.
 type Opener struct {
 	Rojo         Builder
 	DetectStudio func() (string, error)
 	Launch       func(studioExe, placePath string) error
+
+	mu      sync.Mutex
+	pending map[string]time.Time
+	// grace and clock are test seams; zero/nil use pendingGrace and time.Now.
+	grace time.Duration
+	clock func() time.Time
 }
 
 func (o *Opener) detect() (string, error) {
@@ -224,11 +244,64 @@ func (o *Opener) launch(exe, place string) error {
 	return LaunchPlace(exe, place)
 }
 
+func (o *Opener) now() time.Time {
+	if o.clock != nil {
+		return o.clock()
+	}
+	return time.Now()
+}
+
+func (o *Opener) pendingWindow() time.Duration {
+	if o.grace > 0 {
+		return o.grace
+	}
+	return pendingGrace
+}
+
+// reserve claims the right to launch place, reporting false when a launch for
+// the same place already started within the grace window — the caller must
+// not launch again. A caller that reserves and then does not actually launch
+// (a build or detection failure, say) must call release so a retry is not
+// blocked for the rest of the window over nothing having happened.
+func (o *Opener) reserve(place string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if at, ok := o.pending[place]; ok && o.now().Sub(at) < o.pendingWindow() {
+		return false
+	}
+	if o.pending == nil {
+		o.pending = map[string]time.Time{}
+	}
+	o.pending[place] = o.now()
+	return true
+}
+
+func (o *Opener) release(place string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	delete(o.pending, place)
+}
+
 // OpenProject builds the project's default.project.json into a place file,
 // installs the Rojo plugin (best effort), and opens the place in Studio. It
 // returns the built place path. The name and id decide the place's file name —
 // see PlaceName — so the resulting Studio instance identifies this project.
+//
+// A call for a place already opened, or asked to open, within the last
+// pendingGrace returns the same place path without launching again — Studio
+// may still be busy building and painting its window from the first call.
 func (o *Opener) OpenProject(ctx context.Context, projectPath, name, id string) (string, error) {
+	place := PlacePath(projectPath, name, id)
+	if !o.reserve(place) {
+		return place, nil
+	}
+	launched := false
+	defer func() {
+		if !launched {
+			o.release(place)
+		}
+	}()
+
 	projectFile := filepath.Join(projectPath, "default.project.json")
 	if _, err := os.Stat(projectFile); err != nil {
 		return "", fmt.Errorf("no default.project.json in the project; cannot build a place")
@@ -238,7 +311,6 @@ func (o *Opener) OpenProject(ctx context.Context, projectPath, name, id string) 
 	if err != nil {
 		return "", err
 	}
-	place := PlacePath(projectPath, name, id)
 	if err := os.MkdirAll(filepath.Dir(place), 0o755); err != nil {
 		return "", err
 	}
@@ -249,5 +321,6 @@ func (o *Opener) OpenProject(ctx context.Context, projectPath, name, id string) 
 	if err := o.launch(exe, place); err != nil {
 		return "", err
 	}
+	launched = true
 	return place, nil
 }

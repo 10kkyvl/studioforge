@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -126,6 +127,175 @@ func TestOpenProjectRefusesWithoutProjectFile(t *testing.T) {
 		t.Error("a project without default.project.json must be refused, not silently built")
 	}
 }
+
+// A second call for the same place while the first is still within the
+// pending grace window must not relaunch Studio — both the provisioner's
+// auto-open and the manual "Open Studio" button funnel through the same
+// *Opener, and a run's own retry (or the two racing) must not pile a second
+// window onto Studio that is still booting from the first.
+func TestOpenProjectDoesNotRelaunchAPendingPlace(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "default.project.json"), []byte(`{"name":"t","tree":{"$className":"DataModel"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	launches := 0
+	o := &Opener{
+		Rojo:         &fakeBuilder{},
+		DetectStudio: func() (string, error) { return "C:\\Studio.exe", nil },
+		Launch:       func(string, string) error { launches++; return nil },
+	}
+	first, err := o.OpenProject(context.Background(), project, "My Game", "abc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := o.OpenProject(context.Background(), project, "My Game", "abc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Errorf("place=%q on the second call, want the same %q", second, first)
+	}
+	if launches != 1 {
+		t.Fatalf("launches=%d, want exactly 1", launches)
+	}
+}
+
+// The grace window outlives the provisioner's own openWait (45s), because
+// Studio may still be genuinely booting past it — a caller that gave up
+// waiting must not read that as "nothing happened" and relaunch.
+func TestOpenProjectStaysPendingPastOpenWaitButWithinGrace(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "default.project.json"), []byte(`{"name":"t","tree":{"$className":"DataModel"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	launches := 0
+	now := time.Now()
+	o := &Opener{
+		Rojo:         &fakeBuilder{},
+		DetectStudio: func() (string, error) { return "C:\\Studio.exe", nil },
+		Launch:       func(string, string) error { launches++; return nil },
+		clock:        func() time.Time { return now },
+	}
+	if _, err := o.OpenProject(context.Background(), project, "My Game", "abc123"); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(50 * time.Second) // past openWait's 45s, still under the 90s grace
+	if _, err := o.OpenProject(context.Background(), project, "My Game", "abc123"); err != nil {
+		t.Fatal(err)
+	}
+	if launches != 1 {
+		t.Fatalf("a second attempt within the grace window relaunched Studio, launches=%d", launches)
+	}
+}
+
+// Once the grace window fully elapses the guard must not wedge shut forever —
+// a place genuinely closed and reopened later is a legitimate new launch.
+func TestOpenProjectRelaunchesAfterGraceExpires(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "default.project.json"), []byte(`{"name":"t","tree":{"$className":"DataModel"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	launches := 0
+	now := time.Now()
+	o := &Opener{
+		Rojo:         &fakeBuilder{},
+		DetectStudio: func() (string, error) { return "C:\\Studio.exe", nil },
+		Launch:       func(string, string) error { launches++; return nil },
+		clock:        func() time.Time { return now },
+	}
+	if _, err := o.OpenProject(context.Background(), project, "My Game", "abc123"); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(91 * time.Second)
+	if _, err := o.OpenProject(context.Background(), project, "My Game", "abc123"); err != nil {
+		t.Fatal(err)
+	}
+	if launches != 2 {
+		t.Fatalf("launches=%d, want 2 once the grace window has fully elapsed", launches)
+	}
+}
+
+// A build failure must not hold the guard: nothing was actually launched, so
+// an operator fixing the problem and retrying must not be blocked for the
+// rest of the grace window over a launch that never happened.
+func TestOpenProjectReleasesTheGuardAfterAFailedBuild(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "default.project.json"), []byte(`{"name":"t","tree":{"$className":"DataModel"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	launches := 0
+	fb := &failingBuilder{err: os.ErrPermission}
+	o := &Opener{
+		Rojo:         fb,
+		DetectStudio: func() (string, error) { return "C:\\Studio.exe", nil },
+		Launch:       func(string, string) error { launches++; return nil },
+	}
+	if _, err := o.OpenProject(context.Background(), project, "My Game", "abc123"); err == nil {
+		t.Fatal("expected the build failure to surface")
+	}
+	fb.err = nil
+	if _, err := o.OpenProject(context.Background(), project, "My Game", "abc123"); err != nil {
+		t.Fatal(err)
+	}
+	if launches != 1 {
+		t.Fatalf("launches=%d, want exactly 1 after the retry succeeded", launches)
+	}
+}
+
+// Two callers racing for the same place — the shape of the provisioner's
+// auto-open and the manual button firing at once — must still launch Studio
+// exactly once.
+func TestOpenProjectConcurrentCallsLaunchExactlyOnce(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "default.project.json"), []byte(`{"name":"t","tree":{"$className":"DataModel"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	launches := 0
+	o := &Opener{
+		Rojo:         &fakeBuilder{},
+		DetectStudio: func() (string, error) { return "C:\\Studio.exe", nil },
+		Launch: func(string, string) error {
+			mu.Lock()
+			launches++
+			mu.Unlock()
+			return nil
+		},
+	}
+	const callers = 8
+	var start, done sync.WaitGroup
+	start.Add(1)
+	done.Add(callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			defer done.Done()
+			start.Wait()
+			if _, err := o.OpenProject(context.Background(), project, "My Game", "abc123"); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	start.Done()
+	done.Wait()
+	mu.Lock()
+	got := launches
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("launches=%d, want exactly 1 across %d concurrent callers", got, callers)
+	}
+}
+
+// failingBuilder lets a test flip a build failure on and off, to check the
+// pending guard is released rather than held for the whole grace window.
+type failingBuilder struct{ err error }
+
+func (f *failingBuilder) Build(_ context.Context, _, output string) error {
+	if f.err != nil {
+		return f.err
+	}
+	return os.WriteFile(output, []byte("RBLX"), 0o600)
+}
+func (f *failingBuilder) InstallPlugin(context.Context) error { return nil }
 
 // A missing Studio install must fail before any place is built.
 func TestOpenProjectFailsFastWhenStudioMissing(t *testing.T) {

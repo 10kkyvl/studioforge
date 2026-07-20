@@ -190,16 +190,26 @@ func (p *Provisioner) selectForTarget(ctx context.Context, launch LaunchConfig, 
 	case len(matched) == 1:
 		return matched, state, ""
 	case len(matched) > 1:
-		return nil, "", fmt.Sprintf("Studio MCP withheld: %d Studio instances hold %s and StudioForge cannot pin one for the agent's own MCP connection; leave a single one open", len(matched), target.PlaceName)
+		return nil, "", ambiguousMatchNotice(len(matched), target.PlaceName)
 	}
 
-	// Nothing of this project's is open. Opening it is the whole point of the
-	// setting, so a run that wanted Studio gets it rather than silently going
-	// without.
+	// Nothing of this project's is open. Some OTHER Studio instance being open
+	// is not the same as none being open at all: auto-opening on top of it
+	// would risk piling a second window onto Studio rather than the one this
+	// project wants, so this withholds even when auto-open is on — the same
+	// notice the no-match/auto-open-off case already gave, now covering both.
+	if len(instances) > 0 {
+		return nil, "", mismatchNotice(instances, target.PlaceName)
+	}
+
+	if p.blocked(ctx) {
+		return nil, "", hostTakenNotice
+	}
+
+	// Opening is the whole point of the setting, so a run that wanted Studio
+	// gets it rather than silently going without — but only when Studio is not
+	// open at all, never as a "top up" alongside an unrelated instance.
 	if target.Open == nil || !p.autoOpen() {
-		if len(instances) > 0 {
-			return nil, "", fmt.Sprintf("Studio MCP withheld: the open Studio does not hold this project's place (%s); open the project's place, or turn on opening it automatically", target.PlaceName)
-		}
 		return nil, "", ""
 	}
 	if err := target.Open(ctx); err != nil {
@@ -230,6 +240,89 @@ func matching(instances []Instance, placeName string) []Instance {
 		}
 	}
 	return out
+}
+
+// ambiguousMatchNotice explains a refusal when more than one open instance
+// holds the same expected place. PlaceName is meant to be unique per project,
+// so this should not happen in practice, but it is still refused rather than
+// picked from arbitrarily.
+func ambiguousMatchNotice(count int, placeName string) string {
+	return fmt.Sprintf("Studio MCP withheld: %d Studio instances hold %s and StudioForge cannot pin one for the agent's own MCP connection; leave a single one open", count, placeName)
+}
+
+// mismatchNotice explains a refusal when Studio instances are open but none of
+// them hold the expected place, naming what is actually open next to what was
+// expected — an operator who opened the project's original .rbxl instead of
+// its built place, say, can see exactly why from this alone.
+func mismatchNotice(instances []Instance, placeName string) string {
+	return fmt.Sprintf("Studio MCP withheld: the open Studio does not hold this project's place (expected %s, found %s); open the project's place, or close the others and let StudioForge open it automatically", placeName, strings.Join(instanceNames(instances), ", "))
+}
+
+func instanceNames(instances []Instance) []string {
+	names := make([]string, 0, len(instances))
+	for _, instance := range instances {
+		name := instance.Name
+		if name == "" {
+			name = "(unnamed)"
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+// OpenCheck is what a probe found relative to a project's expected place, for
+// a caller that wants to know before opening Studio without also requesting
+// an agent's MCP grant — currently the manual "Open Studio" button, which must
+// apply the same no-duplicate-launch rule selectForTarget already applies
+// before auto-opening.
+type OpenCheck struct {
+	// Open is true when no Studio instance is open at all, so launching is
+	// safe.
+	Open bool
+	// Matched is true when an instance already holds this project's place;
+	// the caller should read this as already there and not relaunch.
+	Matched bool
+	// Notice explains a refusal: instances are open, but none of them hold
+	// this project's place. Empty whenever Open or Matched is true.
+	Notice string
+}
+
+// CheckOpen reports whether launching Studio for placeName is safe, already
+// done, or refused, without opening anything itself. A probe that cannot be
+// completed — including an absent launcher — fails open (Open: true), the
+// same posture every other probe in this package takes for a machine that
+// simply has no Studio MCP configured; the launch attempt that follows a
+// true Open still goes through the Opener's own in-flight guard, so a probe
+// failure here does not risk a duplicate launch.
+func (p *Provisioner) CheckOpen(ctx context.Context, placeName string) OpenCheck {
+	if placeName == "" {
+		return OpenCheck{Open: true}
+	}
+	override := ""
+	if p.Override != nil {
+		override = p.Override()
+	}
+	launch, err := DetectLauncher(override)
+	if err != nil {
+		return OpenCheck{Open: true}
+	}
+	instances, _, err := p.probe(ctx, launch)
+	if err != nil {
+		return OpenCheck{Open: true}
+	}
+	if len(instances) == 0 {
+		if p.blocked(ctx) {
+			return OpenCheck{Notice: hostTakenNotice}
+		}
+		return OpenCheck{Open: true}
+	}
+	// Any match at all — even the ambiguous case of two instances somehow
+	// reporting this project's place — means something already holds it, so a
+	// launch would only add another window rather than resolve anything.
+	if matched := matching(instances, placeName); len(matched) > 0 {
+		return OpenCheck{Matched: true}
+	}
+	return OpenCheck{Notice: mismatchNotice(instances, placeName)}
 }
 
 // waitForPlace polls for a Studio holding the named place over a single

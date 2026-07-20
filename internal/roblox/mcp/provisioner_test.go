@@ -440,6 +440,173 @@ func TestProvisionReportsAFailedOpen(t *testing.T) {
 	}
 }
 
+// Other Studio instances being open is not the same as none being open at
+// all: auto-opening on top of them risks piling a second window onto Studio
+// rather than the one this project wants.
+func TestProvisionNeverAutoOpensWhileAnotherInstanceIsOpen(t *testing.T) {
+	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "other", Name: "someone-elses-b2c3d4e5.rbxl"}}})
+	opened := 0
+	grant := p.Provision(context.Background(), "run-noauto", "workspace-write", Target{
+		PlaceName: "my-game-a1b2c3d4.rbxl",
+		Open:      func(context.Context) error { opened++; return nil },
+	})
+	if opened != 0 {
+		t.Fatalf("Studio was opened though another instance is already up, opened=%d", opened)
+	}
+	if grant.ConfigPath != "" {
+		t.Fatal("granted access though no instance holds this project's place")
+	}
+	if !strings.Contains(grant.Notice, "does not hold this project's place") {
+		t.Fatalf("notice=%q", grant.Notice)
+	}
+	if !strings.Contains(grant.Notice, "someone-elses-b2c3d4e5.rbxl") || !strings.Contains(grant.Notice, "my-game-a1b2c3d4.rbxl") {
+		t.Fatalf("notice should name what is open next to what was expected, got %q", grant.Notice)
+	}
+}
+
+// Restates TestProvisionOpensTheProjectsPlaceWhenNoneIsOpen with an explicit
+// call count rather than a bool, since the point being guarded against is a
+// second, duplicate launch, not merely "at least one".
+func TestProvisionOpensExactlyOnceWhenNothingIsOpen(t *testing.T) {
+	transport := &openingTransport{place: "my-game-a1b2c3d4.rbxl"}
+	p := newProvisioner(t, transport)
+	opens := 0
+	grant := p.Provision(context.Background(), "run-open-once", "workspace-write", Target{
+		PlaceName: "my-game-a1b2c3d4.rbxl",
+		Open: func(context.Context) error {
+			opens++
+			transport.open()
+			return nil
+		},
+	})
+	if opens != 1 {
+		t.Fatalf("opens=%d, want exactly 1", opens)
+	}
+	if grant.ConfigPath == "" {
+		t.Fatalf("no access after opening: %q", grant.Notice)
+	}
+}
+
+// PlaceName is meant to be unique per project, so two instances both
+// reporting it should not happen in practice — but if it did, the match must
+// still be refused rather than picked from arbitrarily, the same fail-closed
+// rule every other ambiguous case in this package already follows.
+func TestProvisionRefusesAmbiguousTargetMatch(t *testing.T) {
+	p := newProvisioner(t, &studioTransport{instances: []Instance{
+		{ID: "one", Name: "my-game-a1b2c3d4.rbxl"},
+		{ID: "two", Name: "my-game-a1b2c3d4.rbxl"},
+	}})
+	grant := p.Provision(context.Background(), "run-ambiguous-target", "workspace-write", Target{PlaceName: "my-game-a1b2c3d4.rbxl"})
+	if grant.ConfigPath != "" {
+		t.Fatal("two instances holding the same place must not receive access")
+	}
+	if !strings.Contains(grant.Notice, "2 Studio instances hold my-game-a1b2c3d4.rbxl") {
+		t.Fatalf("notice=%q", grant.Notice)
+	}
+}
+
+func TestCheckOpenReportsSafeWhenNothingIsOpen(t *testing.T) {
+	p := newProvisioner(t, &studioTransport{instances: nil})
+	check := p.CheckOpen(context.Background(), "my-game-a1b2c3d4.rbxl")
+	if !check.Open || check.Matched || check.Notice != "" {
+		t.Fatalf("check=%+v, want Open=true only", check)
+	}
+}
+
+func TestCheckOpenReportsMatchedWhenThisProjectsPlaceIsAlreadyOpen(t *testing.T) {
+	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "mine", Name: "my-game-a1b2c3d4.rbxl"}}})
+	check := p.CheckOpen(context.Background(), "my-game-a1b2c3d4.rbxl")
+	if check.Open || !check.Matched || check.Notice != "" {
+		t.Fatalf("check=%+v, want Matched=true only", check)
+	}
+}
+
+func TestCheckOpenRefusesWhenOtherInstancesAreOpen(t *testing.T) {
+	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "other", Name: "someone-elses-b2c3d4e5.rbxl"}}})
+	check := p.CheckOpen(context.Background(), "my-game-a1b2c3d4.rbxl")
+	if check.Open || check.Matched {
+		t.Fatalf("check=%+v, want neither Open nor Matched", check)
+	}
+	if !strings.Contains(check.Notice, "someone-elses-b2c3d4e5.rbxl") || !strings.Contains(check.Notice, "my-game-a1b2c3d4.rbxl") {
+		t.Fatalf("notice should name what is open next to what was expected, got %q", check.Notice)
+	}
+}
+
+// Two instances both somehow reporting this project's place must still read
+// as "do not launch" rather than be picked from arbitrarily — a third window
+// would only make the ambiguity worse, never resolve it.
+func TestCheckOpenTreatsAnAmbiguousMatchAsAlreadyOpenRatherThanLaunching(t *testing.T) {
+	p := newProvisioner(t, &studioTransport{instances: []Instance{
+		{ID: "one", Name: "my-game-a1b2c3d4.rbxl"},
+		{ID: "two", Name: "my-game-a1b2c3d4.rbxl"},
+	}})
+	check := p.CheckOpen(context.Background(), "my-game-a1b2c3d4.rbxl")
+	if check.Open {
+		t.Fatal("an ambiguous match must never be reported as safe to launch")
+	}
+	if !check.Matched {
+		t.Fatalf("check=%+v, want Matched=true so the caller does not launch a third window", check)
+	}
+}
+
+func TestCheckOpenFailsOpenWithNoLauncherConfigured(t *testing.T) {
+	p := newProvisioner(t, &studioTransport{})
+	p.Override = func() string { return filepath.Join(t.TempDir(), "absent") }
+	check := p.CheckOpen(context.Background(), "my-game-a1b2c3d4.rbxl")
+	if !check.Open {
+		t.Fatalf("check=%+v, want Open=true when there is nothing to probe", check)
+	}
+}
+
+func TestCheckOpenIgnoresAnEmptyPlaceName(t *testing.T) {
+	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "one", Name: "whatever.rbxl"}}})
+	check := p.CheckOpen(context.Background(), "")
+	if !check.Open {
+		t.Fatalf("check=%+v, want Open=true with no place to check against", check)
+	}
+}
+
+// A Studio whose WS host is owned by another MCP client lists no instances
+// and errors nothing — indistinguishable, at the listing level, from no
+// Studio at all. Auto-opening on that stacks a duplicate window onto the
+// operator's already-open Studio, so the running-process tie-break must
+// refuse the launch and say why.
+func TestProvisionDoesNotAutoOpenOverAStudioHiddenByAnotherClient(t *testing.T) {
+	p := newProvisioner(t, &studioTransport{instances: nil})
+	p.Running = func(context.Context) bool { return true }
+	grant := p.Provision(context.Background(), "run-host-taken", "workspace-write", Target{
+		PlaceName: "my-game-a1b2c3d4.rbxl",
+		Open:      func(context.Context) error { t.Fatal("launched a duplicate Studio over a host-taken one"); return nil },
+	})
+	if grant.ConfigPath != "" {
+		t.Fatal("granted access though the WS host is owned by another client")
+	}
+	if !strings.Contains(grant.Notice, "another MCP client") {
+		t.Fatalf("notice=%q, want the host-taken explanation", grant.Notice)
+	}
+}
+
+func TestCheckOpenRefusesToLaunchOverAStudioHiddenByAnotherClient(t *testing.T) {
+	p := newProvisioner(t, &studioTransport{instances: nil})
+	p.Running = func(context.Context) bool { return true }
+	check := p.CheckOpen(context.Background(), "my-game-a1b2c3d4.rbxl")
+	if check.Open || check.Matched {
+		t.Fatalf("check=%+v, want a refusal, not a launch", check)
+	}
+	if !strings.Contains(check.Notice, "another MCP client") {
+		t.Fatalf("notice=%q, want the host-taken explanation", check.Notice)
+	}
+}
+
+func TestCheckOpenStillReportsSafeWhenNoStudioProcessRuns(t *testing.T) {
+	p := newProvisioner(t, &studioTransport{instances: nil})
+	p.Running = func(context.Context) bool { return false }
+	check := p.CheckOpen(context.Background(), "my-game-a1b2c3d4.rbxl")
+	if !check.Open || check.Matched || check.Notice != "" {
+		t.Fatalf("check=%+v, want Open=true only", check)
+	}
+}
+
 // Matching is by place file name, which on Windows is case-insensitive.
 func TestProvisionMatchesPlaceNamesCaseInsensitively(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "mine", Name: "My-Game-A1B2C3D4.rbxl"}}})
