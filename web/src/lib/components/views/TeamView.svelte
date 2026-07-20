@@ -12,7 +12,7 @@
   export let onRun: (agent: Agent) => void;
 
   let showCreate = false;
-  let draft: Partial<Agent> = {
+  const blankDraft: Partial<Agent> = {
     name: '',
     role: 'Roblox Engineer',
     provider: 'codex',
@@ -21,20 +21,14 @@
     permission: 'workspace-write',
     concurrency: 1,
     budget: 10,
+    validateAfterRun: false,
+    maxCorrectionRuns: 1,
   };
+  let draft: Partial<Agent> = { ...blankDraft };
 
   function create() {
     onCreate(draft);
-    draft = {
-      name: '',
-      role: 'Roblox Engineer',
-      provider: 'codex',
-      modelAlias: 'default',
-      effort: 'medium',
-      permission: 'workspace-write',
-      concurrency: 1,
-      budget: 10,
-    };
+    draft = { ...blankDraft };
     showCreate = false;
   }
 </script>
@@ -95,6 +89,24 @@
         bind:value={draft.budget}
       /></label
     >
+    {#if draft.provider === 'claude'}
+      <label class="checkbox"
+        ><input type="checkbox" bind:checked={draft.validateAfterRun} /><span
+          >{$translate('team.validateAfterRun')}</span
+        ></label
+      >
+      <p class="path-hint">{$translate('team.validateAfterRunHint')}</p>
+      {#if draft.validateAfterRun}
+        <label
+          >{$translate('team.maxCorrectionRuns')}<input
+            type="number"
+            min="0"
+            step="1"
+            bind:value={draft.maxCorrectionRuns}
+          /></label
+        >
+      {/if}
+    {/if}
     <button class="primary" type="submit" disabled={busy === 'agent-create'}
       ><Plus size={16} />{$translate('team.create')}</button
     >
@@ -156,6 +168,24 @@
             >{$translate('team.enabled')}</span
           ></label
         >
+        {#if agent.provider === 'claude'}
+          <label class="checkbox"
+            ><input type="checkbox" bind:checked={agent.validateAfterRun} /><span
+              >{$translate('team.validateAfterRun')}</span
+            ></label
+          >
+          <p class="path-hint">{$translate('team.validateAfterRunHint')}</p>
+          {#if agent.validateAfterRun}
+            <label
+              >{$translate('team.maxCorrectionRuns')}<input
+                type="number"
+                min="0"
+                step="1"
+                bind:value={agent.maxCorrectionRuns}
+              /></label
+            >
+          {/if}
+        {/if}
         <footer>
           <button type="submit" disabled={busy === `agent-${agent.id}`}
             ><Save size={15} />{$translate('common.save')}</button

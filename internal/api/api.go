@@ -251,7 +251,7 @@ func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 	settings := map[string]any{"locale": locale, "setupComplete": setupDone && setup == "true", "safeMode": s.safeMode}
 	defaults := map[string]string{
 		"default_provider": "codex", "default_model": "default", "default_effort": "medium",
-		"codex_path": "", "claude_path": "", "rojo_path": "", "git_path": "", "studio_mcp_path": "", "studio_auto_open": "true", "concurrency": "6",
+		"codex_path": "", "claude_path": "", "rojo_path": "", "git_path": "", "studio_mcp_path": "", "studio_auto_open": "true", "concurrency": "6", "playtest_window_seconds": "30",
 	}
 	for key, fallback := range defaults {
 		value, ok, _ := s.store.Setting(ctx, key)
@@ -836,7 +836,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	key := r.Header.Get("Idempotency-Key")
-	run, created, err := s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: project.ID, AgentID: agent.ID, TaskID: body.TaskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, WorkingDirectory: project.Path, Prompt: body.Prompt, SystemPrompt: systemPrompt, Mode: body.Mode, ThreadID: thread.ID, ResumeSessionID: resumeSession, Scenario: body.Scenario, MaxBudget: maxBudget, Resources: []string{"project:" + project.ID + ":write"}, IdempotencyKey: key, Subagents: subagents})
+	run, created, err := s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: project.ID, AgentID: agent.ID, TaskID: body.TaskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, WorkingDirectory: project.Path, Prompt: body.Prompt, SystemPrompt: systemPrompt, Mode: body.Mode, ThreadID: thread.ID, ResumeSessionID: resumeSession, Scenario: body.Scenario, MaxBudget: maxBudget, Resources: []string{"project:" + project.ID + ":write"}, IdempotencyKey: key, Subagents: subagents, ValidateAfterRun: agent.ValidateAfterRun, MaxCorrectionRuns: agent.MaxCorrectionRuns})
 	if err != nil {
 		writeError(w, r, 400, "run_error", err.Error(), nil)
 		return

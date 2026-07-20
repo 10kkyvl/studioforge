@@ -140,6 +140,86 @@ func TestSetRunUsageZeroCostStillRecordsRow(t *testing.T) {
 	}
 }
 
+func TestSetRunValidationPersistsOutcomeAndScreenshot(t *testing.T) {
+	store, ctx := newThreadStore(t)
+	created, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "claude", ModelAlias: "balanced"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := created.Validation; got != "none" {
+		t.Fatalf("a freshly created run's validation=%q, want the default %q", got, "none")
+	}
+	if err := store.SetRunValidation(ctx, created.ID, "failed", "C:\\shots\\1.png"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Run(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Validation != "failed" {
+		t.Errorf("validation=%q, want failed", got.Validation)
+	}
+	if got.ValidationScreenshot != "C:\\shots\\1.png" {
+		t.Errorf("validationScreenshot=%q", got.ValidationScreenshot)
+	}
+}
+
+// A one-hop propagation call (a correction run marking its parent
+// "corrected") must not clobber the parent's own screenshot from its own
+// playtest — only the outcome changes when screenshot is passed empty.
+func TestSetRunValidationWithNoScreenshotLeavesTheExistingOneAlone(t *testing.T) {
+	store, ctx := newThreadStore(t)
+	created, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "claude", ModelAlias: "balanced"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetRunValidation(ctx, created.ID, "failed", "C:\\shots\\1.png"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetRunValidation(ctx, created.ID, "corrected", ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Run(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Validation != "corrected" {
+		t.Errorf("validation=%q, want corrected", got.Validation)
+	}
+	if got.ValidationScreenshot != "C:\\shots\\1.png" {
+		t.Errorf("validationScreenshot=%q, want the earlier screenshot preserved", got.ValidationScreenshot)
+	}
+}
+
+func TestSetRunValidationUnknownRunFails(t *testing.T) {
+	store, ctx := newThreadStore(t)
+	if err := store.SetRunValidation(ctx, "missing-run", "failed", ""); err == nil {
+		t.Fatal("expected an error for an unknown run id")
+	}
+}
+
+func TestCreateRunPersistsParentAndDepth(t *testing.T) {
+	store, ctx := newThreadStore(t)
+	original, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "claude", ModelAlias: "balanced"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	correction, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "claude", ModelAlias: "balanced", ParentRunID: original.ID, CorrectionDepth: 1}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Run(ctx, correction.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ParentRunID != original.ID {
+		t.Errorf("parentRunId=%q, want %q", got.ParentRunID, original.ID)
+	}
+	if got.CorrectionDepth != 1 {
+		t.Errorf("correctionDepth=%d, want 1", got.CorrectionDepth)
+	}
+}
+
 // SetRunUsage on an id that does not exist must fail rather than silently
 // write an orphan usage_records row with an empty project/agent.
 func TestSetRunUsageUnknownRunFails(t *testing.T) {

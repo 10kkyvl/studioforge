@@ -24,6 +24,11 @@ type Manager struct {
 	done    chan struct{}
 }
 
+// TTL reports the lease lifetime this manager was configured with, so a
+// caller that needs to renew a lease on its own schedule (rather than via the
+// regular per-run heartbeat loop) can pace itself safely inside it.
+func (m *Manager) TTL() time.Duration { return m.ttl }
+
 func NewManager(ttl time.Duration) *Manager {
 	if ttl <= 0 {
 		ttl = 30 * time.Second

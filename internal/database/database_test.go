@@ -142,6 +142,64 @@ func TestEnsureDefaultAgentCreatesOnlyOnce(t *testing.T) {
 	}
 }
 
+// A new agent defaults to opting out of the validation loop but still gets a
+// usable correction budget, so turning validation on later does not silently
+// mean "zero corrections allowed".
+func TestCreateAgentDefaultsValidationOptOutWithAUsableCorrectionLimit(t *testing.T) {
+	_, store := testDB(t)
+	ctx := context.Background()
+	project, err := store.CreateProject(ctx, models.Project{Name: "Validation project", Path: filepath.Join(t.TempDir(), "validation-project"), Fingerprint: "validation-project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := store.CreateAgent(ctx, models.Agent{ProjectID: project.ID, Provider: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.ValidateAfterRun {
+		t.Error("a new agent must default to validation opted out")
+	}
+	if agent.MaxCorrectionRuns != 1 {
+		t.Errorf("maxCorrectionRuns=%d, want the default of 1", agent.MaxCorrectionRuns)
+	}
+	agents, err := store.ListAgents(ctx, project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 || agents[0].ValidateAfterRun || agents[0].MaxCorrectionRuns != 1 {
+		t.Fatalf("listed agent=%+v", agents)
+	}
+}
+
+func TestUpdateAgentPersistsValidationSettings(t *testing.T) {
+	_, store := testDB(t)
+	ctx := context.Background()
+	project, err := store.CreateProject(ctx, models.Project{Name: "Validation project", Path: filepath.Join(t.TempDir(), "validation-project-2"), Fingerprint: "validation-project-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := store.CreateAgent(ctx, models.Agent{ProjectID: project.ID, Provider: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent.ValidateAfterRun = true
+	agent.MaxCorrectionRuns = 3
+	updated, err := store.UpdateAgent(ctx, agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.ValidateAfterRun || updated.MaxCorrectionRuns != 3 {
+		t.Fatalf("updated=%+v", updated)
+	}
+	agents, err := store.ListAgents(ctx, project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 || !agents[0].ValidateAfterRun || agents[0].MaxCorrectionRuns != 3 {
+		t.Fatalf("listed agent=%+v", agents)
+	}
+}
+
 func TestEventOrderingAndConcurrentWrites(t *testing.T) {
 	_, store := testDB(t)
 	ctx := context.Background()

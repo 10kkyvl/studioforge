@@ -34,9 +34,12 @@ func (s *Store) CreateRun(ctx context.Context, run models.Run, idempotencyKey st
 	}
 	now := time.Now().UTC()
 	run.CreatedAt, run.UpdatedAt = now, now
+	if run.Validation == "" {
+		run.Validation = "none"
+	}
 	_, err := s.db.SQL.ExecContext(ctx, `INSERT INTO runs
-(id,project_id,task_id,agent_id,provider,model_alias,provider_session_id,status,phase,required_resource,error,prompt_snapshot,base_commit,result_commit,cost,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,idempotency_key,thread_id,created_at,updated_at)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, run.ID, run.ProjectID, nullText(run.TaskID), run.AgentID, run.Provider, run.ModelAlias, run.ProviderSession, run.Status, run.Phase, run.RequiredResource, run.Error, run.PromptSnapshot, run.BaseCommit, run.ResultCommit, run.Cost, run.InputTokens, run.OutputTokens, run.CacheReadTokens, run.CacheCreationTokens, nullText(idempotencyKey), nullText(run.ThreadID), formatTime(now), formatTime(now))
+(id,project_id,task_id,agent_id,provider,model_alias,provider_session_id,status,phase,required_resource,error,prompt_snapshot,base_commit,result_commit,cost,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,idempotency_key,thread_id,validation,parent_run_id,correction_depth,created_at,updated_at)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, run.ID, run.ProjectID, nullText(run.TaskID), run.AgentID, run.Provider, run.ModelAlias, run.ProviderSession, run.Status, run.Phase, run.RequiredResource, run.Error, run.PromptSnapshot, run.BaseCommit, run.ResultCommit, run.Cost, run.InputTokens, run.OutputTokens, run.CacheReadTokens, run.CacheCreationTokens, nullText(idempotencyKey), nullText(run.ThreadID), run.Validation, nullText(run.ParentRunID), run.CorrectionDepth, formatTime(now), formatTime(now))
 	if err != nil {
 		return models.Run{}, false, fmt.Errorf("create run: %w", err)
 	}
@@ -51,8 +54,10 @@ func nullText(s string) any {
 }
 func formatTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 
+const runColumns = `id,project_id,agent_id,COALESCE(task_id,''),provider,model_alias,provider_session_id,status,phase,required_resource,error,cost,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,base_commit,result_commit,COALESCE(thread_id,''),prompt_snapshot,validation,COALESCE(validation_screenshot,''),COALESCE(parent_run_id,''),correction_depth,created_at,updated_at,started_at,finished_at`
+
 func (s *Store) Run(ctx context.Context, id string) (models.Run, error) {
-	row := s.db.SQL.QueryRowContext(ctx, `SELECT id,project_id,agent_id,COALESCE(task_id,''),provider,model_alias,provider_session_id,status,phase,required_resource,error,cost,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,base_commit,result_commit,COALESCE(thread_id,''),prompt_snapshot,created_at,updated_at,started_at,finished_at FROM runs WHERE id=?`, id)
+	row := s.db.SQL.QueryRowContext(ctx, `SELECT `+runColumns+` FROM runs WHERE id=?`, id)
 	return scanRun(row)
 }
 
@@ -62,7 +67,7 @@ func scanRun(row scanner) (models.Run, error) {
 	var r models.Run
 	var created, updated string
 	var started, finished sql.NullString
-	err := row.Scan(&r.ID, &r.ProjectID, &r.AgentID, &r.TaskID, &r.Provider, &r.ModelAlias, &r.ProviderSession, &r.Status, &r.Phase, &r.RequiredResource, &r.Error, &r.Cost, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens, &r.CacheCreationTokens, &r.BaseCommit, &r.ResultCommit, &r.ThreadID, &r.PromptSnapshot, &created, &updated, &started, &finished)
+	err := row.Scan(&r.ID, &r.ProjectID, &r.AgentID, &r.TaskID, &r.Provider, &r.ModelAlias, &r.ProviderSession, &r.Status, &r.Phase, &r.RequiredResource, &r.Error, &r.Cost, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens, &r.CacheCreationTokens, &r.BaseCommit, &r.ResultCommit, &r.ThreadID, &r.PromptSnapshot, &r.Validation, &r.ValidationScreenshot, &r.ParentRunID, &r.CorrectionDepth, &created, &updated, &started, &finished)
 	if err != nil {
 		return r, err
 	}
@@ -83,7 +88,7 @@ func (s *Store) ListRuns(ctx context.Context, projectID string, limit int) ([]mo
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.db.SQL.QueryContext(ctx, `SELECT id,project_id,agent_id,COALESCE(task_id,''),provider,model_alias,provider_session_id,status,phase,required_resource,error,cost,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,base_commit,result_commit,COALESCE(thread_id,''),prompt_snapshot,created_at,updated_at,started_at,finished_at FROM runs WHERE (?='' OR project_id=?) ORDER BY created_at DESC LIMIT ?`, projectID, projectID, limit)
+	rows, err := s.db.SQL.QueryContext(ctx, `SELECT `+runColumns+` FROM runs WHERE (?='' OR project_id=?) ORDER BY created_at DESC LIMIT ?`, projectID, projectID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -109,6 +114,24 @@ func (s *Store) UpdateRun(ctx context.Context, id, status, phase, resource, errT
 		finished = now
 	}
 	res, err := s.db.SQL.ExecContext(ctx, `UPDATE runs SET status=?,phase=?,required_resource=?,error=?,updated_at=?,started_at=COALESCE(started_at,?),finished_at=COALESCE(?,finished_at) WHERE id=?`, status, phase, resource, errText, now, started, finished, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// SetRunValidation records a run's Studio playtest validation outcome.
+// screenshot, when empty, leaves whatever screenshot reference the run
+// already has untouched — this is what lets a later one-hop propagation
+// (a correction run marking its parent "corrected"/"correction_failed")
+// update only the validation column without clobbering the parent's own
+// screenshot from its own playtest.
+func (s *Store) SetRunValidation(ctx context.Context, id, validation, screenshot string) error {
+	res, err := s.db.SQL.ExecContext(ctx, `UPDATE runs SET validation=?,validation_screenshot=COALESCE(NULLIF(?,''),validation_screenshot),updated_at=? WHERE id=?`, validation, screenshot, Now(), id)
 	if err != nil {
 		return err
 	}

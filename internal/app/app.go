@@ -136,6 +136,13 @@ func Run(ctx context.Context, opts config.Options) error {
 	studioMCPOverride.Store(setting("studio_mcp_path", ""))
 	var studioAutoOpen atomic.Value
 	studioAutoOpen.Store(setting("studio_auto_open", "true") != "false")
+	// playtestWindowSeconds bounds how long the post-run validation loop polls
+	// the console in Play mode before classifying the result.
+	var playtestWindowSeconds atomic.Int64
+	playtestWindowSeconds.Store(30)
+	if seconds, err := strconv.Atoi(setting("playtest_window_seconds", "30")); err == nil && seconds > 0 {
+		playtestWindowSeconds.Store(int64(seconds))
+	}
 	studioOpener := &studio.Opener{Rojo: rojoManager}
 	studioProvisioner := &mcp.Provisioner{
 		Dir: filepath.Join(dataDir, "mcp"),
@@ -190,6 +197,15 @@ func Run(ctx context.Context, opts config.Options) error {
 		grant := studioProvisioner.Provision(ctx, j.RunID, j.PermissionProfile, studioTarget(ctx, j.ProjectID))
 		return scheduler.MCPGrant{ConfigPath: grant.ConfigPath, AllowedTools: grant.AllowedTools, Notice: grant.Notice, Context: grant.Context, Release: grant.Release}
 	})
+	// The validation loop opens its own Studio MCP connection independent of
+	// the run's own (already-exited, by this point) agent connection — the
+	// same pattern studioProvisioner.Provision/Status already use to probe
+	// Studio from the daemon's side.
+	schedulerManager.SetMCPValidator(func(ctx context.Context, j *scheduler.Job) scheduler.ValidationResult {
+		window := time.Duration(playtestWindowSeconds.Load()) * time.Second
+		result := studioProvisioner.Validate(ctx, mcp.ValidateRequest{Target: studioTarget(ctx, j.ProjectID), Window: window})
+		return scheduler.ValidationResult{Outcome: scheduler.ValidationOutcome(result.Outcome), Console: result.Console, Errors: result.Errors, Screenshot: result.Screenshot, Notice: result.Notice}
+	})
 
 	applySetting := func(key, value string) error {
 		switch key {
@@ -206,6 +222,12 @@ func Run(ctx context.Context, opts config.Options) error {
 			studioMCPOverride.Store(value)
 		case "studio_auto_open":
 			studioAutoOpen.Store(value != "false")
+		case "playtest_window_seconds":
+			seconds, err := strconv.Atoi(value)
+			if err != nil || seconds <= 0 {
+				return errors.New("playtest_window_seconds must be a positive integer")
+			}
+			playtestWindowSeconds.Store(int64(seconds))
 		case "concurrency":
 			count, err := strconv.Atoi(value)
 			if err != nil {

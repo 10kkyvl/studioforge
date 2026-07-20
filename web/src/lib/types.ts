@@ -68,6 +68,10 @@ export type Agent = {
   permission: string;
   concurrency: number;
   budget: number;
+  // Opts this agent into the post-run Studio playtest validation loop
+  // (Claude runs only, workspace-write permission or above). Off by default.
+  validateAfterRun: boolean;
+  maxCorrectionRuns: number;
 };
 export type Task = {
   id: string;
@@ -96,6 +100,13 @@ export type Run = TokenUsage & {
   cost: number;
   createdAt: string;
   updatedAt: string;
+  // The Studio playtest validation outcome: none, passed, failed,
+  // inconclusive, corrected, or correction_failed.
+  validation: string;
+  validationScreenshot?: string;
+  // Set on a correction run: the run whose failed validation scheduled it.
+  parentRunId?: string;
+  correctionDepth: number;
 };
 export type RunDiff = {
   diff: string;
@@ -180,4 +191,5 @@ export type AppSettings = {
   studio_mcp_path: string;
   studio_auto_open: string;
   concurrency: string;
+  playtest_window_seconds: string;
 };

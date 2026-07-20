@@ -54,6 +54,14 @@ type Agent struct {
 	Concurrency  int     `json:"concurrency"`
 	Budget       float64 `json:"budget"`
 	SystemPrompt string  `json:"systemPrompt"`
+	// ValidateAfterRun opts this agent into the post-run Studio playtest
+	// validation loop (Claude runs only, workspace-write permission or
+	// above, and only when a run actually received a Studio MCP grant).
+	// Off by default: the loop is opt-in, not automatic.
+	ValidateAfterRun bool `json:"validateAfterRun"`
+	// MaxCorrectionRuns bounds how many follow-up correction runs a failed
+	// validation may schedule for this agent's runs, in one lineage.
+	MaxCorrectionRuns int `json:"maxCorrectionRuns"`
 }
 
 type Task struct {
@@ -103,6 +111,21 @@ type Run struct {
 	UpdatedAt      time.Time  `json:"updatedAt"`
 	StartedAt      *time.Time `json:"startedAt,omitempty"`
 	FinishedAt     *time.Time `json:"finishedAt,omitempty"`
+	// Validation is the post-run Studio playtest outcome: none (never ran,
+	// or opted out), passed, failed, inconclusive, corrected (a follow-up
+	// correction run later passed), or correction_failed (corrections were
+	// exhausted without a pass).
+	Validation string `json:"validation"`
+	// ValidationScreenshot is the reference/path the screen_capture tool
+	// returned during the validation pass, if one ran.
+	ValidationScreenshot string `json:"validationScreenshot,omitempty"`
+	// ParentRunID is set on a correction run: the run whose failed
+	// validation scheduled it.
+	ParentRunID string `json:"parentRunId,omitempty"`
+	// CorrectionDepth is 0 for an organic run, and the parent's depth+1 for
+	// a correction run, so the loop can bound how many corrections one
+	// original failure may chain.
+	CorrectionDepth int `json:"correctionDepth"`
 }
 
 type ChatThread struct {

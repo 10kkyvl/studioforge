@@ -220,6 +220,18 @@
         >
         <p class="path-hint">{$translate('settings.studioAutoOpenHint')}</p>
       </div>
+      <div class="wide path-field">
+        <label
+          >{$translate('settings.playtestWindow')}<input
+            type="number"
+            min="5"
+            step="5"
+            value={settings.playtest_window_seconds}
+            onchange={(event) => (settings.playtest_window_seconds = event.currentTarget.value)}
+          /></label
+        >
+        <p class="path-hint">{$translate('settings.playtestWindowHint')}</p>
+      </div>
       {#if detectError}
         <p class="wide path-status" data-status="error">
           {$translate('settings.detectFailed')}: {detectError}

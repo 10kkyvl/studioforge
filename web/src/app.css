@@ -759,7 +759,7 @@ tbody tr:last-child td {
   border-right: 1px solid var(--line);
   overflow: auto;
 }
-.run-list button {
+.run-list .run-row {
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
@@ -773,8 +773,8 @@ tbody tr:last-child td {
   text-align: left;
   cursor: pointer;
 }
-.run-list button:hover,
-.run-list button.active {
+.run-list .run-row:hover,
+.run-list .run-row.active {
   background: var(--surface-2);
 }
 .run-list strong,

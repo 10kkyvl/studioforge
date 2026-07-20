@@ -8,6 +8,17 @@ import (
 	"time"
 )
 
+// A caller pacing its own renewal (rather than the regular per-run heartbeat
+// loop) needs the manager's actual configured TTL, not a guess.
+func TestTTLReportsTheConfiguredLifetime(t *testing.T) {
+	if got := NewManager(7 * time.Second).TTL(); got != 7*time.Second {
+		t.Errorf("TTL=%v, want 7s", got)
+	}
+	if got := NewManager(0).TTL(); got != 30*time.Second {
+		t.Errorf("TTL=%v, want the 30s default when zero is passed", got)
+	}
+}
+
 func TestSortedAtomicAcquisitionPreventsDeadlock(t *testing.T) {
 	m := NewManager(time.Second)
 	defer m.Close()

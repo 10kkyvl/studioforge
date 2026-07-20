@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/10kkyvl/studioforge/internal/events"
+	"github.com/10kkyvl/studioforge/internal/gitcheckpoint"
 	"github.com/10kkyvl/studioforge/internal/memory"
 	"github.com/10kkyvl/studioforge/internal/models"
 	"github.com/10kkyvl/studioforge/internal/providers"
@@ -120,6 +121,7 @@ type RunStore interface {
 	UpdateRun(context.Context, string, string, string, string, string) error
 	SetRunUsage(context.Context, string, string, float64, models.TokenUsage) error
 	BudgetAllowed(context.Context, string, float64) (bool, float64, float64, error)
+	SetRunValidation(ctx context.Context, id, validation, screenshot string) error
 }
 type Job struct {
 	RunID, ProjectID, AgentID, TaskID, Provider, Model, Effort, PermissionProfile string
@@ -131,6 +133,17 @@ type Job struct {
 	// Subagents are handed to an orchestrator lead so it can delegate to the
 	// project's other enabled agents via the provider's native mechanism.
 	Subagents []providers.Subagent
+	// ValidateAfterRun opts this job's agent into the post-run Studio
+	// playtest validation loop. Off unless the agent explicitly turned it on.
+	ValidateAfterRun bool
+	// MaxCorrectionRuns bounds how many follow-up correction runs one failed
+	// validation may chain, across the whole lineage.
+	MaxCorrectionRuns int
+	// ParentRunID and CorrectionDepth are set on a correction run: the run
+	// whose failed validation scheduled it, and how deep into the correction
+	// chain this run is (1 for the first correction attempt, and so on).
+	ParentRunID     string
+	CorrectionDepth int
 }
 
 // MCPGrant is the MCP access a run receives. An empty ConfigPath means none;
@@ -153,6 +166,51 @@ func (m *Manager) SetMCPProvisioner(p MCPProvisioner) {
 	m.mu.Lock()
 	m.provision = p
 	m.mu.Unlock()
+}
+
+// ValidationOutcome mirrors mcp.ValidationOutcome at the scheduler boundary,
+// the same way MCPGrant mirrors mcp.Grant, so this package stays provider-
+// neutral and does not import internal/roblox/mcp.
+type ValidationOutcome string
+
+const (
+	ValidationNone             ValidationOutcome = "none"
+	ValidationPassed           ValidationOutcome = "passed"
+	ValidationFailed           ValidationOutcome = "failed"
+	ValidationInconclusive     ValidationOutcome = "inconclusive"
+	ValidationCorrected        ValidationOutcome = "corrected"
+	ValidationCorrectionFailed ValidationOutcome = "correction_failed"
+)
+
+// ValidationResult is one run's Studio playtest validation outcome.
+type ValidationResult struct {
+	Outcome    ValidationOutcome
+	Console    string
+	Errors     []string
+	Screenshot string
+	Notice     string
+}
+
+// MCPValidator runs a job's post-completion Studio playtest validation.
+// Called only for a job that already qualifies (Claude, non-plan,
+// workspace-write or above, opted in, and holding a real Studio grant) — the
+// hook itself does not need to repeat those checks.
+type MCPValidator func(ctx context.Context, j *Job) ValidationResult
+
+// SetMCPValidator installs the hook that runs the post-run Studio playtest
+// validation loop.
+func (m *Manager) SetMCPValidator(v MCPValidator) {
+	m.mu.Lock()
+	m.validate = v
+	m.mu.Unlock()
+}
+
+// isWorkspaceWriteOrAbove reports whether a permission profile includes the
+// tools the validation loop's own start_stop_play call needs. Gating on this
+// keeps the daemon's own Studio connection from acting with more reach than
+// the run's own agent was granted.
+func isWorkspaceWriteOrAbove(profile string) bool {
+	return profile == "workspace-write" || profile == "danger-full-access"
 }
 
 func (m *Manager) SetMemory(store *memory.Store) {
@@ -180,6 +238,7 @@ type Manager struct {
 	providers                                                     map[string]providers.Provider
 	globalLimit, perProjectLimit, perProviderLimit, perModelLimit int
 	provision                                                     MCPProvisioner
+	validate                                                      MCPValidator
 	memoryStore                                                   *memory.Store
 	mu                                                            sync.Mutex
 	queue                                                         *fairQueue
@@ -234,7 +293,7 @@ func (m *Manager) Submit(ctx context.Context, j Job) (models.Run, bool, error) {
 	if j.RunID == "" {
 		j.RunID = ""
 	}
-	run, created, err := m.store.CreateRun(ctx, models.Run{ID: j.RunID, ProjectID: j.ProjectID, AgentID: j.AgentID, TaskID: j.TaskID, Provider: j.Provider, ModelAlias: j.Model, Status: "queued", Phase: "queued", ThreadID: j.ThreadID, PromptSnapshot: j.Prompt}, j.IdempotencyKey)
+	run, created, err := m.store.CreateRun(ctx, models.Run{ID: j.RunID, ProjectID: j.ProjectID, AgentID: j.AgentID, TaskID: j.TaskID, Provider: j.Provider, ModelAlias: j.Model, Status: "queued", Phase: "queued", ThreadID: j.ThreadID, PromptSnapshot: j.Prompt, ParentRunID: j.ParentRunID, CorrectionDepth: j.CorrectionDepth}, j.IdempotencyKey)
 	if err != nil || !created {
 		return run, created, err
 	}
@@ -415,7 +474,161 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 			slog.Warn("failed to persist run memory", "run_id", j.RunID, "error", err)
 		}
 	}
+	m.runValidation(ctx, j, grant, lease, result.SessionID)
 	m.transition(ctx, j, "running", "completed", "verified", "", "")
+}
+
+// validationHeartbeatFraction and its clamps size the validation phase's own
+// lease-renewal ticker as a safe fraction of the configured lease TTL, so it
+// still renews comfortably inside a short-TTL setup (e.g. tests) without
+// hammering the lease manager under the normal 30-second production TTL.
+const (
+	validationHeartbeatFraction = 3
+	minValidationHeartbeat      = 500 * time.Millisecond
+	maxValidationHeartbeat      = 5 * time.Second
+)
+
+func validationHeartbeatInterval(ttl time.Duration) time.Duration {
+	interval := ttl / validationHeartbeatFraction
+	if interval > maxValidationHeartbeat {
+		return maxValidationHeartbeat
+	}
+	if interval < minValidationHeartbeat {
+		return minValidationHeartbeat
+	}
+	return interval
+}
+
+// runValidation runs the post-completion Studio playtest validation phase for
+// a qualifying job (Claude, non-plan, workspace-write or above, opted in, and
+// holding a real Studio grant for this run), persists its outcome, and
+// schedules or resolves a correction as needed. Every other job is a no-op:
+// the loop is fail-open on anything short of a genuine opt-in.
+//
+// The run loop's own 5-second lease heartbeat stops draining once the
+// provider process exits, so without a heartbeat of its own here, a
+// validation pass long enough to cross the lease TTL could let a second run
+// steal this project's write lease while this one is still working.
+func (m *Manager) runValidation(ctx context.Context, j *Job, grant MCPGrant, lease *resources.Handle, sessionID string) {
+	m.mu.Lock()
+	validate := m.validate
+	m.mu.Unlock()
+	if validate == nil || j.Provider != "claude" || j.Mode == "plan" || grant.ConfigPath == "" || !j.ValidateAfterRun || !isWorkspaceWriteOrAbove(j.PermissionProfile) {
+		return
+	}
+
+	heartbeat := time.NewTicker(validationHeartbeatInterval(m.leases.TTL()))
+	defer heartbeat.Stop()
+	stopHeartbeat := make(chan struct{})
+	heartbeatDone := make(chan struct{})
+	go func() {
+		defer close(heartbeatDone)
+		for {
+			select {
+			case <-stopHeartbeat:
+				return
+			case <-heartbeat.C:
+				if err := lease.Heartbeat(); err != nil {
+					slog.Error("failed to renew project lease during validation", "run_id", j.RunID, "project_id", j.ProjectID, "error", err)
+					return
+				}
+			}
+		}
+	}()
+	validation := validate(ctx, j)
+	close(stopHeartbeat)
+	<-heartbeatDone
+
+	outcome := validation.Outcome
+	if outcome == "" {
+		outcome = ValidationInconclusive
+	}
+	m.emitValidation(*j, validation, outcome)
+	if err := m.store.SetRunValidation(ctx, j.RunID, string(outcome), validation.Screenshot); err != nil {
+		slog.Error("failed to persist run validation", "run_id", j.RunID, "error", err)
+	}
+
+	switch outcome {
+	case ValidationFailed:
+		if j.CorrectionDepth < j.MaxCorrectionRuns {
+			m.scheduleCorrection(ctx, j, sessionID, validation)
+		} else if j.ParentRunID != "" {
+			if err := m.store.SetRunValidation(ctx, j.ParentRunID, string(ValidationCorrectionFailed), ""); err != nil {
+				slog.Error("failed to mark parent run correction_failed", "parent_run_id", j.ParentRunID, "error", err)
+			}
+		}
+	case ValidationPassed:
+		if j.ParentRunID != "" {
+			if err := m.store.SetRunValidation(ctx, j.ParentRunID, string(ValidationCorrected), ""); err != nil {
+				slog.Error("failed to mark parent run corrected", "parent_run_id", j.ParentRunID, "error", err)
+			}
+		}
+	}
+}
+
+// emitValidation publishes a validation result as a normal run event so it
+// survives in the Runs transcript and across a daemon restart, the same as
+// any provider event.
+func (m *Manager) emitValidation(j Job, validation ValidationResult, outcome ValidationOutcome) {
+	payload := map[string]any{"outcome": string(outcome)}
+	if len(validation.Errors) > 0 {
+		payload["errors"] = validation.Errors
+	}
+	if validation.Screenshot != "" {
+		payload["screenshot"] = validation.Screenshot
+	}
+	if validation.Notice != "" {
+		payload["notice"] = validation.Notice
+	}
+	m.emit(models.Run{ID: j.RunID, ProjectID: j.ProjectID}, j.AgentID, "validation", "scheduler.validation", payload)
+}
+
+// scheduleCorrection submits a follow-up run for a failed validation,
+// carrying the failure detail into its prompt and resuming the same CLI
+// session so the agent has full context of what it just built. It goes
+// through the normal Submit path — the same writer lease and budget ceiling
+// apply as to any other run, and a budget refusal there is exactly "stop and
+// surface the failure instead" (the correction run itself ends up failed,
+// which TestCorrectionRunExceedingBudgetSurfacesAsAFailureNotASilentRetry
+// covers). It takes its own Git checkpoint, mirroring the one internal/api
+// takes before every other non-plan Claude run.
+func (m *Manager) scheduleCorrection(ctx context.Context, j *Job, sessionID string, validation ValidationResult) {
+	if j.WorkingDirectory != "" {
+		if _, err := gitcheckpoint.Checkpoint(j.WorkingDirectory, "StudioForge checkpoint before correction run"); err != nil {
+			slog.Warn("git checkpoint before correction run failed", "run_id", j.RunID, "project_id", j.ProjectID, "error", err)
+		}
+	}
+	correction := Job{
+		ProjectID: j.ProjectID, AgentID: j.AgentID, TaskID: j.TaskID,
+		Provider: j.Provider, Model: j.Model, Effort: j.Effort, PermissionProfile: j.PermissionProfile,
+		WorkingDirectory: j.WorkingDirectory, SystemPrompt: j.SystemPrompt,
+		Mode: j.Mode, ThreadID: j.ThreadID, ResumeSessionID: sessionID,
+		MaxBudget: j.MaxBudget, Prompt: correctionPrompt(validation),
+		ParentRunID: j.RunID, CorrectionDepth: j.CorrectionDepth + 1,
+		MaxCorrectionRuns: j.MaxCorrectionRuns, ValidateAfterRun: j.ValidateAfterRun,
+	}
+	if _, _, err := m.Submit(ctx, correction); err != nil {
+		slog.Error("failed to schedule correction run", "run_id", j.RunID, "project_id", j.ProjectID, "error", err)
+		return
+	}
+	m.emit(models.Run{ID: j.RunID, ProjectID: j.ProjectID}, j.AgentID, "status", "scheduler.correction_scheduled", map[string]any{"parentRunId": j.RunID})
+}
+
+// correctionPrompt folds a failed validation's console errors and screenshot
+// reference into the instruction a correction run receives.
+func correctionPrompt(validation ValidationResult) string {
+	var b strings.Builder
+	b.WriteString("An automated Studio playtest ran after your last change and found a problem. Fix it, then report back.\n")
+	if len(validation.Errors) > 0 {
+		b.WriteString("\nConsole errors observed during Play mode:\n")
+		for _, line := range validation.Errors {
+			b.WriteString("- " + line + "\n")
+		}
+	}
+	if validation.Screenshot != "" {
+		b.WriteString("\nA screenshot was captured during the playtest: " + validation.Screenshot + "\n")
+	}
+	return b.String()
 }
 func firstLine(s string) string {
 	if idx := strings.IndexAny(s, "\r\n"); idx >= 0 {

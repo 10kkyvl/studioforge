@@ -424,6 +424,7 @@
         studio_mcp_path: settings.studio_mcp_path,
         studio_auto_open: settings.studio_auto_open === 'false' ? 'false' : 'true',
         concurrency: String(settings.concurrency),
+        playtest_window_seconds: String(settings.playtest_window_seconds),
       });
       notice = $translate('settings.saved');
       await refresh();
@@ -470,6 +471,10 @@
     return key in ({} as Record<TranslationKey, string>)
       ? $translate(key)
       : $translate(key) || status;
+  }
+  function validationLabel(validation: string): string {
+    const key = `validation.${validation}` as TranslationKey;
+    return $translate(key) || validation;
   }
   function checkList(): Check[] {
     return [
@@ -645,6 +650,7 @@
             {projectName}
             {agentName}
             {statusLabel}
+            {validationLabel}
             {payloadText}
             busy={busy.startsWith('run-')}
             onSend={(prompt) => startRun(selectedProject, '', prompt)}
