@@ -21,6 +21,12 @@ type Diagnostics struct {
 	Version   string `json:"version"`
 	Message   string `json:"message"`
 }
+
+// maxRecentLines bounds how many of a session's most recent log lines are
+// kept for display — enough for an operator to see what `rojo serve` is
+// currently doing without growing without bound over a long-lived session.
+const maxRecentLines = 100
+
 type Session struct {
 	ProjectID, ProjectFile string
 	Port                   int
@@ -28,7 +34,30 @@ type Session struct {
 	StartedAt              time.Time
 	Lines                  <-chan processes.Line
 	process                *processes.Process
+
+	mu     sync.Mutex
+	recent []string
 }
+
+// recordLine appends a formatted log line to the session's bounded recent
+// buffer, dropping the oldest once full.
+func (s *Session) recordLine(line processes.Line) {
+	text := fmt.Sprintf("[%s] %s", line.Stream, strings.TrimRight(line.Text, "\r\n"))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recent = append(s.recent, text)
+	if len(s.recent) > maxRecentLines {
+		s.recent = s.recent[len(s.recent)-maxRecentLines:]
+	}
+}
+
+// RecentLines reports this session's most recent log lines, oldest first.
+func (s *Session) RecentLines() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.recent...)
+}
+
 type Manager struct {
 	supervisor *processes.Supervisor
 	executable string
@@ -138,11 +167,13 @@ func (m *Manager) Start(ctx context.Context, projectID, projectFile string) (*Se
 	m.mu.Unlock()
 	go func() { _ = proc.Wait(); m.mu.Lock(); delete(m.sessions, projectID); m.mu.Unlock() }()
 	// Continuously drain the session's Lines channel so it never fills up
-	// and backpressures the rojo serve subprocess, and log output for
-	// debugging rojo sync issues.
+	// and backpressures the rojo serve subprocess: log each line for
+	// debugging rojo sync issues, and keep the most recent ones so the
+	// project Overview can show what the session is currently doing.
 	go func() {
 		for line := range session.Lines {
 			slog.Debug("rojo", "project_id", projectID, "stream", line.Stream, "line", strings.TrimRight(line.Text, "\r\n"))
+			session.recordLine(line)
 		}
 	}()
 	return session, nil

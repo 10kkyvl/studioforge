@@ -18,7 +18,7 @@ func (a *syncAdapter) Start(ctx context.Context, projectID, projectFile string) 
 	if err != nil {
 		return models.SyncStatus{}, err
 	}
-	return models.SyncStatus{Active: true, Port: session.Port, StartedAt: session.StartedAt}, nil
+	return models.SyncStatus{Active: true, Port: session.Port, StartedAt: session.StartedAt, RecentLogs: session.RecentLines()}, nil
 }
 
 func (a *syncAdapter) Stop(projectID string) error { return a.manager.Stop(projectID) }
@@ -28,5 +28,5 @@ func (a *syncAdapter) Status(projectID string) models.SyncStatus {
 	if !ok {
 		return models.SyncStatus{}
 	}
-	return models.SyncStatus{Active: true, Port: session.Port, StartedAt: session.StartedAt}
+	return models.SyncStatus{Active: true, Port: session.Port, StartedAt: session.StartedAt, RecentLogs: session.RecentLines()}
 }

@@ -588,6 +588,19 @@ tbody tr:last-child td {
   color: var(--muted);
   font-size: 0.68rem;
 }
+.log-lines {
+  margin: 0;
+  max-height: 110px;
+  overflow-y: auto;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--surface-2, rgba(255, 255, 255, 0.05));
+  color: var(--muted);
+  font-size: 0.65rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .hero-panel {
   grid-column: span 2;
   flex-direction: row;

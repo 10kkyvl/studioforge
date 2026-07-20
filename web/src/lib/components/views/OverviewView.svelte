@@ -44,6 +44,19 @@
         >{snapshot.diagnostics.dependencies.rojo?.status ?? $translate('common.none')}</strong
       >
     </article>
+    <article class="panel">
+      <Waypoints /><span>{$translate('overview.rojoSync')}</span><strong
+        >{project.sync.active
+          ? $translate('overview.rojoSyncRunning')
+          : $translate('overview.rojoSyncStopped')}</strong
+      >
+      {#if project.sync.active}
+        <p class="panel-hint">{$translate('overview.rojoSyncPort')}: {project.sync.port}</p>
+        {#if project.sync.recentLogs?.length}
+          <pre class="log-lines">{project.sync.recentLogs.join('\n')}</pre>
+        {/if}
+      {/if}
+    </article>
     <article class="panel" class:panel-warning={studioMcpCheck?.status === 'missing'}>
       <Plug /><span>{$translate('overview.studioMcp')}</span><strong
         >{studioMcpCheck?.status ?? $translate('common.none')}</strong

@@ -70,6 +70,10 @@ export const en = {
   'overview.noSelection': 'Select a project from the switcher.',
   'overview.git': 'Git checkpointing',
   'overview.rojo': 'Rojo synchronization',
+  'overview.rojoSync': 'Rojo live-sync session',
+  'overview.rojoSyncRunning': 'Running',
+  'overview.rojoSyncStopped': 'Stopped',
+  'overview.rojoSyncPort': 'Port',
   'overview.studio': 'Studio binding',
   'overview.studioMcp': 'Studio MCP',
   'overview.studioMcpMissing':
@@ -300,6 +304,10 @@ export const ru: Record<TranslationKey, string> = {
   'overview.noSelection': 'Выберите проект в переключателе.',
   'overview.git': 'Git checkpoints',
   'overview.rojo': 'Синхронизация Rojo',
+  'overview.rojoSync': 'Live-sync сессия Rojo',
+  'overview.rojoSyncRunning': 'Запущена',
+  'overview.rojoSyncStopped': 'Остановлена',
+  'overview.rojoSyncPort': 'Порт',
   'overview.studio': 'Привязка Studio',
   'overview.studioMcp': 'Studio MCP',
   'overview.studioMcpMissing':

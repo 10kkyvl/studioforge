@@ -39,6 +39,10 @@ type SyncStatus struct {
 	Active    bool      `json:"active"`
 	Port      int       `json:"port"`
 	StartedAt time.Time `json:"startedAt"`
+	// RecentLogs are the session's most recent `rojo serve` log lines, oldest
+	// first, so the project Overview can show what a live session is
+	// currently doing without a dedicated polling endpoint of its own.
+	RecentLogs []string `json:"recentLogs,omitempty"`
 }
 
 type Agent struct {

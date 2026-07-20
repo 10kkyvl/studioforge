@@ -36,6 +36,8 @@ export type SyncStatus = {
   active: boolean;
   port: number;
   startedAt: string;
+  // The session's most recent `rojo serve` log lines, oldest first.
+  recentLogs?: string[];
 };
 // Project's TokenUsage is not one run's counters but the SUM across every run
 // in the project, so the project card can show total spend without re-summing
