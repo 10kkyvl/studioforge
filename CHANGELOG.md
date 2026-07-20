@@ -41,6 +41,14 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   allocated port, and those recent log lines. Added a regression test proving a session the operator
   never explicitly stopped still dies on daemon shutdown (`processes.Supervisor.Close`), the actual
   restart/shutdown path, distinct from the existing explicit-Stop-then-Close test.
+- Operator decisions, scoped to one producer: when the playtest validation loop's correction budget
+  is exhausted, StudioForge now proposes a `Decision` instead of silently giving up, shown as an inline
+  Approve/Dismiss banner on the Runs view. Approving (`POST /api/v1/decisions/{id}/resolve` with
+  `{"approve": true}`) submits the exact proposed correction run through the normal scheduler — same
+  writer lease, same budget ceiling, same Git checkpoint; denying schedules nothing. This is a fresh,
+  narrower `decisions` table (migration `008_decisions.sql`) than the one removed early in the alpha,
+  and is not a general pre-action approval gate — it never pauses a run before a file edit, a
+  destructive command, or a publish.
 
 ## [0.2.0-alpha.1] - 2026-07-20
 

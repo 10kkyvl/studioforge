@@ -279,6 +279,11 @@ automatically before a run** in Settings).
    correction**; if the agent's `maxCorrectionRuns` is exhausted without a pass, it reads **Correction
    failed** instead — the loop never retries silently past that bound, and it never fails the *original*
    run over a playtest outcome either way.
+7. To see the operator-decision path instead: set **Max correction runs** to 0 on the agent, then repeat
+   step 3. The very first failure already exceeds the budget, so instead of just marking the run
+   **Correction failed**, a **Decision needed** badge also appears — open the run and a banner offers
+   **Approve correction** (submits the exact correction that would otherwise have been scheduled
+   automatically) or **Dismiss** (schedules nothing; the run stays at **Correction failed**).
 
 ### Expected output
 
@@ -287,6 +292,8 @@ automatically before a run** in Settings).
 - A run whose Studio grant was withheld (ambiguous or closed Studio, `read-only` profile, Codex
   provider, plan mode, or the agent simply not opted in) shows no validation badge at all — the loop is
   fail-open, exactly like Studio access itself.
+- With **Max correction runs** at 0, a failure shows both **Correction failed** and a **Decision
+  needed** banner offering to override the limit for that one run.
 
 ### If it does not work
 
@@ -295,6 +302,8 @@ automatically before a run** in Settings).
 | No validation badge ever appears | Confirm **Validate with a Studio playtest after each run** is checked on the agent, the profile is `workspace-write`+, the run was in **Do** mode, and the chat header's Studio badge showed a match — a withheld Studio grant silently skips validation. |
 | Badge reads "Playtest inconclusive" every time | The console produced no usable text, or Studio became unreachable mid-playtest (closed, crashed, or another MCP client took the connection) — this is fail-open by design, not a bug; check `docs/KNOWN_LIMITATIONS.md` for the heuristic classifier's caveats. |
 | No correction run appears after a failure | Check the agent's **Max correction runs** — a value of 0 disables corrections entirely, and a lineage that already reached the limit stops scheduling more. |
+| No **Decision needed** banner appears even with **Max correction runs** at 0 | Confirm the run actually failed validation (not inconclusive) — a decision is only proposed when a correction budget is genuinely exhausted, not on every outcome. |
+| **Approve correction** appears to do nothing | Check the Runs list for a new run linked back to the original — approving submits the correction through the normal scheduler, so it is still subject to the project's writer lease and budget ceiling like any other run. |
 
 ## Track D: real Studio session discovery
 

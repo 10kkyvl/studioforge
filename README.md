@@ -81,6 +81,7 @@ The project is an alpha as a whole. The table below describes individual capabil
 | Project memory | Each completed run leaves a short memory entry (its own prompt); the next run in that project sees up to five relevant past entries in its system prompt |
 | Playtest validation loop | Opt-in per agent (`validateAfterRun`, off by default): after a non-plan Claude run with `workspace-write`+ permission and a real Studio grant, the daemon opens its own Studio MCP connection, enters Play mode, polls the console, takes a screenshot, exits Play mode, and classifies the result as passed/failed/inconclusive. A failed result schedules up to `maxCorrectionRuns` follow-up runs (default 1) through the normal scheduler, resuming the same session with the failure detail in the prompt |
 | Real Studio session discovery | The Studio Sessions view's **Refresh** button (`POST /api/v1/studio/sessions/refresh`) runs a live launcher probe, lists every open Roblox Studio instance (no single-instance refusal — this is a read-only listing, not an access grant), auto-binds an unambiguous match to a registered project by expected place name, and never overrides an existing manual **Bind project** choice on a later refresh |
+| Operator decisions | Scoped to one case: when the playtest validation loop's correction budget is exhausted, the daemon proposes a Decision instead of silently giving up, shown as an inline Approve/Dismiss banner on the Runs view (`POST /api/v1/decisions/{id}/resolve`). Approving submits the exact proposed correction run through the normal scheduler; this is not a general dangerous-action approval gate |
 
 ### Experimental — implemented, but not verified against real external software by default
 
@@ -238,6 +239,7 @@ The most important ones for a new user:
 - **`--max-turns` is not enforced.** The flag does not exist in current Claude Code, so only budget ceilings bound a run.
 - **The playtest validation loop classifies the console heuristically** (script-error and infinite-yield phrase matching), not by parsing a documented Studio MCP schema, and it only ever runs when an agent opted in and the run reached Studio — like Studio access itself, an absent or ambiguous Studio makes it silently `inconclusive` rather than failing the run.
 - **Real Studio session discovery is manual, not automatic.** The Studio Sessions view refreshes only on request (its **Refresh** button); nothing polls the launcher in the background, to avoid spawning it and competing with a running agent for Studio's single WS host slot. Under `--mock`, refresh is a no-op and the view always shows the seeded demo rows.
+- **Operator decisions cover exactly one case** — an exhausted playtest-correction budget — not a general "confirm before anything dangerous" gate. It never pauses a run before a file edit, a destructive command, or a publish; the run's own permission profile is what governs those, unchanged.
 - **Several packages are not wired in** — see the feature status table above.
 - **Packages are unsigned** on both Windows and macOS.
 

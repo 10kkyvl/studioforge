@@ -52,7 +52,12 @@ plugin loading or dynamic linking.
   calls it, persists the resulting `passed`/`failed`/`inconclusive` outcome on the run, publishes it as
   a normal run event, and on `failed` schedules a follow-up correction run through the same `Submit`
   path (writer lease, budget check, and its own Git checkpoint all apply) — see "The self-correcting
-  playtest validation loop" below.
+  playtest validation loop" below. A third installable hook, `DecisionProposer`, is called only when a
+  failed validation's correction budget is exhausted (`CorrectionDepth >= MaxCorrectionRuns`): rather
+  than only marking the lineage `correction_failed` (which still happens unconditionally), it hands the
+  proposed follow-up correction `Job` to whatever persists it as a pending `Decision` — see "Operator
+  decisions" below. A `nil` proposer (the default until one is installed) leaves this exactly as before
+  Priority 4: no decision, just the correction_failed mark.
 - `internal/resources` — `Manager`, an atomic lease table keyed by sorted resource-key lists, with TTL
   expiry, heartbeat renewal, and idempotent release. The scheduler uses one lease key,
   `project:<id>:write`, per run, which is what makes "one writer per project" hold.
@@ -278,6 +283,29 @@ pass resolves for it. Nothing polls the launcher in the background; every refres
 own click or a probe explicitly requested through the endpoint, because each one spawns a launcher process
 that competes for Studio's single WS host slot. Under `--mock`, the refresh hook is never wired at all, so
 the Studio Sessions view keeps showing only the seeded demo rows.
+
+**Operator decisions** (`internal/database` migration `008_decisions.sql`, `models.Decision`,
+`POST /api/v1/decisions/{id}/resolve`) are a fresh, narrowly-scoped replacement for the `decisions`
+feature `006_drop_decisions.sql` removed — this one has an actual producer from day one, scoped to the
+one case Priority 4 asked for. The scheduler's `DecisionProposer` hook fires only when a failed
+validation's correction budget is exhausted; a job whose own permission profile is `read-only` never
+reaches this point at all, because the validation loop itself never runs for a `read-only` job, and a
+correction always inherits its parent's already-validated permission profile — so that half of the
+originally described trigger is structurally unreachable, not merely untested. `internal/app.decisionProposer`
+serializes the proposed correction `Job` verbatim (Go's `encoding/json` field-name mapping, no tags
+needed, since both ends use the same `scheduler.Job` type) into `decisions.payload` alongside a summary
+and detail (the console error lines), and persists it via `Store.CreateDecision` — `internal/database`
+never interprets `payload`'s shape, only stores and returns it. `POST /api/v1/decisions/{id}/resolve`
+with `{"approve": true}` deserializes it back into a `scheduler.Job` and submits it through the normal
+`Manager.Submit` path (the same writer lease, budget ceiling, and Git checkpoint as any other run);
+`{"approve": false}` schedules nothing — the run this decision was about was already marked
+`correction_failed` when the decision was first proposed, unconditionally, regardless of whether a
+proposer is even installed. Resolving an already-resolved or nonexistent decision is a 409/404, not a
+silent success. Pending decisions ride on `GET /api/v1/snapshot` (`"decisions"`, filtered to `status=
+pending`) the same way Studio sessions and studio-sync status already do, and are shown as an inline
+banner (with Approve/Dismiss) on the Runs view, keyed by the decision's `runId`, rather than as a
+separate nav section — a scope choice, since this alpha's only producer is 1:1 with a run's own
+correction lineage.
 
 ## Data flow: one chat message, end to end
 
