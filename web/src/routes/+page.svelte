@@ -6,7 +6,6 @@
     FolderKanban,
     Gauge,
     Languages,
-    Library,
     ListChecks,
     MessagesSquare,
     RefreshCw,
@@ -41,9 +40,7 @@
   import FirstRunWizard from '$lib/components/FirstRunWizard.svelte';
   import NewProjectDialog from '$lib/components/NewProjectDialog.svelte';
   import ActivityView from '$lib/components/views/ActivityView.svelte';
-  import AssetsView from '$lib/components/views/AssetsView.svelte';
   import ChatView from '$lib/components/views/ChatView.svelte';
-  import DecisionsView from '$lib/components/views/DecisionsView.svelte';
   import OverviewView from '$lib/components/views/OverviewView.svelte';
   import ProjectsView from '$lib/components/views/ProjectsView.svelte';
   import RunsView from '$lib/components/views/RunsView.svelte';
@@ -61,8 +58,6 @@
     | 'tasks'
     | 'runs'
     | 'studios'
-    | 'decisions'
-    | 'assets'
     | 'settings';
   let view: View = 'projects';
   let snapshot: Snapshot | null = null;
@@ -115,8 +110,6 @@
     { id: 'tasks', icon: ListChecks, key: 'nav.tasks' },
     { id: 'runs', icon: TerminalSquare, key: 'nav.runs' },
     { id: 'studios', icon: Waypoints, key: 'nav.studios' },
-    { id: 'decisions', icon: ShieldAlert, key: 'nav.decisions' },
-    { id: 'assets', icon: Library, key: 'nav.assets' },
     { id: 'settings', icon: Settings, key: 'nav.settings' },
   ];
 
@@ -431,12 +424,6 @@
       await refresh();
     });
   }
-  async function decide(id: string, status: string) {
-    await action(`decision-${id}`, async () => {
-      await post(`/decisions/${id}`, { status, resolution: status });
-      await refresh();
-    });
-  }
   async function bindStudio(sessionId: string, projectId: string) {
     await action(`studio-${sessionId}`, async () => {
       await post(`/studios/${sessionId}/bind`, { projectId });
@@ -525,9 +512,6 @@
             aria-current={view === item.id ? 'page' : undefined}
           >
             <item.icon size={18} /><span>{$translate(item.key)}</span>
-            {#if item.id === 'decisions' && snapshot.decisions.filter((d) => d.status === 'pending').length > 0}<b
-                class="count">{snapshot.decisions.filter((d) => d.status === 'pending').length}</b
-              >{/if}
           </button>
         {/each}
       </nav>
@@ -655,10 +639,6 @@
           />
         {:else if view === 'studios'}
           <StudiosView studios={snapshot.studios} {projects} {projectName} onBind={bindStudio} />
-        {:else if view === 'decisions'}
-          <DecisionsView decisions={snapshot.decisions} {projectName} onDecide={decide} />
-        {:else if view === 'assets'}
-          <AssetsView />
         {:else if view === 'settings'}
           <SettingsView
             diagnostics={snapshot.diagnostics}

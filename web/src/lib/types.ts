@@ -122,18 +122,6 @@ export type ChatMessage = {
   runId: string;
   status?: string;
 };
-export type Decision = {
-  id: string;
-  projectId: string;
-  title: string;
-  reason: string;
-  proposedAction: string;
-  risk: string;
-  preview: string;
-  status: string;
-  resolution?: string;
-  createdAt: string;
-};
 export type StudioSession = {
   id: string;
   projectId?: string;
@@ -160,7 +148,6 @@ export type Snapshot = {
   runs: Run[];
   agents: Agent[];
   tasks: Task[];
-  decisions: Decision[];
   studios: StudioSession[];
   diagnostics: Diagnostics;
   settings: AppSettings;

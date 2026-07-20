@@ -128,7 +128,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/threads/{threadId}/messages", s.threadMessages)
 	mux.HandleFunc("POST /api/v1/runs", s.createRun)
 	mux.HandleFunc("POST /api/v1/runs/{id}/{action}", s.runAction)
-	mux.HandleFunc("POST /api/v1/decisions/{id}", s.resolveDecision)
 	mux.HandleFunc("POST /api/v1/studios/{id}/bind", s.bindStudio)
 	mux.HandleFunc("POST /api/v1/backups", s.backup)
 	mux.HandleFunc("GET /api/v1/openapi.yaml", s.openapi)
@@ -225,11 +224,6 @@ func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, 500, "database_error", "Unable to list tasks", err)
 		return
 	}
-	decisions, err := s.store.ListDecisions(ctx, "")
-	if err != nil {
-		writeError(w, r, 500, "database_error", "Unable to list decisions", err)
-		return
-	}
 	studios, err := s.store.ListStudioSessions(ctx)
 	if err != nil {
 		writeError(w, r, 500, "database_error", "Unable to list Studio sessions", err)
@@ -252,7 +246,7 @@ func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 		}
 		settings[key] = value
 	}
-	writeJSON(w, 200, map[string]any{"projects": projectsList, "runs": runs, "agents": agents, "tasks": tasks, "decisions": decisions, "studios": studios, "diagnostics": s.doctor.Run(ctx), "settings": settings})
+	writeJSON(w, 200, map[string]any{"projects": projectsList, "runs": runs, "agents": agents, "tasks": tasks, "studios": studios, "diagnostics": s.doctor.Run(ctx), "settings": settings})
 }
 
 // detectPaths reports where the external tools appear to be installed, so the
@@ -832,6 +826,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, status, run)
 }
+
 func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 	id, action := r.PathValue("id"), r.PathValue("action")
 	// Safe mode disables AI workers. Pause and cancel stay available because they only
@@ -889,18 +884,6 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
-func (s *Server) resolveDecision(w http.ResponseWriter, r *http.Request) {
-	var body struct{ Status, Resolution string }
-	if err := decodeJSON(r, &body); err != nil {
-		writeError(w, r, 400, "invalid_json", err.Error(), nil)
-		return
-	}
-	if err := s.store.ResolveDecision(r.Context(), r.PathValue("id"), body.Status, body.Resolution); err != nil {
-		writeError(w, r, 409, "decision_error", "Decision is no longer pending or status is invalid", err)
-		return
-	}
-	writeJSON(w, 200, map[string]bool{"ok": true})
-}
 func (s *Server) bindStudio(w http.ResponseWriter, r *http.Request) {
 	var body struct{ ProjectID string }
 	if err := decodeJSON(r, &body); err != nil {

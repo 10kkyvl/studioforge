@@ -8,40 +8,6 @@ import (
 	"github.com/10kkyvl/studioforge/internal/models"
 )
 
-func (s *Store) ListDecisions(ctx context.Context, projectID string) ([]models.Decision, error) {
-	rows, err := s.db.SQL.QueryContext(ctx, `SELECT id,project_id,COALESCE(run_id,''),title,reason,proposed_action,risk,preview,status,resolution,created_at FROM decisions WHERE (?='' OR project_id=?) ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END,created_at DESC`, projectID, projectID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []models.Decision
-	for rows.Next() {
-		var d models.Decision
-		var created string
-		if err := rows.Scan(&d.ID, &d.ProjectID, &d.RunID, &d.Title, &d.Reason, &d.ProposedAction, &d.Risk, &d.Preview, &d.Status, &d.Resolution, &created); err != nil {
-			return nil, err
-		}
-		d.CreatedAt = parseTime(created)
-		out = append(out, d)
-	}
-	return out, rows.Err()
-}
-
-func (s *Store) ResolveDecision(ctx context.Context, id, status, resolution string) error {
-	if status != "approved_once" && status != "approved_rule" && status != "rejected" && status != "edited" {
-		return sql.ErrNoRows
-	}
-	res, err := s.db.SQL.ExecContext(ctx, "UPDATE decisions SET status=?,resolution=?,resolved_at=? WHERE id=? AND status='pending'", status, resolution, Now(), id)
-	if err != nil {
-		return err
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
-}
-
 func (s *Store) ListStudioSessions(ctx context.Context) ([]models.StudioSession, error) {
 	rows, err := s.db.SQL.QueryContext(ctx, `SELECT id,COALESCE(project_id,''),instance_id,name,place_id,game_id,active,play_state,mock,last_seen_at FROM studio_sessions ORDER BY active DESC,last_seen_at DESC`)
 	if err != nil {

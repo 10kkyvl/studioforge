@@ -122,8 +122,6 @@ test('first run, locale, projects, live run, and core navigation', async ({ page
   ).toBeVisible();
   await page.getByRole('button', { name: 'Studio sessions', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Studio sessions', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Decisions 1', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Decision inbox', exact: true })).toBeVisible();
   await page
     .getByRole('combobox', { name: 'Project', exact: true })
     .selectOption({ label: 'Fresh Project' });

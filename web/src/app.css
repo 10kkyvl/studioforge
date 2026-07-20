@@ -622,7 +622,6 @@ tbody tr:last-child td {
 }
 .team-grid,
 .studio-grid,
-.decision-list,
 .settings-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(250px, 1fr));
@@ -630,7 +629,6 @@ tbody tr:last-child td {
 }
 .agent-card,
 .studio-card,
-.decision-card,
 .settings-card {
   padding: 18px;
   border: 1px solid var(--line);
@@ -653,7 +651,6 @@ tbody tr:last-child td {
 }
 .agent-card h2,
 .studio-card h2,
-.decision-card h2,
 .settings-card h2 {
   margin: 0;
   font-size: 0.95rem;
@@ -861,7 +858,6 @@ tbody tr:last-child td {
   color: var(--red);
 }
 .studio-card header,
-.decision-card header,
 .settings-card header {
   display: flex;
   align-items: center;
@@ -897,63 +893,6 @@ tbody tr:last-child td {
   border-radius: 6px;
   background: var(--surface-2);
   color: var(--text);
-}
-.decision-list {
-  grid-template-columns: repeat(2, minmax(300px, 1fr));
-}
-.decision-card header {
-  justify-content: space-between;
-}
-.decision-card small {
-  color: var(--muted);
-}
-.risk {
-  display: inline-flex;
-  margin-bottom: 7px;
-  padding: 3px 6px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--red) 15%, var(--surface));
-  color: var(--red);
-  font-size: 0.63rem;
-  text-transform: uppercase;
-}
-.decision-card dl {
-  margin: 0;
-}
-.decision-card dl div {
-  margin-top: 12px;
-}
-.decision-card dt {
-  color: var(--muted);
-  font-size: 0.67rem;
-  text-transform: uppercase;
-}
-.decision-card dd {
-  margin: 5px 0;
-  font-size: 0.77rem;
-  line-height: 1.5;
-}
-.decision-card dd code {
-  display: block;
-  padding: 9px;
-  border-radius: 6px;
-  background: var(--surface-2);
-}
-.decision-card footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 18px;
-}
-.decision-card footer button {
-  padding: 7px 10px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--surface-2);
-  cursor: pointer;
-}
-.asset-empty {
-  min-height: 360px;
 }
 .settings-grid {
   grid-template-columns: repeat(2, minmax(280px, 1fr));
@@ -1395,7 +1334,6 @@ tbody tr:last-child td {
   .project-grid,
   .team-grid,
   .studio-grid,
-  .decision-list,
   .settings-grid {
     grid-template-columns: 1fr;
   }

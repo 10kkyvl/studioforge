@@ -136,20 +136,6 @@ type RunEvent struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-type Decision struct {
-	ID             string    `json:"id"`
-	ProjectID      string    `json:"projectId"`
-	RunID          string    `json:"runId,omitempty"`
-	Title          string    `json:"title"`
-	Reason         string    `json:"reason"`
-	ProposedAction string    `json:"proposedAction"`
-	Risk           string    `json:"risk"`
-	Preview        string    `json:"preview"`
-	Status         string    `json:"status"`
-	Resolution     string    `json:"resolution,omitempty"`
-	CreatedAt      time.Time `json:"createdAt"`
-}
-
 type StudioSession struct {
 	ID         string    `json:"id"`
 	ProjectID  string    `json:"projectId,omitempty"`

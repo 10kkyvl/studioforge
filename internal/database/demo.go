@@ -151,10 +151,6 @@ VALUES(?,?,?,?,?, ?,0,1,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,
 		}
 	}
 
-	_, err = tx.ExecContext(ctx, `INSERT INTO decisions(id,project_id,title,reason,proposed_action,risk,preview,status,created_at) VALUES('demo-decision','demo-tycoon','Approve economy migration','The change rewrites saved player inventory.','Run the migration only in the staging place.','high','12 keys affected; production remains blocked.','pending',?) ON CONFLICT(id) DO NOTHING`, now)
-	if err != nil {
-		return err
-	}
 	studios := []struct {
 		id, project, name, place string
 		active                   int

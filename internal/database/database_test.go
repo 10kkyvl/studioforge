@@ -39,7 +39,7 @@ func TestMigrationsAndPragmas(t *testing.T) {
 	if timeout != 5000 || foreign != 1 {
 		t.Fatalf("pragmas timeout=%d foreign=%d", timeout, foreign)
 	}
-	required := []string{"schema_migrations", "projects", "project_agents", "tasks", "runs", "run_events", "decisions", "studio_sessions", "resource_leases", "assets", "budgets", "usage_records"}
+	required := []string{"schema_migrations", "projects", "project_agents", "tasks", "runs", "run_events", "studio_sessions", "resource_leases", "assets", "budgets", "usage_records"}
 	for _, table := range required {
 		var count int
 		if err := db.SQL.QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&count); err != nil || count != 1 {
