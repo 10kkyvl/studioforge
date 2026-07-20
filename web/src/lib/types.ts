@@ -162,12 +162,27 @@ export type StudioStatus = {
   blocked?: boolean;
   error?: string;
 };
+// An operator-approval gate: something the scheduler would otherwise have
+// silently decided on its own (today, only a correction run whose automatic
+// budget was exhausted). Only pending decisions ride on the snapshot.
+export type Decision = {
+  id: string;
+  projectId: string;
+  runId: string;
+  kind: string;
+  summary: string;
+  detail?: string;
+  status: string;
+  createdAt: string;
+  resolvedAt?: string;
+};
 export type Snapshot = {
   projects: Project[];
   runs: Run[];
   agents: Agent[];
   tasks: Task[];
   studios: StudioSession[];
+  decisions: Decision[];
   diagnostics: Diagnostics;
   settings: AppSettings;
 };

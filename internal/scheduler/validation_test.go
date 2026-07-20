@@ -345,6 +345,82 @@ func (s *budgetGateStore) BudgetAllowed(ctx context.Context, projectID string, a
 	return s.Store.BudgetAllowed(ctx, projectID, additional)
 }
 
+// When a proposer is installed, an exhausted correction budget must offer the
+// operator a Decision to override it, on top of (not instead of) the existing
+// one-hop correction_failed mark — TestValidationFailureExhaustedMarksTheParentCorrectionFailed
+// already proves that mark still happens with no proposer installed at all.
+func TestValidationFailureExhaustedProposesADecisionWhenAProposerIsInstalled(t *testing.T) {
+	manager, _, store, ctx := newHarness(t)
+	withGrant(manager)
+	manager.SetMCPValidator(func(context.Context, *Job) ValidationResult {
+		return ValidationResult{Outcome: ValidationFailed, Errors: []string{"still broken"}}
+	})
+	var gotRunID, gotProjectID, gotSummary, gotDetail string
+	var gotCorrection Job
+	proposed := make(chan struct{}, 1)
+	manager.SetDecisionProposer(func(_ context.Context, runID, projectID, summary, detail string, correction Job) {
+		gotRunID, gotProjectID, gotSummary, gotDetail, gotCorrection = runID, projectID, summary, detail, correction
+		proposed <- struct{}{}
+	})
+
+	job := grantedJob(t)
+	job.MaxCorrectionRuns = 0 // exhausted on this very first failure
+	run, _, err := manager.Submit(ctx, job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForRunValidation(t, store, ctx, run.ID, "failed")
+
+	select {
+	case <-proposed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("decision proposer was never called")
+	}
+	if gotRunID != run.ID || gotProjectID != "demo-obby" {
+		t.Errorf("runID=%q projectID=%q, want %q/demo-obby", gotRunID, gotProjectID, run.ID)
+	}
+	if gotSummary == "" {
+		t.Error("summary must describe why a decision is needed")
+	}
+	if gotDetail != "still broken" {
+		t.Errorf("detail=%q, want the console error lines", gotDetail)
+	}
+	if gotCorrection.ParentRunID != run.ID || gotCorrection.CorrectionDepth != 1 {
+		t.Errorf("correction=%+v, want it scoped to run %s at depth 1", gotCorrection, run.ID)
+	}
+	if gotCorrection.Prompt == "" {
+		t.Error("the proposed correction's prompt must describe the failure")
+	}
+}
+
+// A correction still within budget must schedule immediately, exactly as
+// before, and must never also propose a decision — proposing on top of an
+// already-automatic action would just be noise.
+func TestValidationFailureWithinBudgetNeverProposesADecision(t *testing.T) {
+	manager, _, store, ctx := newHarness(t)
+	withGrant(manager)
+	// The original fails and schedules a correction still within budget; the
+	// correction itself then passes, so nothing ever exhausts a budget in
+	// this lineage at all.
+	manager.SetMCPValidator(func(_ context.Context, j *Job) ValidationResult {
+		if j.ParentRunID != "" {
+			return ValidationResult{Outcome: ValidationPassed}
+		}
+		return ValidationResult{Outcome: ValidationFailed, Errors: []string{"boom"}}
+	})
+	called := false
+	manager.SetDecisionProposer(func(context.Context, string, string, string, string, Job) { called = true })
+
+	run, _, err := manager.Submit(ctx, grantedJob(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForRunValidation(t, store, ctx, run.ID, "corrected")
+	if called {
+		t.Error("a correction still within budget must not also propose a decision")
+	}
+}
+
 // The budget ceiling must bound the whole correction loop, not just the
 // original run: when a correction would exceed it, the loop stops and
 // surfaces a failure instead of silently retrying forever.

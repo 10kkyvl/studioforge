@@ -206,6 +206,9 @@ func Run(ctx context.Context, opts config.Options) error {
 		result := studioProvisioner.Validate(ctx, mcp.ValidateRequest{Target: studioTarget(ctx, j.ProjectID), Window: window})
 		return scheduler.ValidationResult{Outcome: scheduler.ValidationOutcome(result.Outcome), Console: result.Console, Errors: result.Errors, Screenshot: result.Screenshot, Notice: result.Notice}
 	})
+	// A failed validation whose correction budget is exhausted proposes a
+	// Decision instead of silently giving up.
+	schedulerManager.SetDecisionProposer(decisionProposer(store))
 	// refreshStudioSessions discovers real open Studio instances on demand.
 	// Left unwired under --mock: there is no real launcher to discover, and
 	// the demo's own seeded rows are the point of that mode.

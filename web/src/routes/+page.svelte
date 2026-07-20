@@ -446,6 +446,12 @@
       await refresh();
     });
   }
+  async function resolveDecision(decisionId: string, approve: boolean) {
+    await action(`decision-${decisionId}`, async () => {
+      await post(`/decisions/${decisionId}/resolve`, { approve });
+      await refresh();
+    });
+  }
   async function refreshStudioSessions() {
     await action('studio-sessions-refresh', async () => {
       const result = await post<{ detected: boolean }>('/studio/sessions/refresh', {});
@@ -663,6 +669,8 @@
             {statusLabel}
             {validationLabel}
             {payloadText}
+            decisions={snapshot.decisions}
+            onResolveDecision={resolveDecision}
             busy={busy.startsWith('run-')}
             onSend={(prompt) => startRun(selectedProject, '', prompt)}
           />

@@ -146,6 +146,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/runs/{id}/diff", s.runDiff)
 	mux.HandleFunc("POST /api/v1/studios/{id}/bind", s.bindStudio)
 	mux.HandleFunc("POST /api/v1/studio/sessions/refresh", s.refreshStudioSessionsHandler)
+	mux.HandleFunc("POST /api/v1/decisions/{id}/resolve", s.resolveDecision)
 	mux.HandleFunc("POST /api/v1/backups", s.backup)
 	mux.HandleFunc("GET /api/v1/openapi.yaml", s.openapi)
 	mux.HandleFunc("/", s.static)
@@ -246,6 +247,11 @@ func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, 500, "database_error", "Unable to list Studio sessions", err)
 		return
 	}
+	decisions, err := s.store.ListDecisions(ctx, "pending")
+	if err != nil {
+		writeError(w, r, 500, "database_error", "Unable to list decisions", err)
+		return
+	}
 	locale, ok, _ := s.store.Setting(ctx, "locale")
 	if !ok {
 		locale = "auto"
@@ -263,7 +269,7 @@ func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 		}
 		settings[key] = value
 	}
-	writeJSON(w, 200, map[string]any{"projects": projectsList, "runs": runs, "agents": agents, "tasks": tasks, "studios": studios, "diagnostics": s.doctor.Run(ctx), "settings": settings})
+	writeJSON(w, 200, map[string]any{"projects": projectsList, "runs": runs, "agents": agents, "tasks": tasks, "studios": studios, "decisions": decisions, "diagnostics": s.doctor.Run(ctx), "settings": settings})
 }
 
 // detectPaths reports where the external tools appear to be installed, so the
@@ -953,6 +959,50 @@ func (s *Server) refreshStudioSessionsHandler(w http.ResponseWriter, r *http.Req
 		body["error"] = refreshErr.Error()
 	}
 	writeJSON(w, 200, body)
+}
+
+// resolveDecision records an operator's approve/deny choice on a pending
+// Decision. Approving deserializes the proposed correction Job stored on the
+// decision and submits it through the normal scheduler path — the same
+// writer lease, budget ceiling, and Git checkpoint apply as to any other run.
+// Denying schedules nothing; the run this decision was about was already
+// marked correction_failed when the decision was first proposed.
+func (s *Server) resolveDecision(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Approve bool `json:"approve"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, r, 400, "invalid_json", err.Error(), nil)
+		return
+	}
+	id := r.PathValue("id")
+	decision, err := s.store.Decision(r.Context(), id)
+	if err != nil {
+		writeError(w, r, 404, "not_found", "Decision not found", err)
+		return
+	}
+	if decision.Status != "pending" {
+		writeError(w, r, 409, "already_resolved", "Decision has already been resolved", nil)
+		return
+	}
+	status := "denied"
+	if body.Approve {
+		var job scheduler.Job
+		if err := json.Unmarshal([]byte(decision.Payload), &job); err != nil {
+			writeError(w, r, 500, "decision_payload", "Stored decision payload could not be read", err)
+			return
+		}
+		if _, _, err := s.scheduler.Submit(r.Context(), job); err != nil {
+			writeError(w, r, 409, "run_error", err.Error(), nil)
+			return
+		}
+		status = "approved"
+	}
+	if err := s.store.ResolveDecision(r.Context(), id, status); err != nil {
+		writeError(w, r, 409, "resolve_failed", "Decision has already been resolved", err)
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
 func (s *Server) bindStudio(w http.ResponseWriter, r *http.Request) {

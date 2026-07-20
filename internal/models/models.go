@@ -163,6 +163,25 @@ type RunEvent struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+// Decision is an operator-approval gate: something the scheduler would
+// otherwise have to silently decide on its own. Payload carries whatever a
+// producer needs to act on approval (currently the JSON-encoded scheduler.Job
+// of the correction run it is proposing); internal/models deliberately does
+// not know its shape, so a Decision's kind decides how its own consumer
+// interprets Payload.
+type Decision struct {
+	ID         string     `json:"id"`
+	ProjectID  string     `json:"projectId"`
+	RunID      string     `json:"runId"`
+	Kind       string     `json:"kind"`
+	Summary    string     `json:"summary"`
+	Detail     string     `json:"detail,omitempty"`
+	Payload    string     `json:"-"`
+	Status     string     `json:"status"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	ResolvedAt *time.Time `json:"resolvedAt,omitempty"`
+}
+
 type StudioSession struct {
 	ID         string    `json:"id"`
 	ProjectID  string    `json:"projectId,omitempty"`

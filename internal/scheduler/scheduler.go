@@ -239,6 +239,7 @@ type Manager struct {
 	globalLimit, perProjectLimit, perProviderLimit, perModelLimit int
 	provision                                                     MCPProvisioner
 	validate                                                      MCPValidator
+	propose                                                       DecisionProposer
 	memoryStore                                                   *memory.Store
 	mu                                                            sync.Mutex
 	queue                                                         *fairQueue
@@ -552,10 +553,13 @@ func (m *Manager) runValidation(ctx context.Context, j *Job, grant MCPGrant, lea
 	case ValidationFailed:
 		if j.CorrectionDepth < j.MaxCorrectionRuns {
 			m.scheduleCorrection(ctx, j, sessionID, validation)
-		} else if j.ParentRunID != "" {
-			if err := m.store.SetRunValidation(ctx, j.ParentRunID, string(ValidationCorrectionFailed), ""); err != nil {
-				slog.Error("failed to mark parent run correction_failed", "parent_run_id", j.ParentRunID, "error", err)
+		} else {
+			if j.ParentRunID != "" {
+				if err := m.store.SetRunValidation(ctx, j.ParentRunID, string(ValidationCorrectionFailed), ""); err != nil {
+					slog.Error("failed to mark parent run correction_failed", "parent_run_id", j.ParentRunID, "error", err)
+				}
 			}
+			m.proposeCorrectionDecision(ctx, j, sessionID, validation)
 		}
 	case ValidationPassed:
 		if j.ParentRunID != "" {
@@ -598,7 +602,21 @@ func (m *Manager) scheduleCorrection(ctx context.Context, j *Job, sessionID stri
 			slog.Warn("git checkpoint before correction run failed", "run_id", j.RunID, "project_id", j.ProjectID, "error", err)
 		}
 	}
-	correction := Job{
+	correction := buildCorrectionJob(j, sessionID, validation)
+	if _, _, err := m.Submit(ctx, correction); err != nil {
+		slog.Error("failed to schedule correction run", "run_id", j.RunID, "project_id", j.ProjectID, "error", err)
+		return
+	}
+	m.emit(models.Run{ID: j.RunID, ProjectID: j.ProjectID}, j.AgentID, "status", "scheduler.correction_scheduled", map[string]any{"parentRunId": j.RunID})
+}
+
+// buildCorrectionJob is the follow-up run a failed validation would schedule
+// for j: same project/agent/provider/permission, resuming j's own CLI session,
+// with the console errors and screenshot reference folded into its prompt.
+// Shared by scheduleCorrection (submitted immediately) and
+// proposeCorrectionDecision (submitted only if an operator approves it).
+func buildCorrectionJob(j *Job, sessionID string, validation ValidationResult) Job {
+	return Job{
 		ProjectID: j.ProjectID, AgentID: j.AgentID, TaskID: j.TaskID,
 		Provider: j.Provider, Model: j.Model, Effort: j.Effort, PermissionProfile: j.PermissionProfile,
 		WorkingDirectory: j.WorkingDirectory, SystemPrompt: j.SystemPrompt,
@@ -607,11 +625,40 @@ func (m *Manager) scheduleCorrection(ctx context.Context, j *Job, sessionID stri
 		ParentRunID: j.RunID, CorrectionDepth: j.CorrectionDepth + 1,
 		MaxCorrectionRuns: j.MaxCorrectionRuns, ValidateAfterRun: j.ValidateAfterRun,
 	}
-	if _, _, err := m.Submit(ctx, correction); err != nil {
-		slog.Error("failed to schedule correction run", "run_id", j.RunID, "project_id", j.ProjectID, "error", err)
+}
+
+// DecisionProposer records an operator-approval gate for a correction run the
+// scheduler would otherwise have to silently give up on. Called only when a
+// failed validation's correction count is exhausted (CorrectionDepth >=
+// MaxCorrectionRuns) — every other case still schedules or resolves
+// automatically, unaffected by whether one is installed. correction is the
+// exact Job DecisionResolver's caller should submit if the operator approves.
+type DecisionProposer func(ctx context.Context, runID, projectID, summary, detail string, correction Job)
+
+// SetDecisionProposer installs the hook that records a pending Decision
+// instead of silently giving up when a failed validation's correction count is
+// exhausted. A nil (never installed) proposer leaves that case exactly as
+// before: the lineage's direct parent is marked correction_failed and nothing
+// further happens.
+func (m *Manager) SetDecisionProposer(p DecisionProposer) {
+	m.mu.Lock()
+	m.propose = p
+	m.mu.Unlock()
+}
+
+// proposeCorrectionDecision offers an operator the chance to override an
+// exhausted correction budget for j, rather than the lineage silently staying
+// at correction_failed forever. A no-op when no proposer is installed.
+func (m *Manager) proposeCorrectionDecision(ctx context.Context, j *Job, sessionID string, validation ValidationResult) {
+	m.mu.Lock()
+	propose := m.propose
+	m.mu.Unlock()
+	if propose == nil {
 		return
 	}
-	m.emit(models.Run{ID: j.RunID, ProjectID: j.ProjectID}, j.AgentID, "status", "scheduler.correction_scheduled", map[string]any{"parentRunId": j.RunID})
+	correction := buildCorrectionJob(j, sessionID, validation)
+	summary := fmt.Sprintf("Correction run proposed for run %s: the automatic correction limit (%d) was reached", j.RunID, j.MaxCorrectionRuns)
+	propose(ctx, j.RunID, j.ProjectID, summary, strings.Join(validation.Errors, "\n"), correction)
 }
 
 // correctionPrompt folds a failed validation's console errors and screenshot

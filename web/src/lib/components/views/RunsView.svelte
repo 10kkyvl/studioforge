@@ -1,6 +1,6 @@
 <script lang="ts">
   import { formatDate, locale, translate } from '$lib/i18n';
-  import type { Run, RunEvent } from '$lib/types';
+  import type { Decision, Run, RunEvent } from '$lib/types';
 
   export let runs: Run[];
   export let selectedRunId: string;
@@ -12,6 +12,8 @@
   export let validationLabel: (validation: string) => string;
   export let payloadText: (payload: unknown) => string;
   export let onSend: (prompt: string) => void = () => {};
+  export let decisions: Decision[] = [];
+  export let onResolveDecision: (decisionId: string, approve: boolean) => void = () => {};
   export let busy = false;
   let draft = '';
 
@@ -28,6 +30,11 @@
   function correctionFor(runId: string): Run | undefined {
     return runs.find((candidate) => candidate.parentRunId === runId);
   }
+  // Every decision on the snapshot is already pending — resolved ones drop
+  // off it — so the first match for a run is the only one that can exist.
+  function decisionFor(runId: string): Decision | undefined {
+    return decisions.find((decision) => decision.runId === runId);
+  }
 </script>
 
 <section class="page-heading">
@@ -41,6 +48,7 @@
   <div class="run-list">
     {#each runs as run}
       {@const correction = correctionFor(run.id)}
+      {@const decision = decisionFor(run.id)}
       <div
         class="run-row"
         class:active={selectedRunId === run.id}
@@ -62,6 +70,11 @@
           {#if run.validation && run.validation !== 'none'}
             <small class={`validation-badge validation-${run.validation}`}
               >{validationLabel(run.validation)}</small
+            >
+          {/if}
+          {#if decision}
+            <small class="validation-badge decision-badge"
+              >{$translate('runs.decisionNeeded')}</small
             >
           {/if}
           {#if run.parentRunId}
@@ -110,6 +123,30 @@
       </div>
       {#if selectedRun}<code>{selectedRun.id}</code>{/if}
     </header>
+    {#if selectedRun}
+      {@const decision = decisionFor(selectedRun.id)}
+      {#if decision}
+        <div class="decision-banner">
+          <p>{decision.summary}</p>
+          {#if decision.detail}<pre class="log-lines">{decision.detail}</pre>{/if}
+          <div class="decision-actions">
+            <button
+              class="primary"
+              type="button"
+              disabled={busy}
+              onclick={() => onResolveDecision(decision.id, true)}
+              >{$translate('runs.decisionApprove')}</button
+            >
+            <button
+              type="button"
+              disabled={busy}
+              onclick={() => onResolveDecision(decision.id, false)}
+              >{$translate('runs.decisionDeny')}</button
+            >
+          </div>
+        </div>
+      {/if}
+    {/if}
     <div class="event-log" aria-live="polite">
       {#if !selectedRun}<div class="empty">{$translate('runs.select')}</div>
       {:else if events.length === 0}<div class="empty">{$translate('runs.noEvents')}</div>
@@ -203,5 +240,22 @@
     text-decoration: underline;
     cursor: pointer;
     font: inherit;
+  }
+  .decision-badge {
+    color: var(--warning, #d69e2e);
+  }
+  .decision-banner {
+    margin: 0.5rem 0.75rem 0;
+    padding: 0.75rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--warning, #d69e2e);
+    background: color-mix(in srgb, var(--warning, #d69e2e) 12%, transparent);
+  }
+  .decision-banner p {
+    margin: 0 0 0.5rem;
+  }
+  .decision-actions {
+    display: flex;
+    gap: 0.5rem;
   }
 </style>
