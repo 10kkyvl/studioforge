@@ -235,3 +235,94 @@ func TestSetRunUsageUnknownRunFails(t *testing.T) {
 		t.Fatalf("usage_records rows for a failed write=%d want 0", count)
 	}
 }
+
+func TestUpdateRunIfStatusAppliesWhenStatusMatches(t *testing.T) {
+	store, ctx := newThreadStore(t)
+	created, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", ModelAlias: "balanced", Status: "running", Phase: "agent"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied, err := store.UpdateRunIfStatus(ctx, created.ID, []string{"running"}, "paused", "paused", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied {
+		t.Fatal("expected the guarded write to apply when the current status matches")
+	}
+	got, err := store.Run(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "paused" || got.Phase != "paused" {
+		t.Errorf("status=%q phase=%q, want paused/paused", got.Status, got.Phase)
+	}
+}
+
+func TestUpdateRunIfStatusAppliesWhenAnyExpectedStatusMatches(t *testing.T) {
+	store, ctx := newThreadStore(t)
+	created, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", ModelAlias: "balanced", Status: "waiting_decision", Phase: "waiting_decision"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied, err := store.UpdateRunIfStatus(ctx, created.ID, []string{"running", "waiting_decision"}, "cancelling", "cancelling", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied {
+		t.Fatal("expected the guarded write to apply when the current status matches one of several expected statuses")
+	}
+	got, err := store.Run(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "cancelling" {
+		t.Errorf("status=%q, want cancelling", got.Status)
+	}
+}
+
+func TestUpdateRunIfStatusRejectsWhenStatusDoesNotMatch(t *testing.T) {
+	store, ctx := newThreadStore(t)
+	created, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", ModelAlias: "balanced", Status: "cancelled", Phase: "cancelled"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied, err := store.UpdateRunIfStatus(ctx, created.ID, []string{"running"}, "paused", "paused", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied {
+		t.Fatal("expected the guarded write to be rejected when the current status does not match")
+	}
+	got, err := store.Run(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "cancelled" {
+		t.Errorf("status=%q, want the original status to survive a rejected write", got.Status)
+	}
+}
+
+func TestUpdateRunIfStatusUnknownRunReturnsNotAppliedNotError(t *testing.T) {
+	store, ctx := newThreadStore(t)
+	applied, err := store.UpdateRunIfStatus(ctx, "missing-run", []string{"running"}, "paused", "paused", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied {
+		t.Fatal("expected an unknown run id to report not-applied rather than an error")
+	}
+}
+
+func TestUpdateRunIfStatusGenuineDBErrorIsReturned(t *testing.T) {
+	store, ctx := newThreadStore(t)
+	created, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", ModelAlias: "balanced", Status: "running"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.SQL.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateRunIfStatus(ctx, created.ID, []string{"running"}, "paused", "paused", "", ""); err == nil {
+		t.Fatal("expected a genuine database error once the connection is closed")
+	}
+}

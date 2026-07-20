@@ -60,7 +60,7 @@ func newTestAPI(t *testing.T) *testAPI {
 	for _, project := range mustProjects(t, store) {
 		_, _ = guard.Register(project.ID, project.Path)
 	}
-	server, err := New(Dependencies{Store: store, DB: db, Scheduler: sched, Hub: hub, Doctor: &diagnostics.Doctor{DB: db, DataDir: data, MockMode: true}, Sessions: sessions, Guard: guard, AllowedHost: "127.0.0.1:1234", DataDir: data})
+	server, err := New(Dependencies{Store: store, DB: db, Scheduler: sched, Hub: hub, Doctor: &diagnostics.Doctor{DB: db, DataDir: data, MockMode: true}, Sessions: sessions, Guard: guard, AllowedHost: "127.0.0.1:1234", DataDir: data, Leases: leases})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,6 +162,64 @@ func TestRunIdempotencyAndActions(t *testing.T) {
 	_ = json.Unmarshal(second.Body.Bytes(), &r2)
 	if r1.ID == "" || r1.ID != r2.ID {
 		t.Fatalf("runs=%+v %+v", r1, r2)
+	}
+}
+
+func waitRunStatus(t *testing.T, store *database.Store, id, status string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last string
+	for time.Now().Before(deadline) {
+		run, err := store.Run(context.Background(), id)
+		if err == nil {
+			last = run.Status
+			if last == status {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("run %s status=%s wanted=%s", id, last, status)
+}
+
+func TestCancelReturns202AndRunIsImmediatelyRestartable(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	submitBody := strings.NewReader(`{"projectId":"demo-obby","agentId":"demo-obby-orch","maxBudget":1,"prompt":"Build the first milestone"}`)
+	submitRequest := httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/runs", submitBody)
+	submitRequest.Header.Set("Origin", "http://127.0.0.1:1234")
+	submitRequest.Header.Set("Content-Type", "application/json")
+	submitRequest.AddCookie(cookie)
+	submitRecorder := httptest.NewRecorder()
+	a.handler.ServeHTTP(submitRecorder, submitRequest)
+	if submitRecorder.Code != 201 {
+		t.Fatalf("submit status=%d body=%s", submitRecorder.Code, submitRecorder.Body.String())
+	}
+	var run models.Run
+	if err := json.Unmarshal(submitRecorder.Body.Bytes(), &run); err != nil {
+		t.Fatal(err)
+	}
+	waitRunStatus(t, a.store, run.ID, "running", 5*time.Second)
+
+	cancelRequest := httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/runs/"+run.ID+"/cancel", strings.NewReader(`{}`))
+	cancelRequest.Header.Set("Origin", "http://127.0.0.1:1234")
+	cancelRequest.Header.Set("Content-Type", "application/json")
+	cancelRequest.AddCookie(cookie)
+	cancelRecorder := httptest.NewRecorder()
+	a.handler.ServeHTTP(cancelRecorder, cancelRequest)
+	if cancelRecorder.Code != 202 {
+		t.Fatalf("cancel status=%d body=%s", cancelRecorder.Code, cancelRecorder.Body.String())
+	}
+	waitRunStatus(t, a.store, run.ID, "cancelled", 5*time.Second)
+
+	restartRequest := httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/runs/"+run.ID+"/restart", strings.NewReader(`{}`))
+	restartRequest.Header.Set("Origin", "http://127.0.0.1:1234")
+	restartRequest.Header.Set("Content-Type", "application/json")
+	restartRequest.AddCookie(cookie)
+	restartRecorder := httptest.NewRecorder()
+	a.handler.ServeHTTP(restartRecorder, restartRequest)
+	if restartRecorder.Code != 200 {
+		t.Fatalf("restart status=%d body=%s", restartRecorder.Code, restartRecorder.Body.String())
 	}
 }
 

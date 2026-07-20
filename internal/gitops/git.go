@@ -44,6 +44,12 @@ func (c *Client) DiffHead(ctx context.Context, root string) (string, error) {
 	}
 	return c.run(ctx, root, "diff", "HEAD")
 }
+func (c *Client) DiffCommit(ctx context.Context, root, commit string) (string, error) {
+	if _, err := c.run(ctx, root, "rev-parse", "--git-dir"); err != nil {
+		return "", nil
+	}
+	return c.run(ctx, root, "diff", commit)
+}
 func (c *Client) Checkpoint(ctx context.Context, root, message string) (string, error) {
 	if strings.TrimSpace(message) == "" {
 		return "", errors.New("checkpoint message is required")

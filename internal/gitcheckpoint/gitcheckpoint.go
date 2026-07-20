@@ -11,19 +11,19 @@ import (
 	"time"
 )
 
-// Checkpoint commits the working tree at root and returns the new commit hash.
-// It returns ("", nil) when root is not a git repo or there is nothing to
-// commit.
-func Checkpoint(root, label string) (string, error) {
+// Checkpoint commits the working tree at root and returns the new commit
+// hash and the branch it was committed to. It returns ("", "", nil) when root
+// is not a git repo or there is nothing to commit.
+func Checkpoint(root, label string) (hash string, branch string, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if run(ctx, root, "rev-parse", "--git-dir") != nil {
-		return "", nil // not a git repository
+		return "", "", nil // not a git repository
 	}
 	_ = run(ctx, root, "add", "-A")
 	status, _ := output(ctx, root, "status", "--porcelain")
 	if status == "" {
-		return "", nil // nothing changed since the last checkpoint
+		return "", "", nil // nothing changed since the last checkpoint
 	}
 	// -c identity keeps the commit working even when the repo has no configured
 	// author, without touching the operator's global git config.
@@ -32,9 +32,14 @@ func Checkpoint(root, label string) (string, error) {
 		"-c", "user.email=noreply@studioforge.local",
 		"commit", "-m", label,
 	); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return output(ctx, root, "rev-parse", "HEAD")
+	hash, err = output(ctx, root, "rev-parse", "HEAD")
+	if err != nil {
+		return "", "", err
+	}
+	branch, _ = output(ctx, root, "rev-parse", "--abbrev-ref", "HEAD")
+	return hash, branch, nil
 }
 
 func run(ctx context.Context, root string, args ...string) error {

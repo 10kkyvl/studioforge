@@ -61,6 +61,23 @@ func (s *Store) LatestThreadSession(ctx context.Context, threadID string) (strin
 	return session, nil
 }
 
+// LatestThreadStuckState reports the same latest run LatestThreadSession just
+// looked at, but its stuck-escalation bookkeeping instead of its session id:
+// whether that run's own termination was a stuck escalation. This is what
+// lets the next message in the thread suppress detection on "continue"
+// without a new run row remembering anything itself.
+func (s *Store) LatestThreadStuckState(ctx context.Context, threadID string) (escalated bool, err error) {
+	var escalatedInt int
+	err = s.db.SQL.QueryRowContext(ctx, `SELECT stuck_escalated FROM runs WHERE thread_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1`, threadID).Scan(&escalatedInt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return escalatedInt != 0, nil
+}
+
 // CreateThread starts a new named chat thread for a project. A blank title
 // becomes "New chat" so the UI always has something to show.
 func (s *Store) CreateThread(ctx context.Context, projectID, title string) (models.ChatThread, error) {
@@ -158,13 +175,13 @@ func (s *Store) ThreadMessages(ctx context.Context, threadID string) ([]models.C
 		if r.prompt != "" {
 			out = append(out, models.ChatMessage{Role: "user", Text: r.prompt, At: r.createdAt, RunID: r.id})
 		}
-		eventRows, err := s.db.SQL.QueryContext(ctx, `SELECT payload,created_at FROM run_events WHERE run_id=? AND event_type='message' ORDER BY id`, r.id)
+		eventRows, err := s.db.SQL.QueryContext(ctx, `SELECT payload,raw_type,created_at FROM run_events WHERE run_id=? AND event_type='message' ORDER BY id`, r.id)
 		if err != nil {
 			return nil, err
 		}
 		for eventRows.Next() {
-			var payload, created string
-			if err := eventRows.Scan(&payload, &created); err != nil {
+			var payload, rawType, created string
+			if err := eventRows.Scan(&payload, &rawType, &created); err != nil {
 				eventRows.Close()
 				return nil, err
 			}
@@ -172,7 +189,7 @@ func (s *Store) ThreadMessages(ctx context.Context, threadID string) ([]models.C
 			if text == "" {
 				continue
 			}
-			out = append(out, models.ChatMessage{Role: "agent", Text: text, At: parseTime(created), RunID: r.id, Status: r.status})
+			out = append(out, models.ChatMessage{Role: "agent", Text: text, At: parseTime(created), RunID: r.id, Status: r.status, RawType: rawType})
 		}
 		if err := eventRows.Err(); err != nil {
 			eventRows.Close()

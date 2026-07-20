@@ -127,7 +127,7 @@ func Run(ctx context.Context, opts config.Options) error {
 	// (supervisor.Close) already stops a live sync session and frees its port
 	// without anything here having to track sessions separately.
 	syncer := &syncAdapter{manager: rojoManager}
-	differ := &diffAdapter{client: gitops.New()}
+	gitOps := &gitAdapter{client: gitops.New()}
 
 	// Grant Claude runs access to Roblox Studio. Only Claude: the Codex adapter
 	// has no --mcp-config equivalent, so a grant there would spawn the launcher
@@ -142,6 +142,30 @@ func Run(ctx context.Context, opts config.Options) error {
 	playtestWindowSeconds.Store(30)
 	if seconds, err := strconv.Atoi(setting("playtest_window_seconds", "30")); err == nil && seconds > 0 {
 		playtestWindowSeconds.Store(int64(seconds))
+	}
+	// Stuck-run escalation settings: on by default (unlike the opt-in
+	// validation loop above), since the whole point is a safety net against a
+	// runaway session, with defaults chosen so a normal run never trips them
+	// — see stuck.go's StuckSettings doc and the CHANGELOG entry for the
+	// reasoning behind each default.
+	var stuckDetectionEnabled atomic.Bool
+	stuckDetectionEnabled.Store(setting("stuck_detection_enabled", "true") != "false")
+	var stuckIdleSeconds atomic.Int64
+	stuckIdleSeconds.Store(600)
+	if value, err := strconv.Atoi(setting("stuck_idle_seconds", "600")); err == nil && value > 0 {
+		stuckIdleSeconds.Store(int64(value))
+	}
+	var stuckRepetitionCap atomic.Int64
+	stuckRepetitionCap.Store(6)
+	if value, err := strconv.Atoi(setting("stuck_repetition_cap", "6")); err == nil && value > 0 {
+		stuckRepetitionCap.Store(int64(value))
+	}
+	stuckSettings := func() scheduler.StuckSettings {
+		return scheduler.StuckSettings{
+			Enabled:       stuckDetectionEnabled.Load(),
+			IdleSeconds:   int(stuckIdleSeconds.Load()),
+			RepetitionCap: int(stuckRepetitionCap.Load()),
+		}
 	}
 	studioOpener := &studio.Opener{Rojo: rojoManager}
 	studioProvisioner := &mcp.Provisioner{
@@ -190,6 +214,24 @@ func Run(ctx context.Context, opts config.Options) error {
 		status, err := studioProvisioner.Status(ctx, placeName)
 		return api.StudioStatus{Open: status.Open, Matched: status.Matched, Blocked: status.Blocked}, err
 	})
+	// studioOpenCheck gives the manual "Open Studio" button the same
+	// no-duplicate-launch decision studioTarget's auto-open already applies,
+	// without granting an agent's MCP access. It shares studioProvisioner (and
+	// so its launcher probe) and studioOpener (and so its in-flight guard)
+	// with every other Studio entry point wired in this function.
+	studioOpenCheck := func(ctx context.Context, projectID string) (api.StudioOpenCheck, error) {
+		project, err := store.Project(ctx, projectID)
+		if err != nil {
+			return api.StudioOpenCheck{}, err
+		}
+		check := studioProvisioner.CheckOpen(ctx, studio.PlaceName(project.Name, project.ID))
+		return api.StudioOpenCheck{
+			Open:    check.Open,
+			Matched: check.Matched,
+			Notice:  check.Notice,
+			Place:   studio.PlacePath(project.Path, project.Name, project.ID),
+		}, nil
+	}
 	schedulerManager.SetMCPProvisioner(func(ctx context.Context, j *scheduler.Job) scheduler.MCPGrant {
 		if j.Provider != "claude" {
 			return scheduler.MCPGrant{}
@@ -238,6 +280,23 @@ func Run(ctx context.Context, opts config.Options) error {
 				return errors.New("playtest_window_seconds must be a positive integer")
 			}
 			playtestWindowSeconds.Store(int64(seconds))
+		case "stuck_detection_enabled":
+			if value != "true" && value != "false" {
+				return errors.New("stuck_detection_enabled must be true or false")
+			}
+			stuckDetectionEnabled.Store(value != "false")
+		case "stuck_idle_seconds":
+			seconds, err := strconv.Atoi(value)
+			if err != nil || seconds <= 0 {
+				return errors.New("stuck_idle_seconds must be a positive integer")
+			}
+			stuckIdleSeconds.Store(int64(seconds))
+		case "stuck_repetition_cap":
+			cap, err := strconv.Atoi(value)
+			if err != nil || cap <= 0 {
+				return errors.New("stuck_repetition_cap must be a positive integer")
+			}
+			stuckRepetitionCap.Store(int64(cap))
 		case "concurrency":
 			count, err := strconv.Atoi(value)
 			if err != nil {
@@ -257,7 +316,7 @@ func Run(ctx context.Context, opts config.Options) error {
 	}
 	defer listener.Close()
 	baseURL := url.URL{Scheme: "http", Host: listener.Addr().String()}
-	apiServer, err := api.New(api.Dependencies{Store: store, DB: db, Scheduler: schedulerManager, Hub: hub, Doctor: doctor, Sessions: sessions, Guard: guard, SafeMode: opts.SafeMode, AllowedHost: listener.Addr().String(), DataDir: dataDir, Logger: slog.Default(), ApplySetting: applySetting, Studio: studioOpener, StudioStatus: studioStatus, RefreshStudioSessions: refreshStudioSessions, Sync: syncer, Diff: differ, Memory: memoryStore})
+	apiServer, err := api.New(api.Dependencies{Store: store, DB: db, Scheduler: schedulerManager, Hub: hub, Doctor: doctor, Sessions: sessions, Guard: guard, SafeMode: opts.SafeMode, AllowedHost: listener.Addr().String(), DataDir: dataDir, Logger: slog.Default(), ApplySetting: applySetting, Studio: studioOpener, StudioOpenCheck: studioOpenCheck, StudioStatus: studioStatus, RefreshStudioSessions: refreshStudioSessions, Sync: syncer, Git: gitOps, Leases: leases, Memory: memoryStore, StuckSettings: stuckSettings})
 	if err != nil {
 		return err
 	}

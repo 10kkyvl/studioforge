@@ -161,7 +161,7 @@ func (s *Store) SetProjectArchived(ctx context.Context, id string, archived bool
 }
 
 func (s *Store) ListAgents(ctx context.Context, projectID string) ([]models.Agent, error) {
-	rows, err := s.db.SQL.QueryContext(ctx, `SELECT a.id,a.project_id,a.name,a.role,a.provider,a.model_alias,a.effort,a.enabled,a.permission_profile,a.concurrency,a.budget,COALESCE(t.system_prompt,''),a.validate_after_run,a.max_correction_runs
+	rows, err := s.db.SQL.QueryContext(ctx, `SELECT a.id,a.project_id,a.name,a.role,a.provider,a.model_alias,a.effort,a.enabled,a.permission_profile,a.concurrency,a.budget,COALESCE(t.system_prompt,''),a.validate_after_run,a.max_correction_runs,a.stuck_detection_disabled
 FROM project_agents a LEFT JOIN agent_templates t ON t.id=a.template_id WHERE (?='' OR a.project_id=?) ORDER BY a.project_id,a.name`, projectID, projectID)
 	if err != nil {
 		return nil, err
@@ -170,12 +170,13 @@ FROM project_agents a LEFT JOIN agent_templates t ON t.id=a.template_id WHERE (?
 	var out []models.Agent
 	for rows.Next() {
 		var a models.Agent
-		var enabled, validateAfterRun int
-		if err := rows.Scan(&a.ID, &a.ProjectID, &a.Name, &a.Role, &a.Provider, &a.ModelAlias, &a.Effort, &enabled, &a.Permission, &a.Concurrency, &a.Budget, &a.SystemPrompt, &validateAfterRun, &a.MaxCorrectionRuns); err != nil {
+		var enabled, validateAfterRun, stuckDetectionDisabled int
+		if err := rows.Scan(&a.ID, &a.ProjectID, &a.Name, &a.Role, &a.Provider, &a.ModelAlias, &a.Effort, &enabled, &a.Permission, &a.Concurrency, &a.Budget, &a.SystemPrompt, &validateAfterRun, &a.MaxCorrectionRuns, &stuckDetectionDisabled); err != nil {
 			return nil, err
 		}
 		a.Enabled = enabled != 0
 		a.ValidateAfterRun = validateAfterRun != 0
+		a.StuckDetectionDisabled = stuckDetectionDisabled != 0
 		if a.Permission == "safe" {
 			a.Permission = "workspace-write"
 		}
@@ -217,9 +218,9 @@ func (s *Store) CreateAgent(ctx context.Context, agent models.Agent) (models.Age
 	}
 	agent.Enabled = true
 	_, err := s.db.SQL.ExecContext(ctx, `INSERT INTO project_agents
-(id,project_id,name,role,provider,model_alias,effort,enabled,permission_profile,concurrency,budget,validate_after_run,max_correction_runs)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, agent.ID, agent.ProjectID, agent.Name, agent.Role, agent.Provider,
-		agent.ModelAlias, agent.Effort, boolInt(agent.Enabled), agent.Permission, agent.Concurrency, agent.Budget, boolInt(agent.ValidateAfterRun), agent.MaxCorrectionRuns)
+(id,project_id,name,role,provider,model_alias,effort,enabled,permission_profile,concurrency,budget,validate_after_run,max_correction_runs,stuck_detection_disabled)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, agent.ID, agent.ProjectID, agent.Name, agent.Role, agent.Provider,
+		agent.ModelAlias, agent.Effort, boolInt(agent.Enabled), agent.Permission, agent.Concurrency, agent.Budget, boolInt(agent.ValidateAfterRun), agent.MaxCorrectionRuns, boolInt(agent.StuckDetectionDisabled))
 	if err != nil {
 		return models.Agent{}, fmt.Errorf("create agent: %w", err)
 	}
@@ -243,9 +244,9 @@ func (s *Store) UpdateAgent(ctx context.Context, agent models.Agent) (models.Age
 		agent.MaxCorrectionRuns = 1
 	}
 	res, err := s.db.SQL.ExecContext(ctx, `UPDATE project_agents SET
-name=?,role=?,provider=?,model_alias=?,effort=?,enabled=?,permission_profile=?,concurrency=?,budget=?,validate_after_run=?,max_correction_runs=? WHERE id=? AND project_id=?`,
+name=?,role=?,provider=?,model_alias=?,effort=?,enabled=?,permission_profile=?,concurrency=?,budget=?,validate_after_run=?,max_correction_runs=?,stuck_detection_disabled=? WHERE id=? AND project_id=?`,
 		agent.Name, agent.Role, agent.Provider, agent.ModelAlias, agent.Effort, boolInt(agent.Enabled), agent.Permission,
-		agent.Concurrency, agent.Budget, boolInt(agent.ValidateAfterRun), agent.MaxCorrectionRuns, agent.ID, agent.ProjectID)
+		agent.Concurrency, agent.Budget, boolInt(agent.ValidateAfterRun), agent.MaxCorrectionRuns, boolInt(agent.StuckDetectionDisabled), agent.ID, agent.ProjectID)
 	if err != nil {
 		return models.Agent{}, fmt.Errorf("update agent: %w", err)
 	}

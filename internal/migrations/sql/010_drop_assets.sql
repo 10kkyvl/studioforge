@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS asset_reviews;
+DROP TABLE IF EXISTS assets;

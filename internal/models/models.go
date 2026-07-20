@@ -66,6 +66,10 @@ type Agent struct {
 	// MaxCorrectionRuns bounds how many follow-up correction runs a failed
 	// validation may schedule for this agent's runs, in one lineage.
 	MaxCorrectionRuns int `json:"maxCorrectionRuns"`
+	// StuckDetectionDisabled opts this agent OUT of the stuck-run escalation
+	// (on by default globally): set for an agent that is expected by design to
+	// run very long, so a naturally long session never gets flagged.
+	StuckDetectionDisabled bool `json:"stuckDetectionDisabled"`
 }
 
 type Task struct {
@@ -130,6 +134,10 @@ type Run struct {
 	// a correction run, so the loop can bound how many corrections one
 	// original failure may chain.
 	CorrectionDepth int `json:"correctionDepth"`
+	// StuckEscalated is true when this run's own termination was the scheduler
+	// stopping it and asking the operator to continue or stop, rather than the
+	// agent completing, failing, or asking its own question.
+	StuckEscalated bool `json:"stuckEscalated,omitempty"`
 }
 
 type ChatThread struct {
@@ -150,6 +158,13 @@ type ChatMessage struct {
 	At     time.Time `json:"at"`
 	RunID  string    `json:"runId"`
 	Status string    `json:"status,omitempty"`
+	// RawType carries the scheduler's own event RawType through to a
+	// persisted, reloaded message when this message came from a
+	// scheduler-synthesized event (e.g. "scheduler.stuck") rather than the
+	// agent's own text, so the frontend can tell the two apart identically on
+	// a live SSE event and after a reload. Empty for an ordinary agent message
+	// assembled from more than one event, or for a user message.
+	RawType string `json:"rawType,omitempty"`
 }
 
 type RunEvent struct {
@@ -180,6 +195,16 @@ type Decision struct {
 	Status     string     `json:"status"`
 	CreatedAt  time.Time  `json:"createdAt"`
 	ResolvedAt *time.Time `json:"resolvedAt,omitempty"`
+}
+
+type Checkpoint struct {
+	ID         string    `json:"id"`
+	ProjectID  string    `json:"projectId"`
+	RunID      string    `json:"runId,omitempty"`
+	CommitHash string    `json:"commitHash"`
+	Branch     string    `json:"branch"`
+	Label      string    `json:"label"`
+	CreatedAt  time.Time `json:"createdAt"`
 }
 
 type StudioSession struct {

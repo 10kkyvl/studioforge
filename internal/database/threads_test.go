@@ -116,6 +116,53 @@ func TestLatestThreadSessionResumesWaitingDecision(t *testing.T) {
 	}
 }
 
+// LatestThreadStuckState is the sibling lookup api.createRun uses to decide
+// whether the next run's stuck detection is suppressed: same
+// latest-run-in-thread query LatestThreadSession already makes, but reading
+// back the stuck bookkeeping UpdateRunStuck wrote instead of the session id.
+func TestLatestThreadStuckState(t *testing.T) {
+	store, ctx := newThreadStore(t)
+	thread, err := store.EnsureDefaultThread(ctx, "demo-obby")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if escalated, err := store.LatestThreadStuckState(ctx, thread.ID); err != nil || escalated {
+		t.Fatalf("empty thread: escalated=%v err=%v, want false/nil", escalated, err)
+	}
+	run, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", ModelAlias: "balanced", ThreadID: thread.ID}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateRun(ctx, run.ID, "completed", "verified", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if escalated, err := store.LatestThreadStuckState(ctx, thread.ID); err != nil || escalated {
+		t.Fatalf("ordinary completed run: escalated=%v err=%v, want false/nil", escalated, err)
+	}
+
+	stuck, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", ModelAlias: "balanced", ThreadID: thread.ID}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateRunStuck(ctx, stuck.ID, "waiting_decision", "waiting_decision", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	escalated, err := store.LatestThreadStuckState(ctx, thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !escalated {
+		t.Fatalf("escalated=%v, want true", escalated)
+	}
+	got, err := store.Run(ctx, stuck.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "waiting_decision" || !got.StuckEscalated {
+		t.Fatalf("run=%+v, want waiting_decision/stuckEscalated=true", got)
+	}
+}
+
 func TestLatestThreadSessionEmptyWhenNoRuns(t *testing.T) {
 	store, ctx := newThreadStore(t)
 	thread, err := store.EnsureDefaultThread(ctx, "demo-obby")

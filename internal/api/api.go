@@ -31,6 +31,7 @@ import (
 	"github.com/10kkyvl/studioforge/internal/projects"
 	"github.com/10kkyvl/studioforge/internal/prompts"
 	"github.com/10kkyvl/studioforge/internal/providers"
+	"github.com/10kkyvl/studioforge/internal/resources"
 	"github.com/10kkyvl/studioforge/internal/scheduler"
 	"github.com/10kkyvl/studioforge/internal/webui"
 )
@@ -44,8 +45,31 @@ type StudioOpener interface {
 	OpenProject(ctx context.Context, projectPath, name, id string) (placePath string, err error)
 }
 
-type Differ interface {
+// StudioOpenCheck is what a probe found relative to a project's expected
+// place, asked before the manual "Open Studio" button launches — the same
+// no-duplicate-launch decision the Studio MCP provisioner's auto-open already
+// makes before it opens Studio for a run.
+type StudioOpenCheck struct {
+	// Open is true when no Studio instance is open at all, so launching is
+	// safe.
+	Open bool
+	// Matched is true when an instance already holds this project's place;
+	// the handler should read this as already there and not relaunch.
+	Matched bool
+	// Notice explains a refusal: instances are open, but none of them hold
+	// this project's place.
+	Notice string
+	// Place is the project's expected built place path, filled in regardless
+	// of outcome so a Matched response can still say where it lives.
+	Place string
+}
+
+type GitOps interface {
 	DiffHead(ctx context.Context, projectPath string) (string, error)
+	DiffCommit(ctx context.Context, projectPath, commit string) (string, error)
+	Status(ctx context.Context, projectPath string) (string, error)
+	SafeRollback(ctx context.Context, projectPath, target string) (string, error)
+	Tag(ctx context.Context, projectPath, name string) error
 }
 
 type Memory interface {
@@ -71,11 +95,14 @@ type Server struct {
 	detected              map[string][]toolpath.Candidate
 	detectedAt            time.Time
 	studio                StudioOpener
+	studioOpenCheck       func(context.Context, string) (StudioOpenCheck, error)
 	studioStatus          func(context.Context, string) (StudioStatus, error)
 	refreshStudioSessions StudioSessionsRefresher
 	syncer                Syncer
-	differ                Differ
+	git                   GitOps
 	memory                Memory
+	stuckSettings         func() scheduler.StuckSettings
+	leases                *resources.Manager
 }
 type Dependencies struct {
 	Store                 *database.Store
@@ -90,11 +117,18 @@ type Dependencies struct {
 	Logger                *slog.Logger
 	ApplySetting          func(string, string) error
 	Studio                StudioOpener
+	StudioOpenCheck       func(context.Context, string) (StudioOpenCheck, error)
 	StudioStatus          func(context.Context, string) (StudioStatus, error)
 	RefreshStudioSessions StudioSessionsRefresher
 	Sync                  Syncer
-	Diff                  Differ
+	Git                   GitOps
 	Memory                Memory
+	// StuckSettings resolves the current global stuck-detection settings,
+	// mirroring the live atomics internal/app already keeps for
+	// playtest_window_seconds — nil (e.g. in a test Dependencies that never
+	// sets it) falls back to createRun's own hardcoded defaults.
+	StuckSettings func() scheduler.StuckSettings
+	Leases        *resources.Manager
 }
 
 func New(d Dependencies) (*Server, error) {
@@ -105,7 +139,7 @@ func New(d Dependencies) (*Server, error) {
 	if d.Logger == nil {
 		d.Logger = slog.Default()
 	}
-	return &Server{store: d.Store, db: d.DB, scheduler: d.Scheduler, hub: d.Hub, doctor: d.Doctor, sessions: d.Sessions, guard: d.Guard, safeMode: d.SafeMode, allowedHost: d.AllowedHost, dataDir: d.DataDir, logger: d.Logger, applySetting: d.ApplySetting, studio: d.Studio, studioStatus: d.StudioStatus, refreshStudioSessions: d.RefreshStudioSessions, syncer: d.Sync, differ: d.Diff, memory: d.Memory, assets: assets, csp: contentSecurityPolicy(assets)}, nil
+	return &Server{store: d.Store, db: d.DB, scheduler: d.Scheduler, hub: d.Hub, doctor: d.Doctor, sessions: d.Sessions, guard: d.Guard, safeMode: d.SafeMode, allowedHost: d.AllowedHost, dataDir: d.DataDir, logger: d.Logger, applySetting: d.ApplySetting, studio: d.Studio, studioOpenCheck: d.StudioOpenCheck, studioStatus: d.StudioStatus, refreshStudioSessions: d.RefreshStudioSessions, syncer: d.Sync, git: d.Git, memory: d.Memory, stuckSettings: d.StuckSettings, leases: d.Leases, assets: assets, csp: contentSecurityPolicy(assets)}, nil
 }
 
 func contentSecurityPolicy(assets fs.FS) string {
@@ -144,6 +178,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/runs", s.createRun)
 	mux.HandleFunc("POST /api/v1/runs/{id}/{action}", s.runAction)
 	mux.HandleFunc("GET /api/v1/runs/{id}/diff", s.runDiff)
+	mux.HandleFunc("POST /api/v1/runs/{id}/rollback", s.rollbackRun)
+	mux.HandleFunc("GET /api/v1/projects/{id}/git/status", s.gitStatus)
+	mux.HandleFunc("POST /api/v1/projects/{id}/git/tag", s.gitTag)
 	mux.HandleFunc("POST /api/v1/studios/{id}/bind", s.bindStudio)
 	mux.HandleFunc("POST /api/v1/studio/sessions/refresh", s.refreshStudioSessionsHandler)
 	mux.HandleFunc("POST /api/v1/decisions/{id}/resolve", s.resolveDecision)
@@ -261,6 +298,7 @@ func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 	defaults := map[string]string{
 		"default_provider": "codex", "default_model": "default", "default_effort": "medium",
 		"codex_path": "", "claude_path": "", "rojo_path": "", "git_path": "", "studio_mcp_path": "", "studio_auto_open": "true", "concurrency": "6", "playtest_window_seconds": "30",
+		"stuck_detection_enabled": "true", "stuck_idle_seconds": "600", "stuck_repetition_cap": "6",
 	}
 	for key, fallback := range defaults {
 		value, ok, _ := s.store.Setting(ctx, key)
@@ -330,6 +368,7 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		"locale": true, "theme": true, "setup_complete": true, "concurrency": true,
 		"default_provider": true, "default_model": true, "default_effort": true,
 		"codex_path": true, "claude_path": true, "rojo_path": true, "git_path": true, "studio_mcp_path": true, "studio_auto_open": true,
+		"stuck_detection_enabled": true, "stuck_idle_seconds": true, "stuck_repetition_cap": true,
 	}
 	for key, value := range body {
 		if !allowed[key] {
@@ -409,10 +448,16 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, 500, "scaffold_failed", "Project was registered but its Rojo skeleton could not be written", err)
 		return
 	}
+	studioNotice := ""
 	if body.OpenStudio && s.studio != nil {
-		// Best effort: a launch failure is a notice, not a create failure, so
-		// the project response below still returns 201 regardless.
-		_, _ = s.studio.OpenProject(r.Context(), project.Path, project.Name, project.ID)
+		switch outcome, check := s.studioOpenGate(r.Context(), project.ID); outcome {
+		case studioOpenWithheld:
+			studioNotice = check.Notice
+		case studioOpenProceed:
+			// Best effort: a launch failure is a notice, not a create failure, so
+			// the project response below still returns 201 regardless.
+			_, _ = s.studio.OpenProject(r.Context(), project.Path, project.Name, project.ID)
+		}
 	}
 	provider, ok, _ := s.store.Setting(r.Context(), "default_provider")
 	if !ok || provider == "" {
@@ -434,7 +479,10 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	// explicitly keeps every returned project payload going through the same
 	// path rather than leaving this one to rely on the zero value by accident.
 	project.Sync = s.syncStatus(project.ID)
-	writeJSON(w, 201, project)
+	writeJSON(w, 201, struct {
+		models.Project
+		StudioNotice string `json:"studioNotice,omitempty"`
+	}{project, studioNotice})
 }
 
 func normalizeAgent(agent *models.Agent) error {
@@ -671,6 +719,39 @@ func (s *Server) studioStatusHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"open": status.Open, "matched": status.Matched, "blocked": status.Blocked, "state": state})
 }
 
+type studioOpenOutcome int
+
+const (
+	studioOpenProceed studioOpenOutcome = iota
+	studioOpenMatched
+	studioOpenWithheld
+)
+
+func (s *Server) studioOpenGate(ctx context.Context, projectID string) (studioOpenOutcome, StudioOpenCheck) {
+	if s.studioOpenCheck == nil {
+		return studioOpenProceed, StudioOpenCheck{}
+	}
+	check, err := s.studioOpenCheck(ctx, projectID)
+	if err != nil {
+		return studioOpenProceed, StudioOpenCheck{}
+	}
+	switch {
+	case check.Matched:
+		return studioOpenMatched, check
+	case check.Notice != "":
+		return studioOpenWithheld, check
+	}
+	return studioOpenProceed, check
+}
+
+// openStudio launches Roblox Studio on the project's place, applying the same
+// no-duplicate-launch rule the Studio MCP provisioner's auto-open already
+// applies: an instance already holding this project's place must not be
+// relaunched, and other open instances that hold none of it must refuse
+// rather than risk piling on yet another window. studioOpenCheck is what
+// makes that decision without also requesting an agent's MCP grant; a run's
+// own auto-open still shares the underlying Opener's in-flight guard, which
+// is what stops the two racing even when the check itself could not run.
 func (s *Server) openStudio(w http.ResponseWriter, r *http.Request) {
 	if s.studio == nil {
 		writeError(w, r, 501, "not_supported", "Opening Studio is not available on this platform", nil)
@@ -679,6 +760,14 @@ func (s *Server) openStudio(w http.ResponseWriter, r *http.Request) {
 	project, err := s.store.Project(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, r, 404, "not_found", "Project not found", err)
+		return
+	}
+	switch outcome, check := s.studioOpenGate(r.Context(), project.ID); outcome {
+	case studioOpenMatched:
+		writeJSON(w, 200, map[string]any{"place": check.Place, "alreadyOpen": true})
+		return
+	case studioOpenWithheld:
+		writeError(w, r, 409, "studio_mismatch", check.Notice, nil)
 		return
 	}
 	place, err := s.studio.OpenProject(r.Context(), project.Path, project.Name, project.ID)
@@ -707,6 +796,12 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, 400, "invalid_prompt", "A chat message is required", nil)
 		return
 	}
+	// Captured before body.Prompt is rewritten below (task-prompt wrapping,
+	// attachments block): the stuck-escalation "continue" multiplier carry
+	// forward compares the operator's literal message against
+	// scheduler.StuckContinueLabel, not whatever the prompt is later expanded
+	// into.
+	rawPrompt := body.Prompt
 	project, err := s.store.Project(r.Context(), body.ProjectID)
 	if err != nil {
 		writeError(w, r, 404, "not_found", "Project not found", err)
@@ -814,6 +909,15 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, 500, "database_error", "Unable to read chat history", err)
 		return
 	}
+	prevStuckEscalated, err := s.store.LatestThreadStuckState(r.Context(), thread.ID)
+	if err != nil {
+		writeError(w, r, 500, "database_error", "Unable to read chat history", err)
+		return
+	}
+	stuckSettings := scheduler.StuckSettings{Enabled: true, IdleSeconds: 600, RepetitionCap: 6}
+	if s.stuckSettings != nil {
+		stuckSettings = s.stuckSettings()
+	}
 	projectContext := projects.LoadContext(project.Path)
 	if s.memory != nil {
 		if entries, err := s.memory.Search(r.Context(), project.ID, body.Prompt, 5); err != nil {
@@ -836,25 +940,49 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	// Carry the house rules and the project's standing context so the operator need
 	// not re-explain the project — or which language to answer in — on every message.
 	systemPrompt := prompts.ForRun(agent.SystemPrompt, projectContext)
+	const checkpointLabel = "StudioForge checkpoint before agent run"
+	var checkpointHash, checkpointBranch string
 	if agent.Provider == "claude" && body.Mode != "plan" {
 		// Snapshot the project so the operator can revert an agent's edits. Best
 		// effort: a non-git project or a hook failure never blocks the run, but the
 		// failure is logged so an operator who loses `git revert` coverage can find out why.
-		if _, checkpointErr := gitcheckpoint.Checkpoint(project.Path, "StudioForge checkpoint before agent run"); checkpointErr != nil {
+		hash, branch, checkpointErr := gitcheckpoint.Checkpoint(project.Path, checkpointLabel)
+		if checkpointErr != nil {
 			s.logger.Warn("git checkpoint failed", "project_id", project.ID, "project_path", project.Path, "error", checkpointErr)
+		} else {
+			checkpointHash, checkpointBranch = hash, branch
 		}
 	}
 	key := r.Header.Get("Idempotency-Key")
-	run, created, err := s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: project.ID, AgentID: agent.ID, TaskID: body.TaskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, WorkingDirectory: project.Path, Prompt: body.Prompt, SystemPrompt: systemPrompt, Mode: body.Mode, ThreadID: thread.ID, ResumeSessionID: resumeSession, Scenario: body.Scenario, MaxBudget: maxBudget, Resources: []string{"project:" + project.ID + ":write"}, IdempotencyKey: key, Subagents: subagents, ValidateAfterRun: agent.ValidateAfterRun, MaxCorrectionRuns: agent.MaxCorrectionRuns})
+	stuckDetectionEnabled := stuckSettings.Enabled && !agent.StuckDetectionDisabled && !stuckContinueSuppresses(prevStuckEscalated, rawPrompt)
+	run, created, err := s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: project.ID, AgentID: agent.ID, TaskID: body.TaskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, WorkingDirectory: project.Path, Prompt: body.Prompt, SystemPrompt: systemPrompt, Mode: body.Mode, ThreadID: thread.ID, ResumeSessionID: resumeSession, Scenario: body.Scenario, MaxBudget: maxBudget, Resources: []string{"project:" + project.ID + ":write"}, IdempotencyKey: key, Subagents: subagents, ValidateAfterRun: agent.ValidateAfterRun, MaxCorrectionRuns: agent.MaxCorrectionRuns, StuckDetectionEnabled: stuckDetectionEnabled, StuckIdleSeconds: stuckSettings.IdleSeconds, StuckRepetitionCap: stuckSettings.RepetitionCap})
 	if err != nil {
 		writeError(w, r, 400, "run_error", err.Error(), nil)
 		return
+	}
+	if created && checkpointHash != "" {
+		checkpoint := models.Checkpoint{RunID: run.ID, ProjectID: project.ID, CommitHash: checkpointHash, Branch: checkpointBranch, Label: checkpointLabel, CreatedAt: time.Now().UTC()}
+		if err := s.store.CreateCheckpoint(r.Context(), checkpoint); err != nil {
+			s.logger.Warn("persist checkpoint failed", "run_id", run.ID, "project_id", project.ID, "error", err)
+		}
 	}
 	status := 201
 	if !created {
 		status = 200
 	}
 	writeJSON(w, status, run)
+}
+
+// stuckContinueSuppresses reports whether the incoming message is the
+// operator clicking "Continue testing" on the thread's most recent run's own
+// stuck escalation (prevEscalated), in which case stuck detection is
+// suppressed entirely for the resumed run: the operator explicitly said keep
+// going, so re-escalating the same run would only nag. Any other case (a
+// fresh thread, a run that was not a stuck escalation, or the operator typing
+// a real clarification instead of clicking Continue) leaves detection
+// enabled at the current settings.
+func stuckContinueSuppresses(prevEscalated bool, prompt string) bool {
+	return prevEscalated && strings.TrimSpace(prompt) == scheduler.StuckContinueLabel
 }
 
 func memoryBlock(entries []memory.Entry) string {
@@ -928,7 +1056,11 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, 409, "run_action_failed", err.Error(), nil)
 		return
 	}
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	status := 200
+	if action == "cancel" {
+		status = 202
+	}
+	writeJSON(w, status, map[string]bool{"ok": true})
 }
 
 // StudioSessionsRefresher runs one live discovery pass over the Studio MCP

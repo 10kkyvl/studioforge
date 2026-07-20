@@ -205,7 +205,6 @@ func TerminateTree(cmd *exec.Cmd, exited <-chan struct{}, grace time.Duration) e
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
-	err := gracefulTerminate(cmd)
 	go func() {
 		timer := time.NewTimer(grace)
 		defer timer.Stop()
@@ -215,7 +214,7 @@ func TerminateTree(cmd *exec.Cmd, exited <-chan struct{}, grace time.Duration) e
 			_ = forceKillTree(cmd)
 		}
 	}()
-	return err
+	return gracefulTerminate(cmd)
 }
 
 func (s *Supervisor) Close(ctx context.Context) error {

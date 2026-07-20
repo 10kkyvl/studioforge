@@ -39,7 +39,7 @@ func TestMigrationsAndPragmas(t *testing.T) {
 	if timeout != 5000 || foreign != 1 {
 		t.Fatalf("pragmas timeout=%d foreign=%d", timeout, foreign)
 	}
-	required := []string{"schema_migrations", "projects", "project_agents", "tasks", "runs", "run_events", "studio_sessions", "resource_leases", "assets", "budgets", "usage_records"}
+	required := []string{"schema_migrations", "projects", "project_agents", "tasks", "runs", "run_events", "studio_sessions", "resource_leases", "budgets", "usage_records"}
 	for _, table := range required {
 		var count int
 		if err := db.SQL.QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&count); err != nil || count != 1 {
@@ -95,6 +95,66 @@ func TestDemoIsolationAndRecovery(t *testing.T) {
 	run, err := store.Run(ctx, "demo-obby-history")
 	if err != nil || run.Status != "interrupted" {
 		t.Fatalf("run=%+v err=%v", run, err)
+	}
+}
+
+// A run parked in waiting_decision — whether from a stuck escalation or the
+// agent's own natural question — has no live goroutine or process by the
+// time it reaches that status, exactly like a completed run. RecoverInterrupted
+// must never touch it: it only recovers starting/running/cancelling, so a
+// daemon restart must not silently cancel or lose a pending decision. This
+// also doubles as the daemon-restart simulation for the stuck-escalation
+// columns: a fresh *Store opened against the same database file sees exactly
+// what the first connection wrote, since nothing about waiting_decision
+// depends on in-memory state surviving the restart.
+func TestRecoverInterruptedLeavesWaitingDecisionAndItsStuckColumnsUntouched(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "studioforge.db")
+	db, err := Open(context.Background(), dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(db)
+	ctx := context.Background()
+	if err := store.SeedDemo(ctx, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	run, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "claude", ModelAlias: "balanced"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateRun(ctx, run.ID, "running", "agent", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateRunStuck(ctx, run.ID, "waiting_decision", "waiting_decision", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecoverInterrupted(ctx); err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.Run(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Status != "waiting_decision" || !before.StuckEscalated {
+		t.Fatalf("run after recovery=%+v, RecoverInterrupted must never touch waiting_decision", before)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a daemon restart: a brand new *DB/*Store against the same
+	// database file, with nothing carried over in memory.
+	restarted, err := Open(context.Background(), dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	after, err := NewStore(restarted).Run(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != "waiting_decision" || !after.StuckEscalated {
+		t.Fatalf("run after restart=%+v, want the same waiting_decision state to survive", after)
 	}
 }
 
@@ -197,6 +257,40 @@ func TestUpdateAgentPersistsValidationSettings(t *testing.T) {
 	}
 	if len(agents) != 1 || !agents[0].ValidateAfterRun || agents[0].MaxCorrectionRuns != 3 {
 		t.Fatalf("listed agent=%+v", agents)
+	}
+}
+
+// A new agent defaults to stuck detection ON (StuckDetectionDisabled=false):
+// unlike the opt-in validation loop, the escalation safety net is on by
+// default, with only an explicit per-agent opt-out turning it off.
+func TestCreateAgentDefaultsStuckDetectionEnabled(t *testing.T) {
+	_, store := testDB(t)
+	ctx := context.Background()
+	project, err := store.CreateProject(ctx, models.Project{Name: "Stuck project", Path: filepath.Join(t.TempDir(), "stuck-project"), Fingerprint: "stuck-project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := store.CreateAgent(ctx, models.Agent{ProjectID: project.ID, Provider: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.StuckDetectionDisabled {
+		t.Error("a new agent must default to stuck detection enabled")
+	}
+	agent.StuckDetectionDisabled = true
+	updated, err := store.UpdateAgent(ctx, agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.StuckDetectionDisabled {
+		t.Fatal("the opt-out must persist through UpdateAgent")
+	}
+	agents, err := store.ListAgents(ctx, project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 || !agents[0].StuckDetectionDisabled {
+		t.Fatalf("listed agent=%+v, want the opt-out to survive a re-list", agents)
 	}
 }
 

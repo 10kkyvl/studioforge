@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/10kkyvl/studioforge/internal/models"
+	"github.com/10kkyvl/studioforge/internal/security"
 )
 
 func (s *Store) CreateRun(ctx context.Context, run models.Run, idempotencyKey string) (models.Run, bool, error) {
@@ -54,7 +56,7 @@ func nullText(s string) any {
 }
 func formatTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 
-const runColumns = `id,project_id,agent_id,COALESCE(task_id,''),provider,model_alias,provider_session_id,status,phase,required_resource,error,cost,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,base_commit,result_commit,COALESCE(thread_id,''),prompt_snapshot,validation,COALESCE(validation_screenshot,''),COALESCE(parent_run_id,''),correction_depth,created_at,updated_at,started_at,finished_at`
+const runColumns = `id,project_id,agent_id,COALESCE(task_id,''),provider,model_alias,provider_session_id,status,phase,required_resource,error,cost,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,base_commit,result_commit,COALESCE(thread_id,''),prompt_snapshot,validation,COALESCE(validation_screenshot,''),COALESCE(parent_run_id,''),correction_depth,created_at,updated_at,started_at,finished_at,stuck_escalated`
 
 func (s *Store) Run(ctx context.Context, id string) (models.Run, error) {
 	row := s.db.SQL.QueryRowContext(ctx, `SELECT `+runColumns+` FROM runs WHERE id=?`, id)
@@ -67,10 +69,12 @@ func scanRun(row scanner) (models.Run, error) {
 	var r models.Run
 	var created, updated string
 	var started, finished sql.NullString
-	err := row.Scan(&r.ID, &r.ProjectID, &r.AgentID, &r.TaskID, &r.Provider, &r.ModelAlias, &r.ProviderSession, &r.Status, &r.Phase, &r.RequiredResource, &r.Error, &r.Cost, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens, &r.CacheCreationTokens, &r.BaseCommit, &r.ResultCommit, &r.ThreadID, &r.PromptSnapshot, &r.Validation, &r.ValidationScreenshot, &r.ParentRunID, &r.CorrectionDepth, &created, &updated, &started, &finished)
+	var stuckEscalated int
+	err := row.Scan(&r.ID, &r.ProjectID, &r.AgentID, &r.TaskID, &r.Provider, &r.ModelAlias, &r.ProviderSession, &r.Status, &r.Phase, &r.RequiredResource, &r.Error, &r.Cost, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens, &r.CacheCreationTokens, &r.BaseCommit, &r.ResultCommit, &r.ThreadID, &r.PromptSnapshot, &r.Validation, &r.ValidationScreenshot, &r.ParentRunID, &r.CorrectionDepth, &created, &updated, &started, &finished, &stuckEscalated)
 	if err != nil {
 		return r, err
 	}
+	r.StuckEscalated = stuckEscalated != 0
 	r.CreatedAt = parseTime(created)
 	r.UpdatedAt = parseTime(updated)
 	if started.Valid {
@@ -114,6 +118,58 @@ func (s *Store) UpdateRun(ctx context.Context, id, status, phase, resource, errT
 		finished = now
 	}
 	res, err := s.db.SQL.ExecContext(ctx, `UPDATE runs SET status=?,phase=?,required_resource=?,error=?,updated_at=?,started_at=COALESCE(started_at,?),finished_at=COALESCE(?,finished_at) WHERE id=?`, status, phase, resource, errText, now, started, finished, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) UpdateRunIfStatus(ctx context.Context, id string, expectedStatuses []string, status, phase, resource, errText string) (bool, error) {
+	if len(expectedStatuses) == 0 {
+		return false, errors.New("database: UpdateRunIfStatus requires at least one expected status")
+	}
+	now := Now()
+	var started, finished any
+	if status == "running" {
+		started = now
+	}
+	if status == "completed" || status == "failed" || status == "cancelled" || status == "interrupted" {
+		finished = now
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(expectedStatuses)), ",")
+	args := []any{status, phase, resource, errText, now, started, finished, id}
+	for _, expected := range expectedStatuses {
+		args = append(args, expected)
+	}
+	res, err := s.db.SQL.ExecContext(ctx, `UPDATE runs SET status=?,phase=?,required_resource=?,error=?,updated_at=?,started_at=COALESCE(started_at,?),finished_at=COALESCE(?,finished_at) WHERE id=? AND status IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// UpdateRunStuck writes a run's terminal stuck-escalation transition (used
+// only for running->waiting_decision once a stuck-detection threshold trips)
+// in the same write as the status change: stuck_escalated records that THIS
+// run's own termination was the escalation, not the agent asking its own
+// question. Writing it alongside status/phase in one UPDATE, rather than a
+// separate call after UpdateRun, keeps a concurrent reader from ever
+// observing waiting_decision without the flag.
+func (s *Store) UpdateRunStuck(ctx context.Context, id, status, phase, resource, errText string) error {
+	now := Now()
+	var started, finished any
+	if status == "running" {
+		started = now
+	}
+	if status == "completed" || status == "failed" || status == "cancelled" || status == "interrupted" {
+		finished = now
+	}
+	res, err := s.db.SQL.ExecContext(ctx, `UPDATE runs SET status=?,phase=?,required_resource=?,error=?,updated_at=?,started_at=COALESCE(started_at,?),finished_at=COALESCE(?,finished_at),stuck_escalated=1 WHERE id=?`, status, phase, resource, errText, now, started, finished, id)
 	if err != nil {
 		return err
 	}
@@ -186,6 +242,43 @@ func (s *Store) RecoverInterrupted(ctx context.Context) (int64, error) {
 	return res.RowsAffected()
 }
 
+func redactPayload(v any) any {
+	return redactValue("", v)
+}
+
+func redactValue(key string, v any) any {
+	switch t := v.(type) {
+	case string:
+		if security.IsSensitiveKey(key) {
+			return "[REDACTED]"
+		}
+		return security.Redact(t)
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			out[k] = redactValue(k, val)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, val := range t {
+			out[i] = redactValue(key, val)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func redactedPayloadJSON(payload any) string {
+	raw := marshal(payload)
+	var decoded any
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		return raw
+	}
+	return marshal(redactPayload(decoded))
+}
+
 func (s *Store) AppendEvents(ctx context.Context, events []models.RunEvent) ([]models.RunEvent, error) {
 	if len(events) == 0 {
 		return events, nil
@@ -204,7 +297,7 @@ func (s *Store) AppendEvents(ctx context.Context, events []models.RunEvent) ([]m
 		if events[i].CreatedAt.IsZero() {
 			events[i].CreatedAt = time.Now().UTC()
 		}
-		result, err := stmt.ExecContext(ctx, events[i].ProjectID, events[i].RunID, nullText(events[i].AgentID), events[i].Type, events[i].RawType, marshal(events[i].Payload), formatTime(events[i].CreatedAt))
+		result, err := stmt.ExecContext(ctx, events[i].ProjectID, events[i].RunID, nullText(events[i].AgentID), events[i].Type, events[i].RawType, redactedPayloadJSON(events[i].Payload), formatTime(events[i].CreatedAt))
 		if err != nil {
 			return nil, err
 		}

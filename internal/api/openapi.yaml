@@ -133,3 +133,33 @@ paths:
         - {name: id, in: path, required: true, schema: {type: string}}
         - {name: action, in: path, required: true, schema: {type: string, enum: [pause, resume, cancel, restart]}}
       responses: {"200": {description: Action accepted}}
+  /runs/{id}/diff:
+    get:
+      summary: Diff for a run - against its own git checkpoint commit when one exists, else the working tree against HEAD
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses: {"200": {description: Diff}}
+  /runs/{id}/rollback:
+    post:
+      summary: Non-destructively restore a run's checkpoint commit onto a new studioforge/rollback-<timestamp> branch
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "200": {description: Rollback branch and restored commit hash}
+        "400": {description: The run has no recorded checkpoint}
+        "409": {description: The project's write lease is held by another run, or the rollback itself failed}
+  /projects/{id}/git/status:
+    get:
+      summary: A project's `git status --short --branch` (empty status when it is not a Git repo)
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses: {"200": {description: Git status}}
+  /projects/{id}/git/tag:
+    post:
+      summary: Create an annotated git tag in a project
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "200": {description: Tag created}
+        "400": {description: Missing tag name}
+        "409": {description: Git operation failed}
