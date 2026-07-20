@@ -8,6 +8,24 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ## [Unreleased]
 
+### Added
+
+- A self-correcting Studio playtest validation loop. When a Claude agent opts in
+  (`validateAfterRun`, off by default) and a non-plan run completed with `workspace-write`
+  permission or above and an actual Studio MCP grant, StudioForge now opens its own Studio MCP
+  connection (independent of the agent's own, already-exited one) and enters Play mode, polls
+  `get_console_output` for a bounded window (default 30s, `playtest_window_seconds` in Settings),
+  takes one `screen_capture`, exits Play mode, and classifies the console into `passed`, `failed`
+  (script errors, infinite yield warnings, uncaught exceptions), or `inconclusive` (no signal, or
+  Studio became unreachable mid-playtest). The whole pass is fail-open: an absent launcher,
+  ambiguous or closed Studio, or a malformed tool response all resolve to `inconclusive` and never
+  fail the run. On `failed`, up to `maxCorrectionRuns` (default 1, per agent) follow-up correction
+  runs are scheduled through the normal scheduler — same writer lease, same budget ceiling, same
+  Git checkpoint — resuming the same CLI session with the console errors and screenshot reference
+  folded into the prompt. A run's `validation` field (`none`/`passed`/`failed`/`inconclusive`/
+  `corrected`/`correction_failed`) and correction-run linkage (`parentRunId`/`correctionDepth`) are
+  now part of every run record and shown as a badge and link on the Runs view.
+
 ## [0.2.0-alpha.1] - 2026-07-20
 
 ### Added

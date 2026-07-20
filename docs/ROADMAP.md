@@ -12,9 +12,9 @@ adding new surface area:
   DAG at creation time (`internal/tasks/dag.go`), but nothing yet stops a run from starting against a
   task whose dependencies aren't done.
 - Wire up or deliberately remove the packages still implemented but unreachable: git rollback and tag
-  (`internal/gitops.SafeRollback`/`Tag` — `Status` and `DiffHead` are wired), and Rojo live-sync
-  sessions (`internal/rojo` session manager, as opposed to the build-and-open path that is already
-  wired).
+  (`internal/gitops.SafeRollback`/`Tag` — `Status` and `DiffHead` are wired). Rojo live-sync sessions
+  (`internal/rojo` session manager) are wired (`POST`/`DELETE /api/v1/projects/{id}/sync`); recent log
+  lines from a live session are not yet surfaced to the API or UI.
 - Replace the demo-only rows in the Studio Sessions view with real Roblox Studio instance discovery;
   today those rows are seeded only by the mock demo.
 - Add automatic pruning for persisted run events. Retention is schema-ready today but depends on
@@ -42,8 +42,9 @@ description if it ever does.
 - A richer project memory than the minimal version now live: today a run writes its own prompt text
   and the next run's system prompt gets a handful of relevant past prompts back, with no summarization
   of what actually happened and no UI to browse or curate what's stored.
-- Visual feedback and screenshot-driven iteration.
-- Automated playtest validation.
+- Visual feedback and screenshot-driven iteration beyond the validation loop's single screenshot per
+  playtest pass.
 - Multi-agent orchestration beyond the current orchestrator-to-`--agents` delegation that Claude Code
   already provides natively.
-- Autonomous, long-running agent loops.
+- Autonomous, long-running agent loops beyond the bounded correction-run chain the validation loop
+  now schedules.

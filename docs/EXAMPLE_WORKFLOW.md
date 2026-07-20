@@ -246,15 +246,55 @@ Both tracks stay inside what is actually wired end to end. They intentionally do
 - **Git rollback through the UI** — `internal/gitops.SafeRollback`/`Tag` are implemented and tested,
   but no HTTP endpoint exposes them; use the `git` commands in step 9 instead. (`Status`/`DiffHead`
   are wired, behind the chat view's Changed files panel.)
-- **Rojo live-sync sessions** — `rojo serve` session management (`internal/rojo`) is implemented and
-  unit-tested, but no endpoint starts, stops, or queries one; only Rojo *build* (used by **Open in
-  Studio**) is reachable today.
-- **Automated playtest validation** — there is no wired path that starts Play mode, reads the
-  console, and produces a structured pass/fail result on its own.
 - **Run execution respecting task dependencies** — dependencies can be created and are validated for
   cycles, but a run does not check whether a task's dependencies are done before starting.
 
 See [Known Limitations](KNOWN_LIMITATIONS.md) for the complete list.
+
+## Track C: the self-correcting playtest validation loop
+
+This extends Track B and needs the same prerequisites, plus an open Roblox Studio holding the
+project's own place (see **Open in Studio** on the project card, or turn on **Open Studio
+automatically before a run** in Settings).
+
+1. In **Team builder**, edit the Claude agent from Track B: check **Validate with a Studio playtest
+   after each run**, and leave **Max correction runs** at its default of 1. This setting is per agent
+   and off by default — turning it on is what makes the loop opt-in, not automatic.
+2. Confirm the agent's **Permission profile** is `workspace-write` or `danger-full-access` — the loop
+   never runs for `read-only`, the same tier rule as the Studio tool allowlist itself
+   (`docs/SECURITY.md#roblox-studio-access`).
+3. Send an instruction in **Do** mode (not **Plan** — the loop never runs for a plan-mode turn) that
+   would leave a script error if done wrong, for example a script referencing a Studio instance path
+   that does not exist.
+4. After the run reaches its normal completion, watch the **Runs** view: a `validation` badge appears
+   on the run row once the daemon's own Studio MCP connection has entered Play mode, polled the
+   console for the configured window (`playtest_window_seconds` in Settings, default 30 seconds),
+   taken a screenshot, and exited Play mode again.
+5. If the console showed a script error or an infinite-yield warning, the badge reads **Playtest
+   failed**, and a second run appears in the list linked back to the first (**Correction of** on the
+   correction run, **Correction scheduled** on the original) — it resumes the same chat session with
+   the console error lines and the screenshot reference already in its prompt, so the agent does not
+   need to re-discover what went wrong.
+6. If the correction's own playtest later passes, the original run's badge updates to **Fixed by
+   correction**; if the agent's `maxCorrectionRuns` is exhausted without a pass, it reads **Correction
+   failed** instead — the loop never retries silently past that bound, and it never fails the *original*
+   run over a playtest outcome either way.
+
+### Expected output
+
+- The Runs view shows a validation badge for both the original and the correction run once each one's
+  Play-mode pass completes.
+- A run whose Studio grant was withheld (ambiguous or closed Studio, `read-only` profile, Codex
+  provider, plan mode, or the agent simply not opted in) shows no validation badge at all — the loop is
+  fail-open, exactly like Studio access itself.
+
+### If it does not work
+
+| Symptom | Check |
+|---|---|
+| No validation badge ever appears | Confirm **Validate with a Studio playtest after each run** is checked on the agent, the profile is `workspace-write`+, the run was in **Do** mode, and the chat header's Studio badge showed a match — a withheld Studio grant silently skips validation. |
+| Badge reads "Playtest inconclusive" every time | The console produced no usable text, or Studio became unreachable mid-playtest (closed, crashed, or another MCP client took the connection) — this is fail-open by design, not a bug; check `docs/KNOWN_LIMITATIONS.md` for the heuristic classifier's caveats. |
+| No correction run appears after a failure | Check the agent's **Max correction runs** — a value of 0 disables corrections entirely, and a lineage that already reached the limit stops scheduling more. |
 
 ## See also
 

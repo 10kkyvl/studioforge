@@ -47,7 +47,12 @@ plugin loading or dynamic linking.
 - `internal/scheduler` — a fair per-project queue (`fairqueue.go`), the run lifecycle state machine
   (`state.go`), and `Manager` (`scheduler.go`), which enforces global/per-project/per-provider/per-model
   concurrency limits, checks budgets before starting a job, calls an installable `MCPProvisioner` hook,
-  and supports pause/resume/cancel/restart plus heartbeat-based interrupted-run detection.
+  and supports pause/resume/cancel/restart plus heartbeat-based interrupted-run detection. A second
+  installable hook, `MCPValidator`, runs after a qualifying Claude run completes: `Manager.run`
+  calls it, persists the resulting `passed`/`failed`/`inconclusive` outcome on the run, publishes it as
+  a normal run event, and on `failed` schedules a follow-up correction run through the same `Submit`
+  path (writer lease, budget check, and its own Git checkpoint all apply) — see "The self-correcting
+  playtest validation loop" below.
 - `internal/resources` — `Manager`, an atomic lease table keyed by sorted resource-key lists, with TTL
   expiry, heartbeat renewal, and idempotent release. The scheduler uses one lease key,
   `project:<id>:write`, per run, which is what makes "one writer per project" hold.
@@ -234,6 +239,24 @@ earlier successful connection, then a hardcoded fallback list with an open argum
 
 **Studio access applies to Claude runs only.** The Codex CLI has no `--mcp-config` equivalent, so Codex
 agents cannot reach Studio through this mechanism at all.
+
+**The self-correcting playtest validation loop** (`mcp.Provisioner.Validate`, called through the
+scheduler's `MCPValidator` hook) is a *second* Studio MCP connection the daemon opens itself, separate
+from the one the agent's own `claude` subprocess used during the run (which has, by this point, already
+exited). It reuses `Provisioner`'s own launcher discovery and instance-selection logic (`probe`/
+`selectForTarget`) to reach the same Studio instance, then on one held-open transport: `start_stop_play`
+(enter Play mode), `screen_capture` (once), polls `get_console_output` for a configurable window
+(`playtest_window_seconds`, default 30s), `start_stop_play` again (exit Play mode), and classifies the
+collected console text. It only runs for a job that is Claude, non-plan, `workspace-write` permission or
+above, opted in per-agent (`validate_after_run`), and actually holds a Studio grant for that run — an
+absent, ambiguous, or unreachable Studio during validation resolves to `inconclusive`, the same fail-open
+posture `Provision` itself takes. A `failed` outcome schedules a correction run (`parent_run_id`,
+`correction_depth` on the `runs` table) that resumes the same CLI session with the console error lines
+and the screenshot reference folded into its prompt; when that correction later resolves, its own
+outcome is propagated one hop up (`corrected` or `correction_failed` on its direct parent), bounded by
+the agent's `max_correction_runs`. The loop renews the project's write lease itself, on its own ticker
+sized to a safe fraction of the lease manager's configured TTL (`resources.Manager.TTL`), because the
+run's ordinary 5-second heartbeat loop stops draining once the provider process has already exited.
 
 ## Data flow: one chat message, end to end
 

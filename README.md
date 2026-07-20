@@ -79,6 +79,7 @@ The project is an alpha as a whole. The table below describes individual capabil
 | Per-run diff | `GET /api/v1/runs/{id}/diff` shows the working tree's diff against the pre-run checkpoint commit in a chat panel; empty (not an error) for a project with no Git repo |
 | Task dependencies | Task creation accepts a `dependencies` field, validated as a DAG (a cycle is rejected); not yet enforced at run time — a task can still be run before its dependencies finish |
 | Project memory | Each completed run leaves a short memory entry (its own prompt); the next run in that project sees up to five relevant past entries in its system prompt |
+| Playtest validation loop | Opt-in per agent (`validateAfterRun`, off by default): after a non-plan Claude run with `workspace-write`+ permission and a real Studio grant, the daemon opens its own Studio MCP connection, enters Play mode, polls the console, takes a screenshot, exits Play mode, and classifies the result as passed/failed/inconclusive. A failed result schedules up to `maxCorrectionRuns` follow-up runs (default 1) through the normal scheduler, resuming the same session with the failure detail in the prompt |
 
 ### Experimental — implemented, but not verified against real external software by default
 
@@ -98,7 +99,7 @@ These packages are implemented and unit-tested but have no caller in the API or 
 
 ### Planned — not implemented
 
-Visual feedback and screenshot-driven iteration · automated playtest validation · iterative self-correction loops · autonomous backlog-driven loops · real Studio session discovery · project context beyond the two static files.
+Visual feedback and screenshot-driven iteration beyond the validation loop's own single screenshot · autonomous backlog-driven loops · real Studio session discovery · project context beyond the two static files.
 
 ### Not supported
 
@@ -234,6 +235,7 @@ The most important ones for a new user:
 - **Studio access applies to Claude runs only.** The Codex adapter has no `--mcp-config` equivalent.
 - **A Claude run inherits your own Claude Code configuration** — `CLAUDE.md`, hooks, plugins, and skills — which is billed to every run and makes behaviour depend on your local install.
 - **`--max-turns` is not enforced.** The flag does not exist in current Claude Code, so only budget ceilings bound a run.
+- **The playtest validation loop classifies the console heuristically** (script-error and infinite-yield phrase matching), not by parsing a documented Studio MCP schema, and it only ever runs when an agent opted in and the run reached Studio — like Studio access itself, an absent or ambiguous Studio makes it silently `inconclusive` rather than failing the run.
 - **Real Studio instances are not discovered** into the Studio Sessions view; those rows are demo data.
 - **Several packages are not wired in** — see the feature status table above.
 - **Packages are unsigned** on both Windows and macOS.

@@ -98,6 +98,21 @@ directly, and does not open any listener other than the one loopback (or explici
   - An unrecognized profile string grants nothing — a typo denies access rather than widening it.
 - **Claude runs only.** The Codex adapter has no `--mcp-config` equivalent, so Codex agents cannot
   reach Studio at all, regardless of permission profile.
+- **The playtest validation loop is a second, daemon-initiated Studio MCP connection**
+  (`internal/roblox/mcp/validator.go`, `Provisioner.Validate`), separate from the connection the
+  agent's own `claude` subprocess used — which has already exited by the time validation runs. Be
+  precise about what this means for the tool allowlist above: `AllowedTools` governs which tools
+  *Claude itself* may call without an interactive prompt; it is not consulted here, because this is
+  StudioForge's own Go code calling `start_stop_play`, `get_console_output`, and `screen_capture`
+  directly over its own transport, the same way `Provisioner.probe`/`Status` already call
+  `get_studio_state` today. The loop is nonetheless scoped down to the same intent as the
+  `workspace-write` tier: it only ever runs for a job whose own permission profile is
+  `workspace-write` or `danger-full-access`, and only the three tools named above, never
+  `user_keyboard_input`/`user_mouse_input`/`upload_image`/`store_image`/`http_get`
+  (`danger-full-access`-only tools) and never Studio content edits (`multi_edit`/`execute_luau`). It is
+  further gated behind an explicit per-agent opt-in (`validate_after_run`, off by default) and only
+  triggers when the run's own Studio grant succeeded, so a `read-only` run, a Codex run, a plan-mode
+  run, or an agent that never opted in never causes the daemon to touch Play mode on its own.
 
 ## Command execution
 
