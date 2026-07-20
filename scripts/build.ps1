@@ -21,7 +21,7 @@ if (-not $version) { $version = 'dev' }
 $commit = (git -C $root rev-parse --short=12 HEAD 2>$null)
 if (-not $commit) { $commit = 'none' }
 $buildDate = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
-$ldflags = "-s -w -X github.com/10kkyvl/studioforge/internal/config.Version=$version -X github.com/10kkyvl/studioforge/internal/config.Commit=$commit -X github.com/10kkyvl/studioforge/internal/config.BuildDate=$buildDate"
+$ldflags = "-X github.com/10kkyvl/studioforge/internal/config.Version=$version -X github.com/10kkyvl/studioforge/internal/config.Commit=$commit -X github.com/10kkyvl/studioforge/internal/config.BuildDate=$buildDate"
 $dist = Join-Path $root 'dist'
 New-Item -ItemType Directory -Force -Path (Join-Path $dist 'windows-amd64'), (Join-Path $dist 'darwin-arm64') | Out-Null
 Push-Location $root
