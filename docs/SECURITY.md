@@ -204,15 +204,21 @@ directly, and does not open any listener other than the one loopback (or explici
   no credential passes through them in this release.
 - Secret redaction (`internal/security/redact.go`) matches common patterns — `key=`/`token=`/
   `password=`-style assignments, `sk-ant-...`/`sk-...` API key shapes, `Authorization: Bearer/Basic`
-  headers, and PEM private key blocks — and replaces matches with `[REDACTED]`. In this codebase its
-  one production call site is the diagnostic bundle writer (`internal/diagnostics/doctor.go`, used by
-  `studioforge doctor --bundle` and described further in [Honest gaps](#honest-gaps-for-the-alpha-release)):
-  it is applied to the `doctor.json` report written into that zip. It is not wired into StudioForge's
-  own `slog` application logs or into persisted run transcripts/events — those are operational
-  status text and streamed provider events, not something this pass currently scans. Practically:
-  **review a diagnostic bundle, and review anything you copy out of the chat/event history, before
-  sharing it** — the bundle's own `README.json` entry already states plainly that secrets,
-  environment variables, prompts, and project source are not included in it by design.
+  headers, and PEM private key blocks — and replaces matches with `[REDACTED]`. It has two production
+  call sites: the diagnostic bundle writer (`internal/diagnostics/doctor.go`, used by
+  `studioforge doctor --bundle` and described further in [Honest gaps](#honest-gaps-for-the-alpha-release)),
+  applied to the `doctor.json` report written into that zip, and `internal/database/runs.go`'s
+  `AppendEvents` — the single write path for every persisted `run_events` row — applied to each string
+  leaf of a run event's payload before it is written to SQLite. Redaction walks the payload's decoded
+  value tree rather than the already-marshaled JSON text, so a match can only ever replace the content
+  of a JSON string, never JSON structural characters, and can never corrupt the stored payload. Because
+  redaction happens at write time, the raw secret is never durably stored at all — SSE, the chat
+  transcript, the diff/checkpoint linkage, and portable export all read the persisted, already-redacted
+  payload back from `run_events`. It is still not wired into StudioForge's own `slog` application logs
+  — those are operational status text, not something this pass currently scans. Practically: **review a
+  diagnostic bundle, and review application logs, before sharing them** — the bundle's own
+  `README.json` entry already states plainly that secrets, environment variables, prompts, and project
+  source are not included in it by design.
 
 ## Browser/session security
 

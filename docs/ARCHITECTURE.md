@@ -114,13 +114,26 @@ plugin loading or dynamic linking.
 
 ### Git
 
-- `internal/gitcheckpoint` — `Checkpoint(root, label)`, a best-effort `git add -A && git commit` run
-  before every non-plan Claude run, called directly from `internal/api/api.go`.
-- `internal/gitops` — `Client.DiffHead(ctx, root)` runs `git diff HEAD` for a project (returning an
-  empty diff, not an error, when `root` isn't a Git repo), wired through a `Differ` interface declared
-  in `internal/api` (`GET /api/v1/runs/{id}/diff`, handler in `internal/api/diff.go`) and a thin
-  adapter over `gitops.New()` built in `internal/app`. `Status`, `SafeRollback`, and `Tag` on the same
-  `Client` remain unused — see "Implemented but not yet wired".
+- `internal/gitcheckpoint` — `Checkpoint(root, label)` returns the new commit hash and the branch it
+  landed on, a best-effort `git add -A && git commit` run before every non-plan Claude run
+  (`internal/api/api.go`'s `createRun`) and before every scheduled correction run
+  (`internal/scheduler/scheduler.go`'s `scheduleCorrection`). Both callers persist the result as a
+  `checkpoints` row (`database.Store.CreateCheckpoint`) once the run they precede actually exists, so a
+  run can be linked back to the exact commit taken before it started
+  (`database.Store.CheckpointForRun`); a non-git project or an empty diff yields no checkpoint row,
+  which is the normal case, not an error.
+- `internal/gitops` — `Client.DiffHead(ctx, root)` and `DiffCommit(ctx, root, commit)` run `git diff
+  HEAD` and `git diff <commit>` respectively (returning an empty diff, not an error, when `root` isn't a
+  Git repo), `Status`, `SafeRollback` (creates and switches to a new
+  `studioforge/rollback-<UTC timestamp>` branch — the original branch is never touched, reset, or
+  force-pushed), and `Tag` are all wired through a `GitOps` interface declared in `internal/api` and a
+  thin adapter over `gitops.New()` built in `internal/app`. `GET /api/v1/runs/{id}/diff`
+  (`internal/api/diff.go`) uses `CheckpointForRun` to diff against that run's own checkpoint commit when
+  one exists, falling back to `DiffHead` otherwise; `GET /api/v1/projects/{id}/git/status`,
+  `POST /api/v1/runs/{id}/rollback`, and `POST /api/v1/projects/{id}/git/tag` are the remaining
+  endpoints, all in `internal/api/git.go`. Rollback also refuses (409) while the project's write lease
+  is held by another run — a best-effort, check-then-act guard against a `SafeRollback` racing a run
+  still writing to the same project.
 
 ### Project state and prompts
 
@@ -158,17 +171,6 @@ plugin loading or dynamic linking.
   currently return "unavailable"; StudioForge does not store Anthropic credentials), and
   `toolpath`, which probes PATH and known install locations for each external tool.
 - `internal/portable` — `Export`/`Inspect`/`Apply` for the `studioforge export`/`import` CLI commands.
-
-### Implemented but not yet wired
-
-These packages are implemented, exercised by their own unit tests, and reachable only from tests — no
-code in `internal/app` or `internal/api` calls them from a live request. A user running StudioForge
-cannot reach the behavior below through the UI or CLI, even though the code exists and passes its tests.
-
-- **`internal/gitops`** — `Status`, `SafeRollback`, and `Tag` are implemented and tested, but no HTTP
-  endpoint exposes them. `DiffHead`, on the same `Client`, is now wired — see the Git section of the
-  component map above. (`internal/gitops` is a separate package from `internal/gitcheckpoint`, which
-  has always been wired.)
 
 ## Process boundaries
 
@@ -233,7 +235,31 @@ set from outside on the agent's behalf, and the launcher accepts no instance-sel
 launch. With zero or several ambiguous instances open, `Provisioner.Provision` returns an empty grant (or
 one with a `Notice` explaining why) rather than guessing, and the run proceeds without Studio access. When
 a `Target.PlaceName` is known (i.e. a project is attached to the run) and no matching instance is open,
-the provisioner can open one itself if `studio_auto_open` is enabled, then poll for it to appear.
+the provisioner can open one itself if `studio_auto_open` is enabled and — as of the fix below — **only
+when no Studio instance is open at all**; one or more open instances that hold some other project's place
+withhold with a `Notice` instead of auto-opening on top of them, naming what is actually open next to
+what StudioForge expected (`mcp.mismatchNotice`), so a project's original/source `.rbxl` opened by hand
+instead of its built `.studioforge/<name>.rbxl` place is easy to recognize from the notice alone.
+`models.Project` does not currently record the source place file's own name or path anywhere, so matching
+could not be loosened to also accept it without adding new schema — out of scope for this fix — and the
+"never auto-open while anything is open" rule plus the diagnosable notice are the mitigation instead.
+
+**Duplicate-launch guard**: `studio.Opener` (the type both the provisioner's auto-open, via
+`Target.Open`, and the manual **Open Studio** button's handler funnel through — see
+`internal/app/app.go`'s `studioOpener` and `studioTarget`/`Dependencies.Studio` wiring) now tracks its own
+in-flight opens: `OpenProject` reserves the project's place name under a mutex before doing any work, and
+a second call for the same place within a 90-second grace window (deliberately longer than the
+provisioner's own 45-second `openWait`, since Studio can still be genuinely booting after a caller gives
+up polling for it) returns the same place path without launching Studio again. A reservation that never
+actually launched (a build or Studio-detection failure) is released immediately, so a fixed problem can be
+retried right away rather than sitting out the rest of the window. The manual button additionally asks
+`Provisioner.CheckOpen` — the read-only half of the same decision `selectForTarget` makes before
+auto-opening, exposed via `Dependencies.StudioOpenCheck` in `internal/app/app.go` so `internal/api` does
+not need to depend on `internal/roblox/mcp` for its shape — before ever calling `OpenProject`: an instance
+already holding this project's place is reported as already open rather than relaunched, and other open
+instances holding none of it refuse with the same notice text `selectForTarget` uses, all without
+requesting an agent's MCP grant. A failed or unwired check fails open (falls through to `OpenProject`, and
+so through its own in-flight guard) rather than blocking the button over a probe that could not run.
 
 **Why the shim exists**: the launcher advertises its tool list only to whichever MCP client won its single
 WebSocket host slot; every other client connected at the same time is told it has zero tools, even though
@@ -336,7 +362,9 @@ correction lineage.
 6. **Git checkpoint** — for Claude runs not in `plan` mode, `gitcheckpoint.Checkpoint` runs
    `git add -A && git commit` in the project root before the provider starts, so the operator has a
    revert point. This is best-effort: a non-git project or an empty diff is a silent no-op and never fails
-   the run.
+   the run. Once the run itself is created, a successful checkpoint is persisted as a `checkpoints` row
+   linking the run to its commit hash and branch (`database.Store.CreateCheckpoint`), so `GET
+   /api/v1/runs/{id}/diff` and `POST /api/v1/runs/{id}/rollback` can later act on that exact commit.
 7. **MCP provisioning** — if the run's provider is Claude, the installed `MCPProvisioner` hook
    (`mcp.Provisioner.Provision`) runs the fail-closed Studio access check described above and, if granted,
    returns a config path and allowed-tools list; a snapshot of the open place's state is also prepended to
@@ -451,7 +479,10 @@ of the following is enforced independently:
 - **Interrupted-run recovery on startup**: `Store.RecoverInterrupted`, called once at daemon start before
   anything else runs, transitions any run left in `starting`, `running`, or `cancelling` status to
   `interrupted` with an explanatory error — this is what happens to a run in flight when the daemon
-  process itself is killed or crashes.
+  process itself is killed or crashes. `interrupted` must stay listed in the web UI's own terminal-status
+  set (`isRunTerminal` in `web/src/lib/runStatus.ts`) alongside `completed`/`failed`/`cancelled`/
+  `waiting_decision` — otherwise a thread reopened after a restart picks a recovered run back up as
+  still "active" and shows it live with a stale elapsed timer.
 - **Heartbeat leases**: while a run is active, the scheduler ticks a 5-second heartbeat on its resource
   lease (`resources.Handle.Heartbeat`); a lease left un-renewed past its TTL is reaped by the manager's
   background sweep, freeing the resource key for the next run even if the holder never releases it

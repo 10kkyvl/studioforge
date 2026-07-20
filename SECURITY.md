@@ -10,9 +10,9 @@ Do not file a public issue for an unpatched vulnerability. Use GitHub private vu
 
 ## Local security model
 
-StudioForge binds to loopback by default, creates a cryptographically random one-use bootstrap token, exchanges it for an HttpOnly SameSite cookie, validates Host and Origin on mutating requests, and sets no CORS headers at all. Project roots are canonicalized when they are registered. Provider processes receive a reduced environment. Known credential formats are redacted from diagnostic bundles.
+StudioForge binds to loopback by default, creates a cryptographically random one-use bootstrap token, exchanges it for an HttpOnly SameSite cookie, validates Host and Origin on mutating requests, and sets no CORS headers at all. Project roots are canonicalized when they are registered. Provider processes receive a reduced environment. Known credential formats are redacted from diagnostic bundles and, before they are written to the database, from stored run event payloads.
 
-Two scope limits, stated precisely because the difference matters: redaction runs on diagnostic bundles only — application logs and stored run transcripts are not redacted, so review them before sharing. The path traversal and symlink-escape guard is implemented but currently has no caller, because no endpoint accepts a project-relative path; registration-time canonicalization is what is actually enforced today. See [docs/SECURITY.md](docs/SECURITY.md) for the full model.
+One scope limit, stated precisely because the difference matters: redaction does not cover StudioForge's own `slog` application logs — only diagnostic bundles and stored run event payloads are redacted, so review application logs before sharing them. The path traversal and symlink-escape guard is implemented but currently has no caller, because no endpoint accepts a project-relative path; registration-time canonicalization is what is actually enforced today. See [docs/SECURITY.md](docs/SECURITY.md) for the full model.
 
 Localhost is not treated as a trust boundary. Malware running as the same OS user can still access user files and local processes. Keep the workstation and external CLIs updated.
 

@@ -10,6 +10,38 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ### Added
 
+- Runs are now linked to the git checkpoint taken before they started. Every checkpoint
+  `gitcheckpoint.Checkpoint` commits (before a non-plan Claude run and before a scheduled correction
+  run) is persisted as a `checkpoints` row once its run exists, so `GET /api/v1/runs/{id}/diff` diffs
+  against that exact commit instead of the generic `HEAD` whenever one is recorded. A new
+  `POST /api/v1/runs/{id}/rollback` non-destructively restores a run's checkpoint commit onto a new
+  `studioforge/rollback-<timestamp>` branch (`gitops.Client.SafeRollback` - the run's own branch and
+  history are never touched, reset, or force-pushed); it refuses with 409 while the project's write
+  lease is held by another run, and with 400 when the run has no recorded checkpoint. `GET
+  /api/v1/projects/{id}/git/status` and `POST /api/v1/projects/{id}/git/tag` expose the rest of
+  `internal/gitops`, which previously had no HTTP endpoint. The chat diff panel shows a "Roll back to
+  before this run" action, with an explicit confirmation step, whenever the current run has a
+  checkpoint.
+- Stuck-run escalation: a Claude run that genuinely stalls — its provider goes completely silent,
+  or it loops the same Studio MCP tool-call cycle without making progress — now pauses itself and
+  asks the operator to continue or stop instead of running away unattended. On by default
+  (`stuck_detection_enabled`), with a per-agent `stuckDetectionDisabled` opt-out. Two checks, either
+  of which trips it: no provider event at all (no streamed text, no tool call, no tool result) for
+  `stuck_idle_seconds` (default 600 — long local builds and playtests legitimately produce silence,
+  so anything under ten minutes is not treated as a stall), or the same short tool-call cycle
+  repeating `stuck_repetition_cap` times in a row with no file edit and no newly distinct
+  console/tool-result text in between. Wall-clock duration and event counts are deliberately not
+  signals: an actively streaming run is working, however long it takes, and never trips either
+  check. It reuses the existing `waiting_decision`/`studioforge-question` machinery end to end — no
+  new event type or run status — so the escalation renders as an ordinary question card, live and
+  after a reload, with a short summary of what the run was doing and its recent console/playtest
+  observations. Clicking **Continue testing** resumes the exact same CLI session with stuck
+  detection suppressed for that resumed run — the operator said keep going, so it will not re-ask;
+  typing a free-text reply also resumes the session, with detection still armed. A distinct
+  **Stop** button cancels the run cleanly, which also works for any other run parked in
+  `waiting_decision` (including the agent's own natural question), both from the chat and from the
+  Activity view. A run's `stuckEscalated` field records that its own termination was this
+  escalation (migration `009_stuck_detection.sql`).
 - A self-correcting Studio playtest validation loop. When a Claude agent opts in
   (`validateAfterRun`, off by default) and a non-plan run completed with `workspace-write`
   permission or above and an actual Studio MCP grant, StudioForge now opens its own Studio MCP
@@ -49,6 +81,85 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   narrower `decisions` table (migration `008_decisions.sql`) than the one removed early in the alpha,
   and is not a general pre-action approval gate — it never pauses a run before a file edit, a
   destructive command, or a publish.
+
+### Removed
+
+- The dead `assets`/`asset_reviews` tables (migration `010_drop_assets.sql`), left over from the
+  asset-quarantine feature whose Go package, view, route, and i18n strings were already removed in an
+  earlier commit; nothing in this codebase read or wrote either table. This does not touch the
+  official Studio MCP tools `insert_asset`/`search_asset` (`internal/roblox/mcp/config.go`'s
+  `workspaceTools` allowlist) — those were never part of the removed package and remain fully
+  functional.
+
+### Security
+
+- Stored run event payloads (`internal/database/runs.go`'s `AppendEvents`, the single write path for
+  every persisted `run_events` row) are now passed through `security.Redact` before being written,
+  the same pattern-based redaction previously applied only inside the `studioforge doctor --bundle`
+  diagnostic archive. Redaction runs on the payload's decoded value tree (each string leaf, not the
+  already-marshaled JSON text), so a match can never land on JSON structural characters and corrupt
+  the stored payload. Each string leaf is also checked against its own JSON key name
+  (`security.IsSensitiveKey` — `api_key`, `token`, `secret`, `password`, and compound forms like
+  `access_token`) and redacted wholesale when the key looks sensitive, not only when the value's own
+  text happens to match one of the content patterns — a secret parsed out of JSON no longer carries
+  the surrounding `key=`/`key:` text a plain regex needs to fire on, so key-name awareness is what
+  actually catches it in this shape.
+
+### Fixed
+
+- Roblox Studio launching a duplicate window when the already-open Studio's MCP connection is owned
+  by another client (Claude Desktop, Cursor, or a lingering session). Roblox grants the plugin's WS
+  host slot to one client at a time, so a held slot makes the launcher list *no instances with no
+  error* — indistinguishable from no Studio at all. The provisioner's auto-open and the manual
+  **Open Studio** button both read that empty listing as "safe to launch" and stacked a new window;
+  both now run the same running-process tie-break the rest of the provisioner already used
+  (`Provision`/`Status`) and withhold with the host-taken notice instead of launching.
+- Roblox Studio launching a second, duplicate window on top of one already open. Two causes, both
+  fixed: (1) the Studio MCP provisioner's auto-open used to fire whenever *no instance matched* the
+  project, even if some other Studio instance was already open — it now only opens Studio when no
+  instance is open at all, and otherwise withholds with a notice naming what is actually open next to
+  what was expected; (2) `studio.Opener` (shared by the provisioner's auto-open and the manual **Open
+  Studio** chat button) now tracks in-flight opens per place name and refuses to relaunch one already
+  underway for 90 seconds — long enough to outlast the provisioner's own 45-second wait for a freshly
+  opened Studio to appear, so a run giving up on that wait no longer reads as "nothing happened" and
+  triggers a second launch. The manual button also checks whether Studio is already open for the
+  project before launching (`POST /api/v1/projects/{id}/open-studio` now reports `alreadyOpen: true`
+  instead of relaunching, or refuses with `409 studio_mismatch` when other instances are open but none
+  match), reusing the same decision the provisioner's auto-open makes. Creating a project with
+  **Open Studio** checked now goes through the same check, closing a third path that previously
+  launched unconditionally.
+- The run Cancel button failing with "Failed to fetch" partway through a long, heavy run.
+  `scheduler.Manager.Cancel` used to hold its single mutex across a synchronous DB write and the
+  blocking process-kill call (`taskkill.exe /T` on Windows), while the run's own goroutine
+  reacquired that same mutex on every streamed event — real head-of-line contention on a run
+  streaming hundreds of events, long enough for the browser's fetch to fail at the transport level.
+  `Cancel` now only cancels the run's own context while holding the lock and returns immediately;
+  the "cancelling" transition and the actual process termination (`RunHandle.Cancel`/`Wait`) now run
+  inside the run's own goroutine, off the shared mutex. `POST /api/v1/runs/{id}/cancel` now responds
+  `202 Accepted`. This also surfaced (and fixes) a related latent race: a cancelled run's context
+  expiring at the same instant its event stream closed could make the run loop's `select` take the
+  "stream ended" branch instead of the cancellation branch, silently dropping the terminal DB write
+  and leaving the run stuck at `running` forever; the run loop now checks the context itself once the
+  stream ends, not only which `select` case happened to fire. A run cancelled while it was in this
+  post-stream tail (e.g. mid-playtest-validation) now correctly lands on `cancelled` instead of
+  stubbornly finishing as `completed`.
+- Pause and Resume racing an in-flight Cancel (or a run's own normal completion) could leave a run's
+  database row permanently stuck at `paused` or `running` with no goroutine left to reconcile it,
+  making it uncancellable and unrestartable. `Pause`/`Resume` now write through a conditional
+  (compare-and-swap) update that only applies when the row's status still matches what the in-memory
+  state expected; a rejected write now returns an error and reverts the in-memory flip instead of
+  silently leaving a status the database never actually recorded.
+- The Chat view no longer silently drops "Studio MCP withheld" notices (e.g. ambiguous or mismatched
+  Studio instances) — they now render as a visible banner instead of only being discoverable in the
+  raw run event log. A run-action ("Stop"/pause/resume/restart) that fails on a genuine network error
+  now shows a retryable message with a **Retry** button instead of the raw browser "Failed to fetch"
+  text, in both languages.
+- Reopening a thread after restarting the daemon could show a dead run as still "Working…" with a
+  live, ever-growing elapsed timer and an active Stop button. The backend already recovers any run
+  left `starting`/`running`/`cancelling` when the daemon stops to `interrupted`
+  (`Store.RecoverInterrupted`, run at every startup), but the web UI's own terminal-status set
+  (`isRunTerminal` in `web/src/lib/runStatus.ts`) never included `interrupted`, so it kept picking
+  that recovered run back up as the thread's "active" run. `interrupted` is now terminal there too.
 
 ## [0.2.0-alpha.1] - 2026-07-20
 

@@ -86,8 +86,13 @@ accepts no instance-selection argument — not an arbitrary limitation.
 - Leave exactly one relevant Roblox Studio instance open, holding the project's built place
   (`<project>/.studioforge/<name>.rbxl`).
 - If StudioForge is configured to open Studio automatically for a project (`studio_auto_open`, on by
-  default) and the project's place is not currently open anywhere, it will build and launch it rather
-  than fail; give it a few seconds — Studio has to build a window before it can be recognized.
+  default) and **no Roblox Studio instance is open at all**, it will build and launch it rather than
+  fail; give it a few seconds — Studio has to build a window before it can be recognized. Auto-open
+  never fires while some other Studio instance is already open, even one that does not hold this
+  project — that would risk piling a second window onto Studio rather than the one this project wants.
+  The withheld notice in that case names what is actually open next to what StudioForge expected, so a
+  project's original/source `.rbxl` opened by hand instead of its built `.studioforge/<name>.rbxl` place
+  is easy to recognize.
 - **Codex agents can never reach Studio**, regardless of how many instances are open — the Codex
   adapter has no `--mcp-config` equivalent. This is not a bug to work around.
 
@@ -129,6 +134,14 @@ launcher untouched. In practice this means an agent's tool list stays populated 
 keep working even when it isn't the process holding the host slot. If a run's Studio tools look wrong
 (missing argument hints) rather than absent, that is the fallback-schema path — it does not affect
 whether the call itself succeeds.
+
+A held host slot also makes the launcher list **zero open instances with no error** — at the listing
+level a machine with Studio open looks identical to one with no Studio at all. StudioForge breaks that
+tie by checking whether a Studio process is actually running before it ever launches one (both the
+provisioner's auto-open and the manual **Open Studio** button): if Studio is running but lists no
+instances, the launch is withheld with the host-taken notice above instead of opening a duplicate
+window. If you see that notice, close the other MCP client (or disable its Roblox MCP server) and
+retry.
 
 ---
 
