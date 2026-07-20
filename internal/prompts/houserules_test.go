@@ -26,3 +26,27 @@ func TestForRunSkipsEmptyParts(t *testing.T) {
 		t.Fatal("empty project context must not emit a section")
 	}
 }
+
+func TestForRunExactOutputBareHouseRules(t *testing.T) {
+	got := ForRun("", "")
+	want := HouseRules
+	if got != want {
+		t.Fatalf("ForRun(\"\", \"\") = %q, want %q", got, want)
+	}
+}
+
+func TestForRunExactOutputProjectContextOnly(t *testing.T) {
+	got := ForRun("", "constitution body")
+	want := HouseRules + "\n\n## Project context\n\nconstitution body"
+	if got != want {
+		t.Fatalf("ForRun(\"\", projectContext) = %q, want %q", got, want)
+	}
+}
+
+func TestForRunExactOutputPersonaAndProjectContext(t *testing.T) {
+	got := ForRun("You are a Roblox gameplay engineer.", "constitution body")
+	want := HouseRules + "\n\n## Project context\n\nconstitution body" + "\n\n## Your role\n\nYou are a Roblox gameplay engineer."
+	if got != want {
+		t.Fatalf("ForRun(persona, projectContext) = %q, want %q", got, want)
+	}
+}
