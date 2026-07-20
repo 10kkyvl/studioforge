@@ -14,3 +14,18 @@ func TestRedactKnownSecrets(t *testing.T) {
 		}
 	}
 }
+
+func TestIsSensitiveKey(t *testing.T) {
+	sensitive := []string{"api_key", "apiKey", "access_token", "auth_secret", "password", "githubToken"}
+	for _, key := range sensitive {
+		if !IsSensitiveKey(key) {
+			t.Errorf("IsSensitiveKey(%q) = false, want true", key)
+		}
+	}
+	notSensitive := []string{"message", "text", "status"}
+	for _, key := range notSensitive {
+		if IsSensitiveKey(key) {
+			t.Errorf("IsSensitiveKey(%q) = true, want false", key)
+		}
+	}
+}
