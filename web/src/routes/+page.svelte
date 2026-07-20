@@ -343,10 +343,13 @@
       }
     });
   }
-  async function addTask(task: { title: string; status: string }) {
+  async function addTask(task: { title: string; status: string; dependencies?: string[] }) {
     if (!selectedProject) return;
     await action('task-create', async () => {
-      const created = await createTask(selectedProject.id, { title: task.title });
+      const created = await createTask(selectedProject.id, {
+        title: task.title,
+        ...(task.dependencies?.length ? { dependencies: task.dependencies } : {}),
+      });
       if (task.status && task.status !== created.status) {
         await updateTask(created.id, { status: task.status });
       }

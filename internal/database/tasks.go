@@ -80,6 +80,14 @@ func (s *Store) DeleteTask(ctx context.Context, id string) error {
 	return nil
 }
 
+func (s *Store) AddTaskDependency(ctx context.Context, projectID, taskID, dependsOnTaskID string) error {
+	_, err := s.db.SQL.ExecContext(ctx, "INSERT OR IGNORE INTO task_dependencies(project_id,task_id,depends_on_task_id) VALUES(?,?,?)", projectID, taskID, dependsOnTaskID)
+	if err != nil {
+		return fmt.Errorf("add task dependency: %w", err)
+	}
+	return nil
+}
+
 // SetTaskStatus updates only a task's status, used when a run attaches to it.
 func (s *Store) SetTaskStatus(ctx context.Context, id, status string) error {
 	res, err := s.db.SQL.ExecContext(ctx, "UPDATE tasks SET status=?,updated_at=? WHERE id=?", status, Now(), id)

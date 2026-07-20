@@ -4,7 +4,9 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/10kkyvl/studioforge/internal/database"
 	"github.com/10kkyvl/studioforge/internal/models"
+	"github.com/10kkyvl/studioforge/internal/tasks"
 )
 
 // validTaskStatuses mirrors the tasks table's CHECK(status IN (...)) enum.
@@ -22,6 +24,7 @@ func (s *Server) createTaskHandler(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Title, Description, AcceptanceCriteria string
 		Priority                               int
+		Dependencies                           []string `json:"dependencies"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(w, r, 400, "invalid_json", err.Error(), nil)
@@ -32,13 +35,37 @@ func (s *Server) createTaskHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, 400, "validation", "Title is required", nil)
 		return
 	}
-	created, err := s.store.CreateTask(r.Context(), models.Task{
+	task := models.Task{
 		ProjectID: projectID, Title: title, Description: body.Description,
 		AcceptanceCriteria: body.AcceptanceCriteria, Priority: body.Priority,
-	})
+		Dependencies: body.Dependencies,
+	}
+	if len(body.Dependencies) > 0 {
+		existing, err := s.store.ListTasks(r.Context(), projectID)
+		if err != nil {
+			writeError(w, r, 500, "database_error", "Unable to list project tasks", err)
+			return
+		}
+		task.ID = database.NewID()
+		nodes := make([]tasks.Node, 0, len(existing)+1)
+		for _, t := range existing {
+			nodes = append(nodes, tasks.Node{ID: t.ID, Dependencies: t.Dependencies})
+		}
+		nodes = append(nodes, tasks.Node{ID: task.ID, Dependencies: task.Dependencies})
+		if err := tasks.ValidateDAG(nodes); err != nil {
+			writeError(w, r, 400, "task_dependency_cycle", "task dependency cycle: "+err.Error(), nil)
+			return
+		}
+	}
+	created, err := s.store.CreateTask(r.Context(), task)
 	if err != nil {
 		writeError(w, r, 500, "database_error", "Unable to create task", err)
 		return
+	}
+	for _, dep := range body.Dependencies {
+		if err := s.store.AddTaskDependency(r.Context(), projectID, created.ID, dep); err != nil {
+			s.logger.Warn("failed to persist task dependency", "task_id", created.ID, "depends_on", dep, "error", err)
+		}
 	}
 	writeJSON(w, 201, created)
 }

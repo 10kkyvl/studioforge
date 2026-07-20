@@ -5,7 +5,11 @@
 
   export let tasks: Task[] = [];
   export let project: Project | undefined = undefined;
-  export let onCreateTask: (t: { title: string; status: string }) => void = () => {};
+  export let onCreateTask: (t: {
+    title: string;
+    status: string;
+    dependencies?: string[];
+  }) => void = () => {};
   export let onUpdateStatus: (taskId: string, status: string) => void = () => {};
   export let onDeleteTask: (taskId: string) => void = () => {};
 
@@ -21,6 +25,7 @@
   let draggedTaskId: string | null = null;
   let showNewTask = false;
   let newTaskTitle = '';
+  let newTaskDependencies: string[] = [];
 
   $: visibleTasks = project ? tasks.filter((task) => task.projectId === project?.id) : tasks;
 
@@ -37,9 +42,20 @@
   function submitNewTask() {
     const title = newTaskTitle.trim();
     if (!title) return;
-    onCreateTask({ title, status: 'backlog' });
+    onCreateTask({
+      title,
+      status: 'backlog',
+      ...(newTaskDependencies.length ? { dependencies: newTaskDependencies } : {}),
+    });
     newTaskTitle = '';
+    newTaskDependencies = [];
     showNewTask = false;
+  }
+
+  function toggleDependency(taskId: string, checked: boolean) {
+    newTaskDependencies = checked
+      ? [...newTaskDependencies, taskId]
+      : newTaskDependencies.filter((id) => id !== taskId);
   }
 
   function handleDragStart(event: DragEvent, taskId: string) {
@@ -76,8 +92,29 @@
       submitNewTask();
     }}
   >
-    <input bind:value={newTaskTitle} placeholder={$translate('tasks.titlePlaceholder')} required />
-    <button class="primary" type="submit"><Plus size={15} />{$translate('tasks.new')}</button>
+    <div class="new-task-row">
+      <input
+        bind:value={newTaskTitle}
+        placeholder={$translate('tasks.titlePlaceholder')}
+        required
+      />
+      <button class="primary" type="submit"><Plus size={15} />{$translate('tasks.new')}</button>
+    </div>
+    {#if visibleTasks.length > 0}
+      <fieldset class="dependency-picker">
+        <legend>{$translate('tasks.depends')}</legend>
+        {#each visibleTasks as task (task.id)}
+          <label>
+            <input
+              type="checkbox"
+              checked={newTaskDependencies.includes(task.id)}
+              onchange={(event) => toggleDependency(task.id, event.currentTarget.checked)}
+            />
+            {task.title}
+          </label>
+        {/each}
+      </fieldset>
+    {/if}
   </form>
 {/if}
 <section class="board">
@@ -123,16 +160,44 @@
 <style>
   .new-task-form {
     display: flex;
+    flex-direction: column;
     gap: 9px;
     margin-bottom: 17px;
   }
-  .new-task-form input {
+  .new-task-row {
+    display: flex;
+    gap: 9px;
+  }
+  .new-task-row input {
     flex: 1;
     min-width: 0;
     padding: 9px 12px;
     border: 1px solid var(--line);
     border-radius: 8px;
     background: var(--surface);
+    color: var(--text);
+  }
+  .dependency-picker {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    margin: 0;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+  .dependency-picker legend {
+    padding: 0 4px;
+    color: var(--muted);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .dependency-picker label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.78rem;
     color: var(--text);
   }
   .board {

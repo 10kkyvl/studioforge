@@ -132,7 +132,13 @@ export const attachmentUrl = (projectId: string, path: string) =>
   `/api/v1/projects/${projectId}/attachments/${encodeURIComponent(path.split('/').pop() ?? '')}`;
 export const createTask = (
   projectId: string,
-  t: { title: string; description?: string; acceptanceCriteria?: string; priority?: number },
+  t: {
+    title: string;
+    description?: string;
+    acceptanceCriteria?: string;
+    priority?: number;
+    dependencies?: string[];
+  },
 ) => post<Task>(`/projects/${projectId}/tasks`, t);
 export const updateTask = (taskId: string, patch: Partial<Task>) =>
   post<Task>(`/tasks/${taskId}`, patch);
