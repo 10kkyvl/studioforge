@@ -20,10 +20,10 @@ point of this demo is that every second of it is real.
 
 **Does not show and must not claim:**
 - Autonomous or unattended operation. A human sends the instruction and watches the run.
-- Project memory, task dependency graphs, git status/diff/rollback UI, asset quarantine, Rojo
-  live-sync sessions, or the Decisions view being driven by a live run — these exist in code but
-  have no caller reachable from the UI today (see [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md),
-  "Implemented in code, but not reachable from the running product").
+- Git rollback through the UI, or Rojo live-sync sessions — these exist in code but have no caller
+  reachable from the UI today (see [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md), "Implemented in
+  code, but not reachable from the running product"). The per-run Changed files diff panel and task
+  dependencies are real and may be shown if a shot for them is added to this script later.
 - Real Studio Sessions discovery — the Studio Sessions view shows demo rows, not a live scan.
 - Any capability the official Roblox Studio MCP tooling does not itself provide. StudioForge
   detects and launches that official tooling; it does not reimplement Studio operations and ships

@@ -2,18 +2,17 @@
 
 ## Implemented in code, but not reachable from the running product
 
-These packages are written and covered by unit tests, but nothing in the API or app layer calls them, so a user cannot reach them. They are listed here rather than presented as features. Wiring or removing them is the first item on the [roadmap](ROADMAP.md).
+These packages are written and covered by unit tests, but nothing in the API or app layer calls them, so a user cannot reach them. They are listed here rather than presented as features.
 
-- **Project memory** (`internal/memory`) is a SQLite FTS5-backed store with `Put`/`Search` and its own migrations, and it has no non-test caller. No run writes or reads a memory entry, and the `Memory` field in prompt assembly is never populated. StudioForge does not currently carry memory across runs.
-- **Task dependency graphs** (`internal/tasks`) include cycle detection that is never called outside its test. The task-creation endpoint accepts no `dependencies` field, so a real project cannot create a dependency; the only `task_dependencies` rows come from the `--mock` demo seed.
-- **Git status, diff, rollback, and tag** (`internal/gitops`) are implemented and tested but exposed by no HTTP endpoint. The separate Git checkpoint taken before each non-plan Claude run is wired and does work.
-- **Asset quarantine** (`internal/roblox/assets`) is a status-transition validator with no caller. There is no asset scanning, upload handling, or Marketplace integration, and the Assets view in the interface is an empty placeholder with no API call behind it.
-- **Decisions** have a record type, a resolve endpoint, and a review interface, but no live run produces one; only the demo seed inserts them. The Decision mechanism must not be relied on as a safety gate in this release.
-- **Playtest and review result types** are defined in prompt assembly but are never constructed or parsed. There is no automated playtest validation or self-correction loop.
-- **The structured prompt template** (`internal/prompts.Assemble`) has no caller outside its own test. The system prompt actually sent to a provider is a simpler concatenation built in `internal/api`: the agent's stored system prompt plus the two static `.agent` context files. The richer multi-section template — including its memory, playtest, and review sections — is not what runs.
-- **The Studio service type** (`internal/roblox/studio.Service`) has no live caller; the studio-bind endpoint uses the database store directly.
+- **Git status, rollback, and tag** (`internal/gitops`) are implemented and tested but exposed by no HTTP endpoint. `DiffHead`, on the same package, is now wired — see the per-run diff panel note below. The separate Git checkpoint taken before each non-plan Claude run is wired and does work.
 - **The path traversal and symlink-escape guard** (`projects.PathGuard.Resolve`) has no caller. No endpoint currently accepts a project-relative path, so registration-time canonicalization is the containment that actually runs. The guard is ready for the first endpoint that needs it.
 - **Secret redaction** runs only in the diagnostic-bundle writer. Application logs and stored run transcripts are not redacted.
+
+## Recently wired, with a caveat
+
+- **Task dependencies** are now created (`POST /api/v1/projects/{id}/tasks` accepts a `dependencies` field) and validated as a DAG (a cycle is rejected with 400), but **run execution does not check them**: a task can still be started while a task it depends on is unfinished. Treat the dependency graph as documentation and cycle prevention today, not as a gate.
+- **The per-run diff panel** (`GET /api/v1/runs/{id}/diff`) shows an empty "no changes" state, not an error, for a project that isn't a Git repository of its own — there is nothing wrong, there is just nothing to diff.
+- **Project memory** (`internal/memory`) now writes one entry per completed run and surfaces up to five relevant past entries into the next run's system prompt. This is intentionally minimal: the entry is the run's own prompt text, not a summary of what the agent actually did or decided, and there is no UI to browse, edit, or delete a project's memory yet.
 
 ## Operational limitations
 
@@ -30,7 +29,7 @@ These packages are written and covered by unit tests, but nothing in the API or 
 - The portable project archive contains metadata, agents, and tasks. It does not copy source and requires an existing root on import.
 - The macOS package is unsigned until a maintainer supplies Apple signing/notarization credentials. The Windows package is likewise an unsigned development build.
 - Windows Credential Manager and macOS Keychain are adapter boundaries in v1; Claude authentication remains owned by Claude Code, so no Anthropic token is stored.
-- Asset quarantine state and review contracts are implemented, while automated Marketplace insertion/playtest requires a live Studio MCP session.
+- There is no asset quarantine, scanning, or Marketplace automation of any kind; automated Marketplace insertion/playtest would in any case require a live Studio MCP session.
 - Detailed run-event retention is schema-ready but currently relies on manual database maintenance; no automatic pruning is enabled in this release.
 
 ---
@@ -50,5 +49,5 @@ These packages are written and covered by unit tests, but nothing in the API or 
 - Portable archive содержит metadata, agents и tasks. Он не копирует исходники и при импорте требует существующий root.
 - Пакет macOS не подписан, пока мейнтейнер не предоставит данные Apple для signing/notarization. Windows-пакет также является неподписанной development-сборкой.
 - Windows Credential Manager и macOS Keychain — границы адаптеров v1; auth Claude остаётся у Claude Code, поэтому токен Anthropic не хранится.
-- Состояния asset quarantine и review contracts реализованы, но автоматическая вставка Marketplace/playtest требует живой Studio MCP session.
+- Карантина ассетов, сканирования или автоматизации Marketplace в продукте нет; автоматическая вставка Marketplace/playtest в любом случае потребовала бы живой Studio MCP session.
 - Политика хранения подробных run events подготовлена схемой, но сейчас зависит от ручного обслуживания базы; автоматического удаления в этом релизе нет.

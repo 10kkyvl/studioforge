@@ -232,10 +232,12 @@ could reach anything StudioForge or its subprocesses can reach.
 - **`--max-turns` does not exist in current Claude Code.** StudioForge's capability probe drops the
   flag when `claude --help` does not advertise it, so an agent's configured max-turns limit does not
   bound a Claude run today — only the budget ceiling (`--max-budget-usd`) does.
-- The **Decisions** mechanism (`resolveDecision` endpoint, `DecisionsView` in the UI) exists end to
-  end, but nothing in a live run creates a decision — only the `--mock` demo seed inserts one.
-  **Do not rely on Decisions as a safety gate**; no code path today pauses a real run for operator
-  approval before a "dangerous" action.
+- **There is no operator-approval gate before a "dangerous" action.** A `Decision` record type,
+  resolve endpoint, and review UI existed early in the alpha but were removed — they never had a live
+  producer, and the interactive-question feature (`studioforge-question`, see the README) covers the
+  one case that mechanism was meant for: an agent pausing mid-run for the operator's input. Neither
+  that feature nor anything else in this release pauses a run for approval before an edit, a
+  destructive command, or a publish.
 - `internal/diagnostics` (the `doctor`/bundle code path) has no automated test coverage in this
   release; its output is not unverified in the sense of being wrong, but it has not been exercised by
   CI the way most of the rest of the daemon has.

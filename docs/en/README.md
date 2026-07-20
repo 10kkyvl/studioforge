@@ -57,7 +57,7 @@ Update Roblox Studio, open **Assistant → … → Manage MCP Servers**, and ena
 
 StudioForge discovers actual MCP tools and fails clearly when a required capability is absent. Studio access is fail-closed: a run is granted Studio access only when exactly one Studio instance is open. Claude Code runs its own MCP client, so StudioForge cannot pin an instance on the agent's connection from outside, and the official launcher accepts no instance-selection argument — with several Studios open, access is refused rather than guessed, and the run continues without Studio. The **Studio sessions** view and its bind action exist in the UI, but in this alpha real open Studio instances are not discovered into that view; its rows are demo data only. One instance is an exclusive resource for modifying/playtest operations.
 
-**Not implemented in this alpha** (see [Known Limitations](../KNOWN_LIMITATIONS.md)): the intended design is a playtest contract of select instance → read state → start → simulate input → collect console/screenshots → stop → structured result → bug tasks, with production publishing always requiring a Decision. `prompts.PlaytestResult` is defined in code but nothing constructs or parses it; StudioForge does not automate playtesting or capture screenshots, and no live run produces a Decision.
+**Not implemented in this alpha** (see [Known Limitations](../KNOWN_LIMITATIONS.md)): the intended design is a playtest contract of select instance → read state → start → simulate input → collect console/screenshots → stop → structured result → bug tasks. StudioForge does not automate playtesting or capture screenshots on its own today.
 
 ## Rojo
 
@@ -81,14 +81,13 @@ Demo projects have separate orchestrator, builder, and verifier agents. Provider
 
 The scheduler is round-robin across project queues. Different projects can hold writer leases simultaneously. A project has one writer by default; same-project writers wait on `project:<id>:write`. Resources are sorted and acquired atomically to prevent deadlock. Provider/model/global/project ceilings are checked before dispatch. Events are persisted before SSE publication.
 
-Pause and resume are cooperative at event boundaries. Cancel terminates the provider handle/process tree. Runs active during daemon failure become `interrupted`; restart creates a new auditable run. Histories, agents, tasks, usage, and budgets are filtered by `project_id`. (A project-scoped memory store exists in code — SQLite full-text search with Put/Search — but has zero callers outside tests in this alpha; no run reads or writes it.)
+Pause and resume are cooperative at event boundaries. Cancel terminates the provider handle/process tree. Runs active during daemon failure become `interrupted`; restart creates a new auditable run. Histories, agents, tasks, usage, and budgets are filtered by `project_id`. (A project-scoped memory store — SQLite full-text search with Put/Search — now writes one entry per completed run and surfaces up to five relevant past entries into the next run's system prompt; it is a minimal wiring, not a summarized or curated memory.)
 
 ## Permissions and safety
 
 - Keep the default loopback listener. `--unsafe-host` is an explicit escape hatch, not remote access hardening.
-- **Designed but not implemented in this alpha:** a Decision approval gate before production publish, destructive file changes, force Git, or Marketplace scripts. The `resolveDecision` endpoint and Decisions view exist, but nothing in a live run creates a Decision to approve — only the mock demo seed inserts sample rows.
-- **Designed but not implemented in this alpha:** an asset quarantine lifecycle — assets would start `unreviewed`, enter `quarantined`, receive script/style review, then become `approved`, `needs_cleanup`, or `rejected`. The status-transition validator is implemented but has no caller, and the Assets view is an empty placeholder with no API call.
-- **Designed but not implemented in this alpha:** Git rollback to a `studioforge/rollback-<timestamp>` branch at a verified commit, never force-resetting or removing untracked files. `internal/gitops` (`Status`, `Diff`, `SafeRollback`, `Tag`) is implemented and tested, but no API endpoint exposes it. (StudioForge does auto-commit a Git checkpoint before every non-plan Claude run, so the operator has something to revert to manually.)
+- **There is no operator-approval gate before a dangerous action** — a `Decision` record type, resolve endpoint, and review UI existed early in the alpha but were removed for having no live producer; nothing replaced it as a safety gate. The interactive-question feature (`studioforge-question`) covers an agent pausing mid-run for input, not an approval gate before a destructive action.
+- **Designed but not implemented in this alpha:** Git rollback to a `studioforge/rollback-<timestamp>` branch at a verified commit, never force-resetting or removing untracked files. `internal/gitops` (`SafeRollback`, `Tag`) is implemented and tested, but no API endpoint exposes them; `Status` and `DiffHead` are wired — the chat view shows a completed run's diff against its checkpoint commit. (StudioForge does auto-commit a Git checkpoint before every non-plan Claude run, so the operator has something to revert to manually.)
 - Canonical path and symlink checks prevent adapters from escaping registered roots.
 
 ## Backups, export, and import
@@ -101,7 +100,7 @@ studioforge import --file project.zip
 studioforge import --file project.zip --apply --path C:\existing\project
 ```
 
-Portable export contains project metadata, agents, and tasks—not source. (Task dependency graphs are stored in the schema, but no API can create dependencies between tasks in this alpha — only the built-in mock demo seeds them.) Import always previews missing paths and conflicts before `--apply`.
+Portable export contains project metadata, agents, and tasks—not source. Task dependencies (create a task with a `dependencies` field naming other task IDs in the project; a cycle is rejected) are included with the tasks they belong to, though run execution does not yet check whether a task's dependencies are finished. Import always previews missing paths and conflicts before `--apply`.
 
 ## Troubleshooting
 

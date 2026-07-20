@@ -59,7 +59,7 @@ StudioForge читает `claude --help` и добавляет только ре
 
 StudioForge получает список инструментов через capability discovery. Доступ к Studio выдаётся run'у только когда открыт ровно один экземпляр Studio: Claude Code использует собственный MCP-клиент, поэтому StudioForge не может закрепить instance на чужом соединении, а официальный launcher не принимает аргумент выбора instance. При нескольких открытых Studio доступ не выдаётся, а run продолжается без Studio. Экран **Сессии Studio** и его bind-действие существуют в UI, но в этой альфа-версии реальные открытые instances Studio в него не попадают — его строки это demo-данные. Изменяющие/playtest jobs держат эксклюзивный resource `studio:<id>`.
 
-**Не реализовано в этой альфа-версии** (см. [Known Limitations](../KNOWN_LIMITATIONS.md)): по замыслу playtest contract — выбрать instance → проверить state → start → simulated input → console/screenshots → stop → structured result → bug tasks, а production publish должен требовать Decision. Структура `prompts.PlaytestResult` определена в коде, но нигде не создаётся и не парсится; StudioForge не автоматизирует playtest и не делает скриншоты сама, а Decision в живом run не создаётся ничем.
+**Не реализовано в этой альфа-версии** (см. [Known Limitations](../KNOWN_LIMITATIONS.md)): по замыслу playtest contract — выбрать instance → проверить state → start → simulated input → console/screenshots → stop → structured result → bug tasks. StudioForge не автоматизирует playtest и не делает скриншоты сама уже сегодня.
 
 ## Rojo
 
@@ -73,14 +73,13 @@ Project source остаётся в пользовательском катало
 
 Scheduler справедливо обходит project queues. Разные проекты могут писать одновременно, а второй writer одного проекта ждёт `project:<id>:write`. Resources сортируются и захватываются атомарно. Проверяются global/project/provider/model limits и budget. Events сначала сохраняются в SQLite, затем отправляются через SSE.
 
-Pause/resume выполняются между событиями; cancel завершает provider/process tree. После аварии активные runs становятся `interrupted` и доступны для restart. Все histories, tasks, agents и budgets изолированы по `project_id`. (Project-scoped memory store — SQLite FTS5 с Put/Search — существует в коде, но в этой альфа-версии не имеет ни одного вызова вне тестов: ни один run её не читает и не пишет.)
+Pause/resume выполняются между событиями; cancel завершает provider/process tree. После аварии активные runs становятся `interrupted` и доступны для restart. Все histories, tasks, agents и budgets изолированы по `project_id`. (Project-scoped memory store — SQLite FTS5 с Put/Search — теперь пишет одну запись на каждый завершённый run и подставляет до пяти релевантных прошлых записей в system prompt следующего run'а в этом проекте; это минимальное подключение, а не суммаризированная или курируемая память.)
 
 ## Безопасность и permissions
 
 - Оставляйте loopback listener; `--unsafe-host` не превращает daemon в безопасный remote service.
-- **Задумано, но не реализовано в этой альфа-версии:** Decision-гейт перед publish, destructive changes, force Git или Marketplace scripts. Endpoint `resolveDecision` и экран Decisions существуют, но ни один живой run не создаёт Decision для одобрения — соответствующие строки вставляет только mock demo seed.
-- **Задумано, но не реализовано в этой альфа-версии:** жизненный цикл карантина ассетов — assets должны проходить `unreviewed → quarantined → review → approved/needs_cleanup/rejected`. Валидатор переходов статуса реализован, но не имеет вызывающего кода, а экран Assets — пустой placeholder без обращений к API.
-- **Задумано, но не реализовано в этой альфа-версии:** Git rollback на branch `studioforge/rollback-<timestamp>` на проверенном commit, без force-reset и без удаления untracked files. `internal/gitops` (`Status`, `Diff`, `SafeRollback`, `Tag`) реализован и покрыт тестами, но не открыт ни одним API endpoint. (StudioForge отдельно делает auto-commit Git checkpoint перед каждым не-plan run Claude, так что откат возможен вручную.)
+- **В продукте нет гейта одобрения оператором перед опасным действием.** Тип записи `Decision`, endpoint resolve и экран review существовали в ранней альфа-версии, но были удалены — у них не было ни одного живого producer'а, и ничего не заняло их место как safety gate. Функция interactive-question (`studioforge-question`) закрывает случай, когда агент останавливается посреди run'а за вводом оператора, но не является гейтом одобрения перед деструктивным действием.
+- **Задумано, но не реализовано в этой альфа-версии:** Git rollback на branch `studioforge/rollback-<timestamp>` на проверенном commit, без force-reset и без удаления untracked files. `internal/gitops` (`SafeRollback`, `Tag`) реализован и покрыт тестами, но не открыт ни одним API endpoint; `Status` и `DiffHead` уже подключены — экран чата показывает диф завершённого run'а относительно его checkpoint commit. (StudioForge отдельно делает auto-commit Git checkpoint перед каждым не-plan run Claude, так что откат возможен вручную.)
 - Canonical/symlink checks не позволяют выйти за зарегистрированный root.
 
 ## Backup, export и import
@@ -93,7 +92,7 @@ studioforge import --file project.zip
 studioforge import --file project.zip --apply --path C:\existing\project
 ```
 
-Portable archive содержит metadata, agents и tasks, но не копирует project source. Import сначала показывает preview и конфликты.
+Portable archive содержит metadata, agents и tasks, но не копирует project source. Зависимости задач (создайте задачу с полем `dependencies`, перечисляющим ID других задач проекта; цикл будет отклонён) входят в состав своих задач, хотя выполнение run'а пока не проверяет, завершены ли зависимости задачи. Import сначала показывает preview и конфликты.
 
 ## Решение проблем
 

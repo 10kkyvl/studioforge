@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ## [Unreleased]
 
+## [0.2.0-alpha.1] - 2026-07-20
+
 ### Added
 
 - Agents can now ask the operator a closed, multiple-choice question mid-conversation instead of
@@ -31,9 +33,49 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   MCP server inside Roblox Studio's own Assistant menu now sees that on the dashboard, with the exact
   steps to fix it, instead of only discovering it indirectly when an agent run silently proceeds
   without Studio access.
+- A completed run now shows a **Changed files** panel in chat with the working tree's diff against
+  the pre-run checkpoint commit (`GET /api/v1/runs/{id}/diff`, backed by the previously-unwired
+  `internal/gitops` package). The panel is empty rather than an error for a project with no Git repo
+  of its own.
+- Task creation now accepts a `dependencies` field naming other tasks in the same project. The task
+  graph is validated for cycles before a task is created (a cycle is rejected with 400), and the
+  Tasks view offers a checkbox list of the project's existing tasks when creating a new one. Run
+  execution does not yet check whether a task's dependencies are done — see the roadmap.
+- Every run that completes now leaves a short project-memory entry (its own prompt, truncated), and
+  the next run in that project surfaces up to five relevant past entries as a "Relevant project
+  memory" block in its system prompt. This wires up the previously-unwired `internal/memory` store;
+  it is a small addition to the existing simple prompt path, not the larger structured template
+  mentioned under Removed below.
+- `internal/diagnostics` (the `studioforge doctor` and diagnostic-bundle code path) now has unit test
+  coverage — `Doctor.Run` across present/absent tool paths and `Doctor.ExportBundle`'s secret
+  redaction — where previously it had none.
+
+### Removed
+
+- The Decisions feature — the `Decision` record, the `resolveDecision` endpoint, and the Decisions
+  view — is gone. It never had a live producer in any release, and it fully duplicated the live
+  `studioforge-question` / `waiting_decision` interactive-question feature (unaffected by this
+  change; that feature only ever shared a word with Decisions, not any code). A new migration
+  (`006_drop_decisions.sql`) drops the `decisions` table.
+- The unused structured prompt template (`internal/prompts.Assemble`/`Input`) and the dead
+  `DecisionRequest`/`PlaytestResult`/`ReviewResult` struct definitions it carried are deleted. The
+  system prompt every run actually receives is unchanged: `prompts.ForRun`, now also carrying the
+  memory block described above.
+- The asset quarantine validator (`internal/roblox/assets`) and the empty Assets view placeholder
+  are deleted; no asset scanning, upload handling, or Marketplace automation exists or is planned
+  near-term.
+- The unused Studio instance/binding tracker (`internal/roblox/studio.Service`) is deleted. It had
+  no live caller — the Studio-bind endpoint already used the database store directly. `studio.Opener`
+  (used to actually open a project in Studio) is unaffected.
 
 ### Fixed
 
+- `GET /api/v1/runs/{id}/diff` (see Added) no longer leaks raw `git` CLI output into the Changed
+  files panel for a project with no Git repository of its own. `git diff HEAD` outside a repo prints
+  a large "not a git repository... usage: git diff --no-index..." block to stderr instead of a clean
+  error, and that text was surfacing verbatim in the panel. The diff endpoint now checks
+  `rev-parse --git-dir` first — the same pre-check `internal/gitcheckpoint.Checkpoint` already used —
+  and returns an empty diff with no error when the project isn't a Git repo.
 - Chat no longer retires a run's progress strip while the agent is still working. The provider
   streams its own JSON verbatim under the `status` event type, so a sub-agent finishing
   (`subtype: "task_notification"`, `status: "completed"`) read as the whole run ending. Long
@@ -146,6 +188,40 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   closing the handle still open on it rather than after — fragile ordering that risked the delete
   failing while the file was still held open. Export now closes the file exactly once, and always
   before removing it on a failure.
+- The chat progress bar and live message updates no longer disappear after switching away from the
+  Chat tab and back. `ChatView`'s tracking of an in-flight run was purely local component state, so it
+  was lost whenever the component remounted, leaving no visible sign that a run was still executing.
+  It is now reconciled against the server's run list on thread load instead.
+- Archiving a project — the app's only "delete" action, there is no hard-delete endpoint — no longer
+  leaves it fully reachable. The top bar project switcher and the default project selection previously
+  drew from the unfiltered project list, so an archived project stayed selectable and everything scoped
+  to it, including its chats, remained fully usable. Both now exclude archived projects, and archiving
+  the currently selected project automatically falls back to another active one.
+- The Codex adapter silently dropped the run's entire system prompt — the standing house rules
+  (including "answer in the operator's language"), the project's context, and the agent's own persona
+  never reached the Codex CLI at all, only the raw user message did. `codex exec` has no
+  `--append-system-prompt` equivalent, so Codex-backed agents had no language instruction whatsoever,
+  which is why an operator writing in Russian could still get an English reply once a Codex-backed run
+  was involved. The system prompt is now folded into the prompt text itself and re-sent on every turn,
+  including resumed ones, mirroring how the Claude adapter already re-sends `--append-system-prompt` on
+  every call so a long session keeps being reminded rather than drifting once the operator stops
+  repeating themselves.
+- The house rules' "Using the Studio MCP tools" section told every agent to reach for
+  `generate_mesh`/`search_asset`/`wait_job_finished`/etc. unconditionally, but those tools are only ever
+  wired up for Claude runs with a workspace-write-or-higher permission profile — a Codex run or a
+  read-only agent (a real, supported configuration) following that guidance would have every such call
+  denied with no warning that this was expected. The section now says so upfront, and `start_stop_play`
+  — previously grouped with the always-available `screen_capture`/`get_console_output` confirmation
+  tools — is now called out as needing the same non-read-only profile as the rest of the section, since
+  it changes play state rather than just observing it.
+- The language rule in house rules only judged "the operator's most recent message" as a whole, so a
+  Russian question that happened to paste a Roblox error log, stack trace, or script snippet — routine
+  in this kind of chat — could read as a language switch and pull the whole reply into English, even on
+  the Claude adapter, which already received the rule every turn. The rule is now explicit that only the
+  operator's own prose sets the reply language; pasted code, logs, console output and other quoted
+  English inside their message is data being shown, not a language switch, and the reply stays in the
+  operator's language even when everything else being read and acted on (files, tool output, docs) is in
+  English.
 
 ## [0.1.0-alpha.1] - Unreleased
 

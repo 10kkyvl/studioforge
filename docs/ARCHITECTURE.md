@@ -56,10 +56,10 @@ plugin loading or dynamic linking.
 
 - `internal/database` — SQLite connection setup (WAL, busy timeout, foreign keys), migration
   application, integrity checks, backup (`VACUUM INTO`), and `Store`, the query layer for projects,
-  agents, tasks, runs, run events, threads, settings, decisions, and Studio session bindings.
+  agents, tasks, runs, run events, threads, settings, and Studio session bindings.
 - `internal/migrations` — embedded, ordered, immutable `.sql` migration files (`//go:embed sql/*.sql`).
 - `internal/models` — the shared DTOs (`Project`, `Agent`, `Task`, `Run`, `RunEvent`, `ChatThread`,
-  `Decision`, `StudioSession`, `Diagnostics`, …) used across the database, API, and scheduler layers.
+  `StudioSession`, `Diagnostics`, …) used across the database, API, and scheduler layers.
 
 ### Providers (AI coding tools)
 
@@ -102,6 +102,11 @@ plugin loading or dynamic linking.
 
 - `internal/gitcheckpoint` — `Checkpoint(root, label)`, a best-effort `git add -A && git commit` run
   before every non-plan Claude run, called directly from `internal/api/api.go`.
+- `internal/gitops` — `Client.DiffHead(ctx, root)` runs `git diff HEAD` for a project (returning an
+  empty diff, not an error, when `root` isn't a Git repo), wired through a `Differ` interface declared
+  in `internal/api` (`GET /api/v1/runs/{id}/diff`, handler in `internal/api/diff.go`) and a thin
+  adapter over `gitops.New()` built in `internal/app`. `Status`, `SafeRollback`, and `Tag` on the same
+  `Client` remain unused — see "Implemented but not yet wired".
 
 ### Project state and prompts
 
@@ -109,10 +114,20 @@ plugin loading or dynamic linking.
   resolved path outside a registered project root), `Fingerprint`, `Scaffold` (writes a new project's
   Rojo skeleton), and `LoadContext`, which reads exactly two files verbatim —
   `.agent/constitution.yaml` and `.agent/requirements.md` — for inclusion in the system prompt.
-- `internal/prompts` — `Assemble`/`Input`, a structured prompt-section template (safety policy,
-  constitution, requirements, role, skills, memory, blackboard, task, contracts, acceptance criteria,
-  permissions, expected schema) with built-in redaction. See "Implemented but not yet wired": this
-  package has no caller outside its own test.
+- `internal/memory` — a SQLite FTS5-backed store (`Put`/`Search`, with a `LIKE` fallback when FTS5 is
+  unavailable), wired minimally: `internal/scheduler.Manager` writes one `Entry` per run (its own
+  prompt, truncated) on the sole `running → completed` transition, and `internal/api.createRun`
+  searches it (limit 5) before assembling the system prompt. Both sides are behind a `Memory`
+  interface declared in `internal/api`, keeping `internal/api` free of a direct import of
+  `internal/memory`'s concrete `*Store`.
+- `internal/prompts` — `HouseRules` and `ForRun` (in `houserules.go`) build the system prompt every
+  run actually receives: the standing house rules, the project's static `.agent/*` context, the
+  agent's own stored system prompt, and now a "Relevant project memory" block when
+  `internal/memory.Store.Search` returns results for the project (see the memory bullet in the
+  component map below). The earlier structured, multi-section `Assemble`/`Input` template (with its
+  own memory/blackboard/playtest/review sections) was deleted along with its dead
+  `DecisionRequest`/`PlaytestResult`/`ReviewResult` result types — it never had a caller outside its
+  own test.
 
 ### Cross-cutting
 
@@ -136,31 +151,10 @@ These packages are implemented, exercised by their own unit tests, and reachable
 code in `internal/app` or `internal/api` calls them from a live request. A user running StudioForge
 cannot reach the behavior below through the UI or CLI, even though the code exists and passes its tests.
 
-- **`internal/memory`** — a SQLite FTS5-backed store (`Put`/`Search`, with a `LIKE` fallback when FTS5 is
-  unavailable). `prompts.Input.Memory` is never populated by a live run; no run writes to or reads from
-  it.
-- **`internal/prompts`** — `Assemble`'s structured, multi-section prompt template is never invoked outside
-  `assembly_test.go`. The system prompt an agent actually receives comes from the same package's much
-  simpler `ForRun`, called from `internal/api/api.go`: the standing `HouseRules`, the project's static
-  context (`projects.LoadContext`), then the agent's stored `SystemPrompt` field.
-- **`internal/tasks`** (`dag.go`) — `ValidateDAG` and its cycle detection are called only from
-  `dag_test.go`. The `POST /api/v1/projects/{id}/tasks` handler accepts no `dependencies` field, so a
-  real project cannot create a task dependency; `task_dependencies` rows exist only from the `--mock`
-  demo seed.
-- **`internal/gitops`** — `Status`, `Diff`, `SafeRollback`, and `Tag` are implemented and tested, but no
-  HTTP endpoint exposes them. (This is a separate package from `internal/gitcheckpoint`, which *is*
-  wired — see the component map above.)
-- **`internal/roblox/assets`** — a 22-line quarantine status-transition validator with no caller anywhere
-  in the running product. `AssetsView.svelte` in the frontend is a bare empty state that makes no API
-  call. There is no asset scanning, upload, or Marketplace automation code at all.
-- **`internal/roblox/studio/service.go`** (`Service`) — an instance/binding tracker with no caller outside
-  its own test. The live `POST /api/v1/studios/{id}/bind` handler calls `database.Store.BindStudio`
-  directly; it does not use this type.
-- **Decisions** — `resolveDecision` and the `DecisionsView` UI exist and work against whatever
-  `decisions` rows are present, but nothing in a live run creates one. Only the `--mock` demo seed inserts
-  `decisions` rows.
-- **`prompts.PlaytestResult` and `prompts.ReviewResult`** — struct definitions with no code that
-  constructs or parses them.
+- **`internal/gitops`** — `Status`, `SafeRollback`, and `Tag` are implemented and tested, but no HTTP
+  endpoint exposes them. `DiffHead`, on the same `Client`, is now wired — see the Git section of the
+  component map above. (`internal/gitops` is a separate package from `internal/gitcheckpoint`, which
+  has always been wired.)
 - **Real Studio instance discovery** — the Studio Sessions view is not populated from a live launcher
   probe; its rows are `--mock` demo data only.
 
@@ -262,10 +256,11 @@ agents cannot reach Studio through this mechanism at all.
    prompt via `prompts.ForRun`: the standing `prompts.HouseRules` (answer in the operator's language;
    the subject is the Roblox project, never StudioForge itself; prefer the Studio MCP tools over
    hand-written Luau; and the `studioforge-question` convention for asking a closed question), then the
-   project's two static `.agent/*` context files (`projects.LoadContext`) if present, then the agent's
-   stored `SystemPrompt`. Subagents forwarded to an orchestrator carry the same house rules. (The
-   richer, multi-section `internal/prompts.Assemble` template exists in the codebase but is not called
-   from this path — see "Implemented but not yet wired".)
+   project's two static `.agent/*` context files (`projects.LoadContext`) if present, then a
+   "Relevant project memory" block when `internal/memory.Store.Search` (limit 5, by project and the
+   incoming prompt text) returns anything for this project, then the agent's stored `SystemPrompt`.
+   Subagents forwarded to an orchestrator carry the same house rules. A memory-search failure is
+   logged and non-fatal — the run proceeds without the block.
 6. **Git checkpoint** — for Claude runs not in `plan` mode, `gitcheckpoint.Checkpoint` runs
    `git add -A && git commit` in the project root before the provider starts, so the operator has a
    revert point. This is best-effort: a non-git project or an empty diff is a silent no-op and never fails
@@ -326,8 +321,7 @@ same session once the operator answers.
   editing an already-released one.
 - **FTS5 detection with `LIKE` fallback**: `database.enableFTS` attempts to create a `memory_fts` virtual
   table (`USING fts5(...)`); if that fails (the SQLite build lacks FTS5), `db.FTS5` is `false` and
-  `internal/memory.Store.Search` falls back to a `LIKE '%...%'` query instead. (As noted above, nothing in
-  the running product currently calls into `internal/memory`.)
+  `internal/memory.Store.Search` falls back to a `LIKE '%...%'` query instead.
 - **Integrity and backups**: `DB.Integrity` runs `PRAGMA integrity_check` and `PRAGMA foreign_key_check`;
   `DB.Backup` uses `VACUUM INTO` to a target path that must not already exist. `internal/app` runs an
   automatic backup at daemon start if the last one is more than 24 hours old, and `POST /api/v1/backups`

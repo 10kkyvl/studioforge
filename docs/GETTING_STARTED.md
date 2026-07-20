@@ -140,11 +140,12 @@ Studio, or Rojo installed. Each demo project gets its own on-disk workspace unde
 agents (orchestrator/engineer/QA), a budget, and a completed sample run with a usage record.
 
 **Be explicit with yourself about what is fake here.** The Studio Sessions rows shown for the demo
-projects, the one pending Decision, and the task dependency links between the demo tasks are all
-seeded rows inserted once by `--mock` — they are not produced by a live run, a real Studio connection,
-or a real dependency graph feature. Outside of `--mock`, nothing in the product currently creates
-Studio session rows, decisions, or task dependencies from a live run (see
-[Known Limitations](KNOWN_LIMITATIONS.md)).
+projects, and the task dependency links between the demo tasks, are seeded rows inserted once by
+`--mock` — they are not produced by a live Studio connection. Task dependencies are a real, live
+feature now (create a task with a `dependencies` field and it is persisted and cycle-checked — see
+[Known Limitations](KNOWN_LIMITATIONS.md) for the one caveat), so on a real project you can create
+your own instead of only seeing the demo ones. Outside of `--mock`, nothing in the product currently
+creates Studio session rows from a live run.
 
 `--safe-mode` is the complementary flag: it disables AI provider workers, MCP, and Rojo while keeping
 data, backups, exports, and diagnostics available — useful for inspecting or maintaining a data
@@ -318,9 +319,12 @@ Adapt the content freely — these are illustrative, not a schema StudioForge va
   fail-closed rule above. Close down to a single relevant instance, or check
   [Troubleshooting](TROUBLESHOOTING.md) for how to confirm which instance holds which project's place.
 - **Expecting a Codex agent to reach Roblox Studio.** It cannot; Studio access is Claude-only.
-- **Expecting memory, assets, decisions, or the task dependency DAG to do something in a live run.**
-  These packages exist and are unit-tested in the codebase, but none of them has a caller wired into a
-  real run or the API today — see [Known Limitations](KNOWN_LIMITATIONS.md) for the full list.
+- **Expecting a task's dependencies to block it from running.** Dependencies are persisted and
+  validated for cycles, but a run does not check whether a task's dependencies are finished before
+  starting — see [Known Limitations](KNOWN_LIMITATIONS.md).
+- **Expecting git rollback through the UI.** `internal/gitops.SafeRollback`/`Tag` exist and are
+  tested, but no endpoint exposes them; only the diff panel (`Status`/`DiffHead`) is wired. Use `git`
+  directly against the checkpoint commit instead.
 - **Binding to a non-loopback host without understanding `--unsafe-host`.** StudioForge adds no remote
   authentication of its own; binding beyond loopback is an explicit escape hatch, not a hardening
   feature, and should not be exposed to an untrusted network.

@@ -63,16 +63,15 @@ shows one already-`completed` run in its history with a small mock cost (`$0.28`
 
 **This is seeded demo data, not something StudioForge discovered live:**
 
-- The **Decisions** view shows one pending item, "Approve economy migration," under Harbor Tycoon.
-  Nothing in a real run creates a Decision today (see [docs/SECURITY.md](SECURITY.md)); this row
-  exists only because the mock seed inserts it.
 - The **Studio Sessions** view shows two rows ("Studio — Skyline Obby," active; "Studio — Neon
   Arena," inactive). These are not real Roblox Studio instances StudioForge found — real Studio
   discovery into that view is not implemented; the rows are seed data marked `mock: true` in the
   database.
 - The task list's dependency arrows (build waits on design, review waits on build) come from the
-  same seed. There is no UI to create a task dependency on a real project — the `task_dependencies`
-  table is currently written only by this demo seed.
+  same seed, but task dependencies are a real, live feature now: the **Tasks** view lets you pick
+  dependencies when creating a task on any project, and the API rejects a dependency cycle. What is
+  still missing is enforcement — a run does not check whether a task's dependencies are finished
+  before starting (see [Known Limitations](KNOWN_LIMITATIONS.md)).
 
 ### Optional: trigger one live run
 
@@ -244,19 +243,16 @@ scripted.
 
 Both tracks stay inside what is actually wired end to end. They intentionally do **not** exercise:
 
-- **Project memory** — a real SQLite/FTS5-backed store exists (`internal/memory`) but nothing in a
-  live run writes to or reads from it yet.
-- **Task dependency graphs** — cycle validation exists (`internal/tasks/dag.go`) but no API accepts a
-  `dependencies` field when creating a real task; only the mock seed writes dependency rows.
-- **Asset quarantine** — a status-transition validator exists (`internal/roblox/assets`) with no
-  caller and no UI wired to it.
-- **Git rollback through the UI** — `internal/gitops` implements status/diff/safe-rollback/tag, but
-  no HTTP endpoint exposes it; use the `git` commands in step 9 instead.
+- **Git rollback through the UI** — `internal/gitops.SafeRollback`/`Tag` are implemented and tested,
+  but no HTTP endpoint exposes them; use the `git` commands in step 9 instead. (`Status`/`DiffHead`
+  are wired, behind the chat view's Changed files panel.)
 - **Rojo live-sync sessions** — `rojo serve` session management (`internal/rojo`) is implemented and
   unit-tested, but no endpoint starts, stops, or queries one; only Rojo *build* (used by **Open in
   Studio**) is reachable today.
 - **Automated playtest validation** — there is no wired path that starts Play mode, reads the
   console, and produces a structured pass/fail result on its own.
+- **Run execution respecting task dependencies** — dependencies can be created and are validated for
+  cycles, but a run does not check whether a task's dependencies are done before starting.
 
 See [Known Limitations](KNOWN_LIMITATIONS.md) for the complete list.
 

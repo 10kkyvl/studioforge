@@ -73,9 +73,12 @@ The project is an alpha as a whole. The table below describes individual capabil
 | Static project context | Reads `.agent/constitution.yaml` and `.agent/requirements.md` verbatim into the system prompt |
 | Image attachments | Paste a screenshot into the chat composer; it uploads and is folded into the prompt as a file path the agent can read |
 | Run pace indicator | `GET /api/v1/projects/{id}/pace` averages a project's last ~20 completed runs into a typical duration; the chat progress bar scales against it |
-| Diagnostics | `studioforge doctor`, redacted `--bundle` archive |
+| Diagnostics | `studioforge doctor`, redacted `--bundle` archive, unit-tested |
 | Deterministic demo | `--mock` runs three seeded projects with no Claude, Studio, or Rojo |
 | Packaging | Windows amd64 zip, macOS arm64 `.app` (both unsigned development builds) |
+| Per-run diff | `GET /api/v1/runs/{id}/diff` shows the working tree's diff against the pre-run checkpoint commit in a chat panel; empty (not an error) for a project with no Git repo |
+| Task dependencies | Task creation accepts a `dependencies` field, validated as a DAG (a cycle is rejected); not yet enforced at run time — a task can still be run before its dependencies finish |
+| Project memory | Each completed run leaves a short memory entry (its own prompt); the next run in that project sees up to five relevant past entries in its system prompt |
 
 ### Experimental — implemented, but not verified against real external software by default
 
@@ -91,12 +94,7 @@ These packages are implemented and unit-tested but have no caller in the API or 
 
 | Package | State |
 | --- | --- |
-| `internal/memory` | SQLite FTS5-backed store with no caller; no run reads or writes memory |
-| `internal/tasks` DAG validation | No API accepts task dependencies; only the demo seed creates them |
-| `internal/gitops` | `Status`, `Diff`, `SafeRollback`, `Tag` exposed by no endpoint |
-| `internal/roblox/assets` | Quarantine state validator with no caller; the Assets view is an empty placeholder |
-| Decisions | The `Decision`/`DecisionsView` approve-or-reject UI and resolve endpoint still have no live producer; unrelated, the `waiting_decision` status string is now used by the interactive question feature above |
-| `internal/prompts` template | The structured multi-section prompt template has no caller; the real system prompt is a simpler concatenation |
+| `internal/gitops` — `Status`, `SafeRollback`, `Tag` | Exposed by no endpoint. `DiffHead` is wired (see the feature table above); the other three are not. |
 
 ### Planned — not implemented
 
@@ -171,7 +169,7 @@ To see the interface with no external tools installed at all:
 ./scripts/dev.sh --mock --no-open
 ```
 
-The `--mock` demo seeds three projects. Its Studio Sessions rows, Decisions, and task dependencies are demo data, not live state.
+The `--mock` demo seeds three projects. Its Studio Sessions rows are demo data, not live state; task dependencies can also be created for real on any project now (see Feature status).
 
 ## Installation
 
@@ -254,7 +252,7 @@ See [docs/SECURITY.md](docs/SECURITY.md) for the full model and [SECURITY.md](SE
 
 ## Roadmap
 
-Near-term work is stabilization: wiring or removing the implemented-but-unreachable packages, replacing demo-only Studio Sessions rows with real discovery, giving Decisions a real producer, and adding tests for the diagnostics package. See [docs/ROADMAP.md](docs/ROADMAP.md).
+Near-term work is stabilization: replacing demo-only Studio Sessions rows with real discovery, gating run execution on task-dependency readiness (dependencies are persisted and validated today but not yet enforced), and adding automatic pruning for persisted run events. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Contributing
 

@@ -8,17 +8,15 @@ based on real feedback from people using the alpha, not on a predetermined sched
 Work needed to make what already exists in the repository trustworthy for an alpha user, rather than
 adding new surface area:
 
-- Wire up or deliberately remove each implemented-but-unreachable package instead of leaving it as
-  dead code with no caller: project memory (`internal/memory`), the task dependency DAG
-  (`internal/tasks/dag.go`), git status/diff/rollback (`internal/gitops`), asset quarantine
-  (`internal/roblox/assets`), and Rojo live-sync sessions (`internal/rojo` session manager, as
-  opposed to the build-and-open path that is already wired).
+- Gate run execution on task-dependency readiness. Dependencies are now persisted and validated as a
+  DAG at creation time (`internal/tasks/dag.go`), but nothing yet stops a run from starting against a
+  task whose dependencies aren't done.
+- Wire up or deliberately remove the packages still implemented but unreachable: git rollback and tag
+  (`internal/gitops.SafeRollback`/`Tag` — `Status` and `DiffHead` are wired), and Rojo live-sync
+  sessions (`internal/rojo` session manager, as opposed to the build-and-open path that is already
+  wired).
 - Replace the demo-only rows in the Studio Sessions view with real Roblox Studio instance discovery;
   today those rows are seeded only by the mock demo.
-- Give Decisions a real producer. The `resolveDecision` endpoint and `DecisionsView` exist, but no
-  live run currently creates a decision — only the mock demo seed does.
-- Add tests for `internal/diagnostics` (`studioforge doctor` and the diagnostic bundle), which
-  currently has none.
 - Add automatic pruning for persisted run events. Retention is schema-ready today but depends on
   manual database maintenance.
 
@@ -41,8 +39,9 @@ Everything in this section is **RESEARCH**: an idea under consideration, with no
 and no implementation. Listing something here is not a promise it ships, and it may not resemble this
 description if it ever does.
 
-- Persistent project memory as an actual workflow feature that runs write to and read from, built on
-  top of the existing (currently unused) `internal/memory` store.
+- A richer project memory than the minimal version now live: today a run writes its own prompt text
+  and the next run's system prompt gets a handful of relevant past prompts back, with no summarization
+  of what actually happened and no UI to browse or curate what's stored.
 - Visual feedback and screenshot-driven iteration.
 - Automated playtest validation.
 - Multi-agent orchestration beyond the current orchestrator-to-`--agents` delegation that Claude Code
