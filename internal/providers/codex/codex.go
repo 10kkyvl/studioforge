@@ -159,7 +159,15 @@ func buildArgs(req providers.RunRequest, resume string) []string {
 	} else {
 		args = append(args, "--json", "--skip-git-repo-check")
 	}
-	return append(args, req.Prompt)
+	prompt := req.Prompt
+	if req.SystemPrompt != "" {
+		// codex exec has no system/developer-instructions flag (verified against
+		// `codex exec --help`), so the house rules have to ride along inside the
+		// prompt itself, on every turn, or a resumed session drifts once the
+		// operator's own words stop repeating them.
+		prompt = req.SystemPrompt + "\n\n---\n\n" + req.Prompt
+	}
+	return append(args, prompt)
 }
 
 func codexSandbox(permission string) string {

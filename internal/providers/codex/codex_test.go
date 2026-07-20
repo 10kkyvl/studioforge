@@ -71,6 +71,25 @@ func TestBuildArgsAndNormalization(t *testing.T) {
 	}
 }
 
+func TestBuildArgsAppendsSystemPrompt(t *testing.T) {
+	args := buildArgs(providers.RunRequest{WorkingDirectory: "root", Prompt: "prompt", SystemPrompt: "house rules"}, "")
+	want := "house rules\n\n---\n\nprompt"
+	if got := args[len(args)-1]; got != want {
+		t.Fatalf("trailing prompt arg=%q want=%q", got, want)
+	}
+	// A resumed turn must still carry the system prompt: codex exec has no
+	// standing-instructions flag, so dropping it after the first turn would let
+	// a long session drift once the operator's own words stop repeating it.
+	resumedArgs := buildArgs(providers.RunRequest{WorkingDirectory: "root", Prompt: "prompt", SystemPrompt: "house rules"}, "thread-1")
+	if got := resumedArgs[len(resumedArgs)-1]; got != want {
+		t.Fatalf("resumed trailing prompt arg=%q want=%q", got, want)
+	}
+	bareArgs := buildArgs(providers.RunRequest{WorkingDirectory: "root", Prompt: "prompt"}, "")
+	if got := bareArgs[len(bareArgs)-1]; got != "prompt" {
+		t.Fatalf("trailing prompt arg without system prompt=%q want=%q", got, "prompt")
+	}
+}
+
 func TestNormalizeParsesUsage(t *testing.T) {
 	cases := []struct {
 		name string
