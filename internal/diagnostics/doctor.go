@@ -110,12 +110,13 @@ func (d *Doctor) Run(ctx context.Context) models.Diagnostics {
 		report.Dependencies["studioMcp"] = models.Check{Name: "Roblox Studio MCP", Status: "ok", Path: launch.Command, Message: "Official Studio MCP launcher detected"}
 	}
 	testPath := filepath.Join(d.DataDir, "runtime", "doctor-write-test")
-	if err := os.MkdirAll(filepath.Dir(testPath), 0o700); err == nil {
-		err = os.WriteFile(testPath, []byte("ok"), 0o600)
+	writeErr := os.MkdirAll(filepath.Dir(testPath), 0o700)
+	if writeErr == nil {
+		writeErr = os.WriteFile(testPath, []byte("ok"), 0o600)
 		_ = os.Remove(testPath)
 	}
-	if err != nil {
-		report.Checks = append(report.Checks, models.Check{Name: "dataDirectory", Status: "error", Message: err.Error()})
+	if writeErr != nil {
+		report.Checks = append(report.Checks, models.Check{Name: "dataDirectory", Status: "error", Message: writeErr.Error()})
 	} else {
 		report.Checks = append(report.Checks, models.Check{Name: "dataDirectory", Status: "ok", Message: "Data directory is writable"})
 	}
