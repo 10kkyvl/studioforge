@@ -8,36 +8,24 @@ import (
 
 var ErrSecretStoreUnavailable = errors.New("operating-system secret store is unavailable")
 
+// ErrSecretNotFound is returned by a SecretStore.Get when no value is stored
+// for the given key.
+var ErrSecretNotFound = errors.New("secret not found")
+
 type SecretStore interface {
 	Set(context.Context, string, []byte) error
 	Get(context.Context, string) ([]byte, error)
 	Delete(context.Context, string) error
 }
 
-// WindowsCredentialManagerStore and MacOSKeychainStore are explicit adapter
-// boundaries. StudioForge v1 uses Claude Code's own authentication and does not
-// persist Anthropic credentials.
-type WindowsCredentialManagerStore struct{}
-
-func (WindowsCredentialManagerStore) Set(context.Context, string, []byte) error {
-	return ErrSecretStoreUnavailable
+// OpenSystemSecretStore returns a SecretStore backed by the OS credential
+// store (Windows Credential Manager, macOS Keychain). It returns
+// ErrSecretStoreUnavailable on platforms without a supported backend, or when
+// the backend cannot be reached. service scopes the stored entries (e.g. an
+// application name).
+func OpenSystemSecretStore(service string) (SecretStore, error) {
+	return openSystemSecretStore(service)
 }
-func (WindowsCredentialManagerStore) Get(context.Context, string) ([]byte, error) {
-	return nil, ErrSecretStoreUnavailable
-}
-func (WindowsCredentialManagerStore) Delete(context.Context, string) error {
-	return ErrSecretStoreUnavailable
-}
-
-type MacOSKeychainStore struct{}
-
-func (MacOSKeychainStore) Set(context.Context, string, []byte) error {
-	return ErrSecretStoreUnavailable
-}
-func (MacOSKeychainStore) Get(context.Context, string) ([]byte, error) {
-	return nil, ErrSecretStoreUnavailable
-}
-func (MacOSKeychainStore) Delete(context.Context, string) error { return ErrSecretStoreUnavailable }
 
 type MemorySecretStore struct {
 	mu     sync.RWMutex
@@ -58,7 +46,7 @@ func (m *MemorySecretStore) Get(_ context.Context, key string) ([]byte, error) {
 	defer m.mu.RUnlock()
 	v, ok := m.values[key]
 	if !ok {
-		return nil, errors.New("secret not found")
+		return nil, ErrSecretNotFound
 	}
 	return append([]byte(nil), v...), nil
 }
