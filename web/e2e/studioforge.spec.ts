@@ -141,7 +141,10 @@ test('first run, locale, projects, live run, and core navigation', async ({ page
     page.getByRole('heading', { name: 'Agents and integrations', exact: true }),
   ).toBeVisible();
   await page.getByLabel('Global agent concurrency').fill('5');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page
+    .locator('form.integration-settings')
+    .getByRole('button', { name: 'Save', exact: true })
+    .click();
   await expect(page.getByText('Settings saved', { exact: true })).toBeVisible();
   // The chat page must scroll in regions, not as a document. It used to be a
   // fixed-height transcript inside a page taller than the viewport, so reaching

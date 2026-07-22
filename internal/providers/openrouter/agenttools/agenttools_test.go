@@ -230,6 +230,9 @@ func TestApplyPatchCaseInsensitiveMergesSamePath(t *testing.T) {
 	}
 	lowerRelPath := "sub/file.txt"
 	if runtime.GOOS == "linux" {
+		if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(filepath.Join(root, "sub", "file.txt"), []byte("first second"), 0o600); err != nil {
 			t.Fatal(err)
 		}

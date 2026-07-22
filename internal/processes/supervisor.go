@@ -138,7 +138,6 @@ func (s *Supervisor) Start(parent context.Context, spec Spec) (*Process, error) 
 			p.result.ExitCode = cmd.ProcessState.ExitCode()
 		}
 		p.mu.Unlock()
-		close(p.done)
 		close(p.lines)
 		cancel()
 		s.mu.Lock()
@@ -146,6 +145,9 @@ func (s *Supervisor) Start(parent context.Context, spec Spec) (*Process, error) 
 			delete(s.processes, spec.ID)
 		}
 		s.mu.Unlock()
+		// Wait must not return until the process ID is reusable. Otherwise a
+		// caller that waits and immediately starts the same ID races this cleanup.
+		close(p.done)
 	}()
 
 	if closing {
