@@ -8,7 +8,15 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ## [Unreleased]
 
+## [0.5.0-alpha.1] - 2026-07-22
+
 ### Added
+
+- NVIDIA NIM is available as a first-class provider with secure API-key storage and a focused model
+  list. Vision-capable NVIDIA models can now inspect images pasted into chat and screenshots captured
+  from Roblox Studio.
+- Messages sent while an agent is busy are queued in the same conversation. The active run remains
+  visible, queued messages can be removed independently, and each follow-up resumes the prior context.
 
 - New OpenRouter provider (`internal/providers/openrouter`). Unlike Claude Code, which runs as a
   local CLI subprocess, OpenRouter is an HTTP API and StudioForge drives it with its own in-process
@@ -28,11 +36,12 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   Models API, caches it in the new `openrouter_model_cache` table (`fetched_at` plus the raw JSON
   payload, `internal/migrations/sql/012_openrouter_model_cache.sql`) with a 6-hour TTL and manual
   refresh, falls back to the last-good cached copy on a fetch error, and as a last resort to an
-  embedded dated snapshot (`FallbackSnapshotDate`) when the cache is empty. Only tool-capable text
-  models are offered as agents, since tool support is model-dependent and not every OpenRouter model
-  has it. A curated, hand-reviewed set of recommendations (`catalog/curated.go`, reviewed
-  2026-07-21) groups models into Free automatic (`openrouter/free`, which auto-picks a capable free
-  model), Free recommended, Best coding, Balanced, Fast and cheap, Strong reasoning, and Large
+  embedded dated snapshot (`FallbackSnapshotDate`) when the cache is empty. The picker reports tool,
+  vision, context, free, and verification capabilities for text models; known models without tools
+  are rejected for coding agents, while unknown or stale models require an explicit per-model
+  confirmation. A curated, hand-reviewed set of recommendations (`catalog/curated.go`, reviewed
+  2026-07-21) groups models into Free automatic (`openrouter/free`, whose eventual model capabilities
+  remain unverified), Free recommended, Best coding, Balanced, Fast and cheap, Strong reasoning, and Large
   context; free models are called out as less stable — variable quality and latency, lower rate
   limits, availability that can change — and best suited to small tasks, and free mode never silently
   falls back to a paid model. Provider routing always forces `require_parameters: true` so tool calls
@@ -78,10 +87,9 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   ever persisted (`StoredMessage.Attachments`), never the image bytes, and on resume `storedToMessages`
   rebuilds a stored user turn's image parts the same way — re-validating each path — only when the
   current model is vision-capable, otherwise replaying the stored text alone. Turn cost prefers
-  OpenRouter's own `usage.cost`; only when that is exactly zero and the catalog knows the model's
-  per-token pricing does the loop estimate cost from prompt/completion tokens, marking that turn's
-  `openrouter.usage` event `estimated: true` (also now carrying `reasoningTokens` alongside the
-  existing `cacheReadTokens` as informational fields). `Provider.SetRouting` exposes operator-facing
+  OpenRouter's own `usage.cost`; only when cost is absent and the catalog has complete pricing does
+  the loop estimate prompt, completion, cache-read/cache-write, reasoning, request, and image cost,
+  marking that turn's `openrouter.usage` event `estimated: true`. `Provider.SetRouting` exposes operator-facing
   provider-routing preferences (`allow_fallbacks`, `data_collection`, `zdr`, `order`), but
   `require_parameters: true` is always forced regardless of configuration, and no experimental
   server-side tools or plugins are ever enabled. `internal/app/app.go` constructs the catalog service
@@ -90,10 +98,40 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ### Changed
 
-- Changing the **default model** in Settings now re-points every existing project's agents to the new
-  model, not just projects created afterward (`Store.SetAllAgentsModel`, applied from the settings
-  handler in `internal/api/api.go`). Agents already set to a different model are left untouched, and
-  the default provider and effort still apply only to newly created projects.
+- Changing the **default model** in Settings now re-points every existing agent of the selected
+  provider to the new model, including OpenRouter agents used by current chat threads. OpenRouter
+  models are capability-checked before the setting is saved. The default effort still applies only
+  to newly created projects.
+
+### Fixed
+
+- Existing `.rbxl` files are no longer rebuilt and overwritten when Studio is reopened. Rojo builds
+  a place only when the target place file does not exist.
+- NVIDIA and OpenRouter now retry transient network failures, timeouts, interrupted streams, rate
+  limits, and temporary upstream errors with bounded exponential backoff. Completed Studio tool calls
+  are not executed twice during recovery.
+- Studio screenshots are decoded as image content instead of being dumped as base64 text into the
+  run log. The latest screenshot is attached to the next request for a vision-capable model.
+
+- OpenRouter coding-agent turns now tolerate longer bursts of pre-stream 429/502/503/504 responses,
+  retrying with cancellable exponential backoff for roughly 30 seconds before failing the run.
+- OpenRouter streaming deltas now update one transient live bubble per assistant turn. Only the final
+  turn is persisted, reload filters legacy partial events, and text on either side of tool calls stays
+  in separate messages.
+- OpenRouter credential deletion now propagates secure-store failures, verifies absence, clears the
+  session fallback only after success, and reports an environment key that remains active. Connection
+  tests now distinguish invalid keys, missing keys, network failures, timeouts, and upstream failures.
+- OpenRouter budgets are checked before every request without an extra final-answer call, cap
+  `max_tokens` from conservative remaining-cost estimates, and fail closed when pricing or usage is
+  insufficient to bound another paid request.
+- Model compatibility is validated on create, update, start, restart, resume, and approved correction
+  runs. A live refresh catches models removed after selection, and backend validation does not trust
+  curated UI entries.
+- OpenRouter HTTP streaming now has a default timeout, bounded safe error reads, cancellation-aware
+  retry backoff, strict completion/tool-call validation, actual fallback-model accounting, and no raw
+  reasoning content in events or persistence.
+- Empty pending-decision snapshots now serialize as `[]` instead of `null`, preventing the Runs view
+  from crashing when no operator decision is waiting.
 
 ### Removed
 

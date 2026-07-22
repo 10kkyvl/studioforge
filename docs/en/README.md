@@ -36,7 +36,18 @@ $env:OPENROUTER_API_KEY = "sk-or-..."
 
 However you set it, the key is written to the OS secure credential store (Windows Credential Manager / macOS Keychain), with an environment-variable and session-only fallback when that store is unavailable. It is never written to SQLite, run events, application logs, or the diagnostic bundle. `studioforge doctor` and the Settings card report only the key's verification state (`not_configured`/`unverified`/`configured`/`invalid`) and source — never the key itself.
 
-The model picker is backed by OpenRouter's public Models API, cached for 6 hours with a manual refresh, a last-good-cache fallback, and a bundled dated snapshot as a last resort. Only tool-capable models are offered, since StudioForge's agent loop is built around tool calls and not every OpenRouter model supports them. A curated shortlist (Free automatic, Free recommended, Best coding, Balanced, Fast and cheap, Strong reasoning, Large context) sits above the full catalog. **Free models are less stable** — more variable quality/latency, lower rate limits, availability that can change — and suit small tasks better than long unattended runs; StudioForge never silently falls back to a paid model from free mode. Runs execute local workspace tools (list/read/search/grep/create/edit/patch/mkdir/git/run_command, gated by the agent's permission profile) and Roblox Studio MCP tools through a live per-run client, persist their conversation per chat thread so a restart doesn't lose history, and report real usage/cost.
+The model picker is backed by OpenRouter's public Models API, cached for 6 hours with a manual refresh, a last-good-cache fallback, and a bundled dated snapshot as a last resort. It shows tool, vision, context, free, and verification capabilities. Known non-tool models are rejected; unknown, stale, and dynamically routed IDs such as `openrouter/free` require an explicit per-model compatibility confirmation, and the backend refreshes the catalog again before execution. A curated shortlist (Free automatic, Free recommended, Best coding, Balanced, Fast and cheap, Strong reasoning, Large context) sits above the full catalog. **Free models are less stable** — more variable quality/latency, lower rate limits, availability that can change — and suit small tasks better than long unattended runs; StudioForge never silently falls back to a paid model from free mode. Runs execute local workspace tools (list/read/search/grep/create/edit/patch/mkdir/git/run_command, gated by the agent's permission profile) and Roblox Studio MCP tools through a live per-run client, persist only completed assistant turns per chat thread while streaming one live bubble, and enforce a conservative budget gate before every model request.
+
+## NVIDIA NIM
+
+Add an NVIDIA API key in **Settings → Agents and integrations**, then choose an NVIDIA model for an
+agent. Temporary network failures, timeouts, rate limits, and interrupted streams are retried
+automatically. Vision-capable models such as Kimi K2.6 receive pasted images and the latest image
+returned by Studio's `screen_capture`; text-only models receive no hidden screenshot payload.
+
+Messages sent while an agent is running wait in the same chat queue and continue that conversation
+in order. Opening Studio preserves an existing saved `.rbxl`; Rojo is used only to create a missing
+place file, never to silently replace saved Studio work.
 
 ## Claude Code
 

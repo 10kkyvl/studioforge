@@ -81,11 +81,11 @@ and version.
 - **`invalid`:** OpenRouter's own `/key` endpoint returned 401 for the stored key. Generate a new key
   on OpenRouter's dashboard and save it again.
 - **A run fails immediately with a model/parameter error:** not every OpenRouter model supports tool
-  calling, and StudioForge's agent loop is built around tools — only tool-capable models are offered in
-  the picker for this reason. If a model you were using disappeared from the catalog or stopped
-  supporting tools, OpenRouter changed or deprecated it upstream; pick a different one. `?refresh=1` on
-  the models endpoint (or the Settings **Refresh** action) forces a live re-fetch instead of the 6-hour
-  cache.
+  calling, and StudioForge's agent loop is built around tools. The picker shows the catalog's tool,
+  vision, context, free, and verification facts; known non-tool models are rejected, while unknown or
+  stale IDs require an explicit compatibility confirmation. The backend refreshes the catalog again
+  before a run, so a model removed after selection is also rejected. `openrouter/free` remains
+  unverified because its eventual model is selected dynamically.
 - **A run fails with `openrouter.image_unsupported`:** the attached image was sent to a model that
   either doesn't support vision or whose capabilities aren't known to the catalog. Switch to a
   vision-capable model, or remove the attachment.
