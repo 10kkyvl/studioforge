@@ -135,6 +135,26 @@ func TestValidationSkippedForReadOnlyProfile(t *testing.T) {
 	}
 }
 
+func TestValidationRunsForOpenRouterWithoutAProvisionerGrant(t *testing.T) {
+	manager, _, store, ctx := newHarness(t)
+	manager.SetMCPProvisioner(func(context.Context, *Job) MCPGrant { return MCPGrant{} })
+	called := false
+	manager.SetMCPValidator(func(context.Context, *Job) ValidationResult {
+		called = true
+		return ValidationResult{Outcome: ValidationPassed}
+	})
+	job := grantedJob(t)
+	job.Provider = "openrouter"
+	run, _, err := manager.Submit(ctx, job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForRunValidation(t, store, ctx, run.ID, "passed")
+	if !called {
+		t.Error("an OpenRouter run opted into validation must trigger the validator")
+	}
+}
+
 func TestValidationRunsAndPersistsPassedOutcome(t *testing.T) {
 	manager, _, store, ctx := newHarness(t)
 	withGrant(manager)

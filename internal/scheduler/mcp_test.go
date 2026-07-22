@@ -67,11 +67,10 @@ func newHarness(t *testing.T) (*Manager, *recordingProvider, *database.Store, co
 	inner := mock.New()
 	inner.StepDelay = time.Millisecond
 	provider := &recordingProvider{inner: inner}
-	// Registered under "claude" too: validation-loop tests gate on
-	// Job.Provider == "claude" and need a real adapter behind that name, and
-	// reusing the same deterministic mock keeps those tests fast and
-	// dependency-free like every other scheduler test.
-	manager := New(ctx, store, hub, leases, map[string]providers.Provider{"mock": provider, "claude": provider})
+	// Registered under "claude" and "openrouter" too: validation-loop tests
+	// gate on Job.Provider, and reusing the same deterministic mock keeps
+	// those tests fast and dependency-free like every other scheduler test.
+	manager := New(ctx, store, hub, leases, map[string]providers.Provider{"mock": provider, "claude": provider, "openrouter": provider})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	return manager, provider, store, ctx
 }

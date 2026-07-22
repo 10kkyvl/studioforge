@@ -24,7 +24,7 @@ type Candidate struct {
 }
 
 // Tools are the settings keys this package can fill in.
-var Tools = []string{"claude_path", "codex_path", "rojo_path", "git_path", "studio_mcp_path"}
+var Tools = []string{"claude_path", "rojo_path", "git_path", "studio_mcp_path"}
 
 type spec struct {
 	command string
@@ -165,19 +165,6 @@ func specs() map[string]spec {
 			return concat(
 				join(home(), ".local", "bin", "claude"),
 				[]string{"/opt/homebrew/bin/claude", "/usr/local/bin/claude"},
-			)
-		}},
-		"codex_path": {command: "codex", versionArgs: []string{"--version"}, known: func() []string {
-			if windows {
-				return concat(
-					join(os.Getenv("LOCALAPPDATA"), "Programs", "OpenAI", "Codex", "bin", "codex.exe"),
-					join(os.Getenv("APPDATA"), "npm", "codex.cmd"),
-					join(home(), ".local", "bin", "codex.exe"),
-				)
-			}
-			return concat(
-				join(home(), ".local", "bin", "codex"),
-				[]string{"/opt/homebrew/bin/codex", "/usr/local/bin/codex"},
 			)
 		}},
 		"rojo_path": {command: "rojo", versionArgs: []string{"--version"}, known: func() []string {

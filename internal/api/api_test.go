@@ -242,7 +242,7 @@ func TestProjectCreationAddsDefaultAgentAndAgentCRUD(t *testing.T) {
 		t.Fatal(err)
 	}
 	agents, err := a.store.ListAgents(context.Background(), project.ID)
-	if err != nil || len(agents) != 1 || agents[0].Provider != "codex" {
+	if err != nil || len(agents) != 1 || agents[0].Provider != "claude" {
 		t.Fatalf("agents=%+v err=%v", agents, err)
 	}
 
@@ -274,7 +274,7 @@ func TestProjectCreationAddsDefaultAgentAndAgentCRUD(t *testing.T) {
 func TestRuntimeSettingsAreValidatedAndReturned(t *testing.T) {
 	a := newTestAPI(t)
 	cookie := bootstrapCookie(t, a)
-	request := httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/settings", strings.NewReader(`{"default_provider":"codex","codex_path":"C:\\tools\\codex.exe","concurrency":"8"}`))
+	request := httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/settings", strings.NewReader(`{"default_provider":"openrouter","claude_path":"C:\\tools\\claude.exe","concurrency":"8"}`))
 	request.Header.Set("Origin", "http://127.0.0.1:1234")
 	request.Header.Set("Content-Type", "application/json")
 	request.AddCookie(cookie)
@@ -292,7 +292,7 @@ func TestRuntimeSettingsAreValidatedAndReturned(t *testing.T) {
 		t.Fatal(err)
 	}
 	settings := snapshot["settings"].(map[string]any)
-	if settings["default_provider"] != "codex" || settings["codex_path"] != `C:\tools\codex.exe` || settings["concurrency"] != "8" {
+	if settings["default_provider"] != "openrouter" || settings["claude_path"] != `C:\tools\claude.exe` || settings["concurrency"] != "8" {
 		t.Fatalf("settings=%+v", settings)
 	}
 }

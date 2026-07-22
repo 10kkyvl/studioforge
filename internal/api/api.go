@@ -31,6 +31,8 @@ import (
 	"github.com/10kkyvl/studioforge/internal/projects"
 	"github.com/10kkyvl/studioforge/internal/prompts"
 	"github.com/10kkyvl/studioforge/internal/providers"
+	"github.com/10kkyvl/studioforge/internal/providers/openrouter/catalog"
+	"github.com/10kkyvl/studioforge/internal/providers/openrouter/credential"
 	"github.com/10kkyvl/studioforge/internal/resources"
 	"github.com/10kkyvl/studioforge/internal/scheduler"
 	"github.com/10kkyvl/studioforge/internal/webui"
@@ -103,6 +105,8 @@ type Server struct {
 	memory                Memory
 	stuckSettings         func() scheduler.StuckSettings
 	leases                *resources.Manager
+	orCreds               *credential.Manager
+	orCatalog             *catalog.Service
 }
 type Dependencies struct {
 	Store                 *database.Store
@@ -127,8 +131,10 @@ type Dependencies struct {
 	// mirroring the live atomics internal/app already keeps for
 	// playtest_window_seconds — nil (e.g. in a test Dependencies that never
 	// sets it) falls back to createRun's own hardcoded defaults.
-	StuckSettings func() scheduler.StuckSettings
-	Leases        *resources.Manager
+	StuckSettings     func() scheduler.StuckSettings
+	Leases            *resources.Manager
+	OpenRouterCreds   *credential.Manager
+	OpenRouterCatalog *catalog.Service
 }
 
 func New(d Dependencies) (*Server, error) {
@@ -139,7 +145,7 @@ func New(d Dependencies) (*Server, error) {
 	if d.Logger == nil {
 		d.Logger = slog.Default()
 	}
-	return &Server{store: d.Store, db: d.DB, scheduler: d.Scheduler, hub: d.Hub, doctor: d.Doctor, sessions: d.Sessions, guard: d.Guard, safeMode: d.SafeMode, allowedHost: d.AllowedHost, dataDir: d.DataDir, logger: d.Logger, applySetting: d.ApplySetting, studio: d.Studio, studioOpenCheck: d.StudioOpenCheck, studioStatus: d.StudioStatus, refreshStudioSessions: d.RefreshStudioSessions, syncer: d.Sync, git: d.Git, memory: d.Memory, stuckSettings: d.StuckSettings, leases: d.Leases, assets: assets, csp: contentSecurityPolicy(assets)}, nil
+	return &Server{store: d.Store, db: d.DB, scheduler: d.Scheduler, hub: d.Hub, doctor: d.Doctor, sessions: d.Sessions, guard: d.Guard, safeMode: d.SafeMode, allowedHost: d.AllowedHost, dataDir: d.DataDir, logger: d.Logger, applySetting: d.ApplySetting, studio: d.Studio, studioOpenCheck: d.StudioOpenCheck, studioStatus: d.StudioStatus, refreshStudioSessions: d.RefreshStudioSessions, syncer: d.Sync, git: d.Git, memory: d.Memory, stuckSettings: d.StuckSettings, leases: d.Leases, orCreds: d.OpenRouterCreds, orCatalog: d.OpenRouterCatalog, assets: assets, csp: contentSecurityPolicy(assets)}, nil
 }
 
 func contentSecurityPolicy(assets fs.FS) string {
@@ -185,6 +191,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/studio/sessions/refresh", s.refreshStudioSessionsHandler)
 	mux.HandleFunc("POST /api/v1/decisions/{id}/resolve", s.resolveDecision)
 	mux.HandleFunc("POST /api/v1/backups", s.backup)
+	mux.HandleFunc("GET /api/v1/openrouter/status", s.openrouterStatus)
+	mux.HandleFunc("POST /api/v1/openrouter/key", s.openrouterSaveKey)
+	mux.HandleFunc("DELETE /api/v1/openrouter/key", s.openrouterDeleteKey)
+	mux.HandleFunc("POST /api/v1/openrouter/key/test", s.openrouterTestKey)
+	mux.HandleFunc("GET /api/v1/openrouter/models", s.openrouterModels)
+	mux.HandleFunc("GET /api/v1/openrouter/capabilities", s.openrouterCapabilities)
 	mux.HandleFunc("GET /api/v1/openapi.yaml", s.openapi)
 	mux.HandleFunc("/", s.static)
 	return s.security(mux)
@@ -296,9 +308,10 @@ func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 	setup, setupDone, _ := s.store.Setting(ctx, "setup_complete")
 	settings := map[string]any{"locale": locale, "setupComplete": setupDone && setup == "true", "safeMode": s.safeMode}
 	defaults := map[string]string{
-		"default_provider": "codex", "default_model": "default", "default_effort": "medium",
-		"codex_path": "", "claude_path": "", "rojo_path": "", "git_path": "", "studio_mcp_path": "", "studio_auto_open": "true", "concurrency": "6", "playtest_window_seconds": "30",
+		"default_provider": "claude", "default_model": "default", "default_effort": "medium",
+		"claude_path": "", "rojo_path": "", "git_path": "", "studio_mcp_path": "", "studio_auto_open": "true", "concurrency": "6", "playtest_window_seconds": "30",
 		"stuck_detection_enabled": "true", "stuck_idle_seconds": "600", "stuck_repetition_cap": "6",
+		"openrouter_data_collection": "", "openrouter_zdr": "", "openrouter_allow_fallbacks": "",
 	}
 	for key, fallback := range defaults {
 		value, ok, _ := s.store.Setting(ctx, key)
@@ -367,8 +380,10 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	allowed := map[string]bool{
 		"locale": true, "theme": true, "setup_complete": true, "concurrency": true,
 		"default_provider": true, "default_model": true, "default_effort": true,
-		"codex_path": true, "claude_path": true, "rojo_path": true, "git_path": true, "studio_mcp_path": true, "studio_auto_open": true,
+		"claude_path": true, "rojo_path": true, "git_path": true, "studio_mcp_path": true, "studio_auto_open": true,
+		"playtest_window_seconds": true,
 		"stuck_detection_enabled": true, "stuck_idle_seconds": true, "stuck_repetition_cap": true,
+		"openrouter_data_collection": true, "openrouter_zdr": true, "openrouter_allow_fallbacks": true,
 	}
 	for key, value := range body {
 		if !allowed[key] {
@@ -379,8 +394,8 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, 400, "invalid_locale", "Locale must be en, ru, or auto", nil)
 			return
 		}
-		if key == "default_provider" && value != "codex" && value != "claude" && value != "mock" {
-			writeError(w, r, 400, "invalid_provider", "Default provider must be codex, claude, or mock", nil)
+		if key == "default_provider" && value != "claude" && value != "openrouter" && value != "mock" {
+			writeError(w, r, 400, "invalid_provider", "Default provider must be claude, openrouter, or mock", nil)
 			return
 		}
 		if key == "default_effort" && value != "low" && value != "medium" && value != "high" && value != "xhigh" {
@@ -394,6 +409,18 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		if key == "openrouter_data_collection" && value != "" && value != "allow" && value != "deny" {
+			writeError(w, r, 400, "invalid_data_collection", "OpenRouter data collection must be allow or deny", nil)
+			return
+		}
+		if key == "openrouter_zdr" && value != "" && value != "true" && value != "false" {
+			writeError(w, r, 400, "invalid_zdr", "OpenRouter ZDR must be true or false", nil)
+			return
+		}
+		if key == "openrouter_allow_fallbacks" && value != "" && value != "true" && value != "false" {
+			writeError(w, r, 400, "invalid_allow_fallbacks", "OpenRouter allow fallbacks must be true or false", nil)
+			return
+		}
 	}
 	// Validate the complete request before persisting any entry. Map iteration
 	// order is intentionally undefined, so validation and mutation must be
@@ -402,6 +429,12 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		if err := s.store.SetSetting(r.Context(), key, value); err != nil {
 			writeError(w, r, 500, "database_error", "Unable to save settings", err)
 			return
+		}
+		if key == "default_model" && value != "" {
+			if _, err := s.store.SetAllAgentsModel(r.Context(), value); err != nil {
+				writeError(w, r, 500, "database_error", "Saved the default model but could not apply it to existing projects", err)
+				return
+			}
 		}
 		if s.applySetting != nil {
 			if err := s.applySetting(key, value); err != nil {
@@ -461,7 +494,7 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	}
 	provider, ok, _ := s.store.Setting(r.Context(), "default_provider")
 	if !ok || provider == "" {
-		provider = "codex"
+		provider = "claude"
 	}
 	model, ok, _ := s.store.Setting(r.Context(), "default_model")
 	if !ok || model == "" {
@@ -498,8 +531,8 @@ func normalizeAgent(agent *models.Agent) error {
 	if agent.Role == "" {
 		agent.Role = "Roblox Engineer"
 	}
-	if agent.Provider != "codex" && agent.Provider != "claude" && agent.Provider != "mock" {
-		return errors.New("provider must be codex, claude, or mock")
+	if agent.Provider != "claude" && agent.Provider != "openrouter" && agent.Provider != "mock" {
+		return errors.New("provider must be claude, openrouter, or mock")
 	}
 	if agent.ModelAlias == "" {
 		agent.ModelAlias = "default"
@@ -955,7 +988,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	}
 	key := r.Header.Get("Idempotency-Key")
 	stuckDetectionEnabled := stuckSettings.Enabled && !agent.StuckDetectionDisabled && !stuckContinueSuppresses(prevStuckEscalated, rawPrompt)
-	run, created, err := s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: project.ID, AgentID: agent.ID, TaskID: body.TaskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, WorkingDirectory: project.Path, Prompt: body.Prompt, SystemPrompt: systemPrompt, Mode: body.Mode, ThreadID: thread.ID, ResumeSessionID: resumeSession, Scenario: body.Scenario, MaxBudget: maxBudget, Resources: []string{"project:" + project.ID + ":write"}, IdempotencyKey: key, Subagents: subagents, ValidateAfterRun: agent.ValidateAfterRun, MaxCorrectionRuns: agent.MaxCorrectionRuns, StuckDetectionEnabled: stuckDetectionEnabled, StuckIdleSeconds: stuckSettings.IdleSeconds, StuckRepetitionCap: stuckSettings.RepetitionCap})
+	run, created, err := s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: project.ID, AgentID: agent.ID, TaskID: body.TaskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, WorkingDirectory: project.Path, Prompt: body.Prompt, SystemPrompt: systemPrompt, Mode: body.Mode, ThreadID: thread.ID, ResumeSessionID: resumeSession, Scenario: body.Scenario, MaxBudget: maxBudget, Resources: []string{"project:" + project.ID + ":write"}, IdempotencyKey: key, Subagents: subagents, ValidateAfterRun: agent.ValidateAfterRun, MaxCorrectionRuns: agent.MaxCorrectionRuns, StuckDetectionEnabled: stuckDetectionEnabled, StuckIdleSeconds: stuckSettings.IdleSeconds, StuckRepetitionCap: stuckSettings.RepetitionCap, Attachments: body.Attachments})
 	if err != nil {
 		writeError(w, r, 400, "run_error", err.Error(), nil)
 		return
@@ -1022,6 +1055,8 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 		run, runErr := s.store.Run(r.Context(), id)
 		if runErr != nil {
 			err = runErr
+		} else if _, configured := s.scheduler.Diagnose(r.Context(), run.Provider); !configured {
+			err = fmt.Errorf("this run used the removed %q provider and is read-only history; it cannot be restarted or resumed", run.Provider)
 		} else if run.Status != "interrupted" && run.Status != "failed" && run.Status != "cancelled" {
 			err = fmt.Errorf("run in status %s cannot be restarted", run.Status)
 		} else {
@@ -1067,6 +1102,9 @@ func (s *Server) resumeRun(ctx context.Context, runID string) error {
 	run, err := s.store.Run(ctx, runID)
 	if err != nil {
 		return err
+	}
+	if _, configured := s.scheduler.Diagnose(ctx, run.Provider); !configured {
+		return fmt.Errorf("this run used the removed %q provider and is read-only history; it cannot be restarted or resumed", run.Provider)
 	}
 	if run.Status != "paused" {
 		return fmt.Errorf("run in status %s cannot be resumed", run.Status)

@@ -196,7 +196,7 @@ func (s *Store) CreateAgent(ctx context.Context, agent models.Agent) (models.Age
 		agent.Role = "Roblox Engineer"
 	}
 	if agent.Provider == "" {
-		agent.Provider = "codex"
+		agent.Provider = "claude"
 	}
 	if agent.ModelAlias == "" {
 		agent.ModelAlias = "default"
@@ -255,6 +255,15 @@ name=?,role=?,provider=?,model_alias=?,effort=?,enabled=?,permission_profile=?,c
 		return models.Agent{}, sql.ErrNoRows
 	}
 	return agent, nil
+}
+
+func (s *Store) SetAllAgentsModel(ctx context.Context, model string) (int64, error) {
+	res, err := s.db.SQL.ExecContext(ctx, `UPDATE project_agents SET model_alias=? WHERE model_alias<>?`, model, model)
+	if err != nil {
+		return 0, fmt.Errorf("set all agents model: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 func (s *Store) ListTasks(ctx context.Context, projectID string) ([]models.Task, error) {

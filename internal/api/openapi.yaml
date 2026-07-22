@@ -73,7 +73,7 @@ paths:
       responses: {"200": {description: Settings applied}}
   /detect-paths:
     get:
-      summary: Report where Codex, Claude, Rojo, Git, and the Studio MCP launcher appear to be installed
+      summary: Report where Claude, Rojo, Git, and the Studio MCP launcher appear to be installed
       description: >-
         Takes no parameters. Detection executes each candidate to read its
         version, so a caller-supplied path is refused rather than probed.
@@ -165,3 +165,34 @@ paths:
         "200": {description: Tag created}
         "400": {description: Missing tag name}
         "409": {description: Git operation failed}
+  /openrouter/status:
+    get:
+      summary: OpenRouter API key state, source, and whether storage is secure (never the key itself)
+      responses: {"200": {description: Status}}
+  /openrouter/key:
+    post:
+      summary: Save the OpenRouter API key (never echoed back in the response)
+      responses:
+        "200": {description: Status}
+        "400": {description: Blank key}
+    delete:
+      summary: Remove the stored OpenRouter API key
+      responses: {"200": {description: "{ok:true}"}}
+  /openrouter/key/test:
+    post:
+      summary: >-
+        Test the stored OpenRouter API key against the OpenRouter API; returns
+        200 with ok:false on failure rather than erroring
+      responses: {"200": {description: Status with an ok flag}}
+  /openrouter/models:
+    get:
+      summary: Tool-capable OpenRouter models plus curated picks and their category order
+      parameters:
+        - {name: refresh, in: query, required: false, schema: {type: string, enum: ["1"]}}
+      responses: {"200": {description: Models, curated picks, and categories}}
+  /openrouter/capabilities:
+    get:
+      summary: A single model's capabilities (vision, tools, structured outputs, context length) from the cached catalog
+      parameters:
+        - {name: model, in: query, required: true, schema: {type: string}}
+      responses: {"200": {description: Capabilities}}

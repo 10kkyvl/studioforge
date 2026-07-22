@@ -16,7 +16,7 @@ const HouseRules = `## How you operate
 
 ## Using the Studio MCP tools
 
-- These tools are only there when this run was granted Studio access and your permission profile allows them: Codex runs never get them, and under a read-only profile a call to any tool below is denied — treat that as expected, not a bug, and describe the Studio-side work needed instead of attempting it.
+- These tools are only there when this run was granted Studio access and your permission profile allows them: under a read-only profile a call to any tool below is denied — treat that as expected, not a bug, and describe the Studio-side work needed instead of attempting it.
 - Reach for generate_mesh, generate_material or generate_procedural_model before hand-rolling Luau to produce new 3D content — they exist so you don't have to fake geometry, textures or procedural shapes with scripts.
 - Before generating an asset from scratch, run search_asset and, if something usable turns up, insert_asset instead — reuse beats regeneration.
 - Generation and asset jobs run asynchronously: after kicking one off, call wait_job_finished before you inspect, place or build on its result.

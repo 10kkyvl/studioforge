@@ -231,6 +231,48 @@ func TestCreateAgentDefaultsValidationOptOutWithAUsableCorrectionLimit(t *testin
 	}
 }
 
+func TestSetAllAgentsModelRepointsExistingAgentsExceptCustomized(t *testing.T) {
+	_, store := testDB(t)
+	ctx := context.Background()
+	projectA, err := store.CreateProject(ctx, models.Project{Name: "Model A", Path: filepath.Join(t.TempDir(), "model-a"), Fingerprint: "model-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectB, err := store.CreateProject(ctx, models.Project{Name: "Model B", Path: filepath.Join(t.TempDir(), "model-b"), Fingerprint: "model-b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateAgent(ctx, models.Agent{ProjectID: projectA.ID, Provider: "claude", ModelAlias: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateAgent(ctx, models.Agent{ProjectID: projectB.ID, Provider: "claude", ModelAlias: "opus"}); err != nil {
+		t.Fatal(err)
+	}
+	n, err := store.SetAllAgentsModel(ctx, "sonnet")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("rows affected=%d, want 2", n)
+	}
+	agents, err := store.ListAgents(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range agents {
+		if a.ModelAlias != "sonnet" {
+			t.Errorf("agent %s model=%q, want sonnet", a.ID, a.ModelAlias)
+		}
+	}
+	again, err := store.SetAllAgentsModel(ctx, "sonnet")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != 0 {
+		t.Fatalf("re-applying the same model affected %d rows, want 0", again)
+	}
+}
+
 func TestUpdateAgentPersistsValidationSettings(t *testing.T) {
 	_, store := testDB(t)
 	ctx := context.Background()

@@ -152,6 +152,20 @@ type ChatThread struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
+type ConversationMessage struct {
+	ID            int64
+	ThreadID      string
+	RunID         string
+	Role          string
+	Content       string
+	ToolCallsJSON string
+	ToolCallID    string
+	Attachments   []string
+	Model         string
+	Usage         TokenUsage
+	CreatedAt     time.Time
+}
+
 type ChatMessage struct {
 	Role   string    `json:"role"`
 	Text   string    `json:"text"`
