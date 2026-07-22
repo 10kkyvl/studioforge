@@ -121,6 +121,45 @@ func TestOpenProjectBuildsAndLaunches(t *testing.T) {
 	}
 }
 
+func TestOpenProjectPreservesAnExistingSavedPlace(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "default.project.json"), []byte(`{"name":"t","tree":{"$className":"DataModel"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	place := PlacePath(project, "My Game", "abc123")
+	if err := os.MkdirAll(filepath.Dir(place), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	saved := []byte("saved Studio place with generated meshes and terrain")
+	if err := os.WriteFile(place, saved, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fb := &fakeBuilder{}
+	var launched string
+	o := &Opener{
+		Rojo:         fb,
+		DetectStudio: func() (string, error) { return "C:\\Studio.exe", nil },
+		Launch:       func(_, path string) error { launched = path; return nil },
+	}
+	got, err := o.OpenProject(context.Background(), project, "My Game", "abc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fb.built {
+		t.Fatal("an existing saved place was rebuilt and would lose Studio-only edits")
+	}
+	if got != place || launched != place {
+		t.Fatalf("got=%q launched=%q want existing place %q", got, launched, place)
+	}
+	after, err := os.ReadFile(place)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(saved) {
+		t.Fatalf("saved place changed while reopening: got %q want %q", after, saved)
+	}
+}
+
 func TestOpenProjectRefusesWithoutProjectFile(t *testing.T) {
 	o := &Opener{Rojo: &fakeBuilder{}, DetectStudio: func() (string, error) { return "x", nil }, Launch: func(string, string) error { return nil }}
 	if _, err := o.OpenProject(context.Background(), t.TempDir(), "My Game", "abc123"); err == nil {

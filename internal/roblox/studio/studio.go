@@ -282,10 +282,14 @@ func (o *Opener) release(place string) {
 	delete(o.pending, place)
 }
 
-// OpenProject builds the project's default.project.json into a place file,
-// installs the Rojo plugin (best effort), and opens the place in Studio. It
-// returns the built place path. The name and id decide the place's file name —
-// see PlaceName — so the resulting Studio instance identifies this project.
+// OpenProject creates the project's place from default.project.json when it
+// does not exist yet, installs the Rojo plugin (best effort), and opens the
+// place in Studio. An existing place is opened byte-for-byte as saved: Studio
+// edits (generated meshes, terrain, hand-built instances, and other objects
+// that are not represented in the Rojo source tree) must never be destroyed
+// by an implicit rebuild merely because the operator reopened the project.
+// The name and id decide the place's file name — see PlaceName — so the
+// resulting Studio instance identifies this project.
 //
 // A call for a place already opened, or asked to open, within the last
 // pendingGrace returns the same place path without launching again — Studio
@@ -311,11 +315,21 @@ func (o *Opener) OpenProject(ctx context.Context, projectPath, name, id string) 
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(place), 0o755); err != nil {
-		return "", err
-	}
-	if err := o.Rojo.Build(ctx, projectFile, place); err != nil {
-		return "", err
+	info, statErr := os.Stat(place)
+	switch {
+	case statErr == nil:
+		if !info.Mode().IsRegular() {
+			return "", fmt.Errorf("existing place is not a regular file: %s", place)
+		}
+	case os.IsNotExist(statErr):
+		if err := os.MkdirAll(filepath.Dir(place), 0o755); err != nil {
+			return "", err
+		}
+		if err := o.Rojo.Build(ctx, projectFile, place); err != nil {
+			return "", err
+		}
+	default:
+		return "", fmt.Errorf("inspect existing place: %w", statErr)
 	}
 	_ = o.Rojo.InstallPlugin(ctx)
 	if err := o.launch(exe, place); err != nil {
