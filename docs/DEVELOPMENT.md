@@ -23,7 +23,7 @@ cd studioforge
 
 Both scripts install frontend dependencies, build the SPA once, and then `go run` the daemon, forwarding
 their arguments straight through. Pass `--mock` for the seeded three-project demo that needs no Claude,
-Roblox Studio, or Rojo; omit it to run against real registered projects.
+OpenRouter key, Roblox Studio, or Rojo; omit it to run against real registered projects.
 
 Earlier versions of these scripts injected `--mock` unconditionally, which made the flag meaningless and
 left no documented way to run from source against a real project. Both scripts now forward arguments
@@ -125,12 +125,16 @@ inject `Version`/`Commit`/`BuildDate` from `git describe`/`git rev-parse` into `
     TestRealStudioMCP -v -count=1`). These need Roblox Studio open with an MCP-enabled place.
 
   Without these variables set, `go test ./...` (including in CI) never exercises a real `claude`,
-  `codex`, Roblox Studio, or MCP launcher — everything is driven by the four fake CLIs below.
-- **Fake CLIs** (`testdata/fakes/`): `fakeclaude`, `fakecodex`, `fakerojo`, and `fakestudiomcp` are small
-  Go programs, each built to a temporary directory by the tests that need them, standing in for the real
-  `claude`, `codex`, `rojo`, and Roblox Studio MCP launcher binaries. They let the provider adapters,
-  scheduler, and MCP transport be tested deterministically (including stream/malformed-output/auth/
-  rate-limit/budget/crash/resume paths) without any real account or install.
+  Roblox Studio, or MCP launcher — everything is driven by the fake CLIs below. OpenRouter has no
+  equivalent real-smoke gate today: its tests run entirely against an in-process `httptest` server, so
+  there is no billable-account test to opt into or out of.
+- **Fake CLIs** (`testdata/fakes/`): `fakeclaude`, `fakerojo`, and `fakestudiomcp` are small Go
+  programs, each built to a temporary directory by the tests that need them, standing in for the real
+  `claude`, `rojo`, and Roblox Studio MCP launcher binaries. They let the provider adapter, scheduler,
+  and MCP transport be tested deterministically (including stream/malformed-output/auth/rate-limit/
+  budget/crash/resume paths) without any real account or install. OpenRouter needs no fake binary,
+  since it is not a subprocess: its tests instead stand up a fake HTTP server
+  (`httptest.NewServer`) that the agent loop, catalog, and credential manager talk to directly.
 
 ## Debugging
 
@@ -141,7 +145,7 @@ inject `Version`/`Commit`/`BuildDate` from `git describe`/`git rev-parse` into `
   zip (`security.Redact` is applied to its contents, and project source, environment variables, and
   prompts are explicitly excluded).
 - `--mock` runs the deterministic three-project demo with no external tools required — the fastest way to
-  reproduce a UI issue without Claude, Codex, Rojo, or Studio installed.
+  reproduce a UI issue without Claude, an OpenRouter key, Rojo, or Studio installed.
 - `--safe-mode` disables run creation entirely (`POST /api/v1/runs` returns 409) and forces scheduler
   concurrency limits to 1, which is useful for isolating whether a problem is in the daemon/UI or in an
   active run.
@@ -167,7 +171,7 @@ internal/
   processes/                subprocess supervisor, minimal-environment allowlist
   projects/                 path guard, fingerprint, scaffold, static context loader
   prompts/                  structured prompt assembly template (no live caller)
-  providers/                Provider interface + claudecode, codex, mock adapters
+  providers/                Provider interface + claudecode, openrouter, mock adapters
   resources/                atomic resource lease manager
   roblox/
     assets/                 quarantine transition validator (no caller)
@@ -182,7 +186,7 @@ web/                        SvelteKit 5 SPA source
   e2e/                      Playwright end-to-end tests
   src/lib/                  shared TypeScript: i18n catalogs, typed API client, view components
 scripts/                    dev/build/test/package, .sh and .ps1 pairs
-testdata/fakes/             fakeclaude, fakecodex, fakerojo, fakestudiomcp
+testdata/fakes/             fakeclaude, fakerojo, fakestudiomcp
 migrations/                 (embedded via internal/migrations)
 docs/                       this document, ARCHITECTURE.md, ADRs, API/DATABASE/TESTING/KNOWN_LIMITATIONS
 .github/workflows/          ci.yml, release.yml
@@ -190,23 +194,44 @@ docs/                       this document, ARCHITECTURE.md, ADRs, API/DATABASE/T
 
 ## Adding a new provider adapter
 
+There are two working examples now, and which one to model a new adapter on depends on whether it is a
+local CLI or a remote API:
+
+**A local CLI subprocess** (like `internal/providers/claudecode`):
+
 1. Create `internal/providers/<name>/<name>.go` implementing `providers.Provider`: `Diagnose(ctx)
    providers.Diagnostics`, `Start(ctx, providers.RunRequest) (providers.RunHandle, error)`,
    `Resume(ctx, providers.ResumeRequest) (providers.RunHandle, error)`, and `Cancel(ctx, runID) error`.
-   Model it on `internal/providers/codex/codex.go` for a simpler starting point (no capability-gated flag
-   building, unlike `claudecode`).
 2. Discover capabilities rather than assuming a version means a feature exists — see ADR 0002. The
    `claudecode` adapter's `parseCapabilities` (parsing `claude --help` output) is the pattern to follow if
    your CLI's flags evolve independently of its version string.
 3. Keep the package independent of HTTP, SQLite, and the other adapters — it should depend only on
    `internal/providers` (for the shared types) and `internal/processes` (for `MinimalEnvironment` and, if
    needed, `Supervisor`).
+4. Add a fake CLI under `testdata/fakes/<name>/` for deterministic tests, following the existing
+   `fakeclaude` pattern, and add unit tests for argument building and event normalization.
+
+**An HTTP API with its own in-process agent loop** (like `internal/providers/openrouter`):
+
+1. Implement `providers.Provider` the same way, but there is no subprocess to exec — `Start`/`Resume`
+   run a bounded loop in-process instead (see `agentloop.go`). Split concerns the way `openrouter` does:
+   a workspace-tool package gated by the shared permission profiles (`agenttools`), a credential seam
+   that never lets the secret touch SQLite (`credential`, backed by `internal/platform.SecretStore`), a
+   conversation-persistence seam if the provider should survive a restart (`conversation.go`), and a
+   thin HTTP client for the API itself (`orclient`).
+2. Test against an in-process `httptest.NewServer` standing in for the real API, not a fake binary —
+   there is nothing to exec.
+3. Same independence rule as the CLI case: keep the package free of direct HTTP/SQLite imports from
+   other daemon layers; it should own its own thin client instead.
+
+**Either way:**
+
 4. Register an instance of the new adapter in the `adapters` map built in `internal/app.Run`, alongside
-   `mock`, `claude`, and `codex`.
+   `mock`, `claude`, and `openrouter`.
 5. Add the new provider name to the validation lists in `internal/api/api.go`: `normalizeAgent`'s
    provider check, and the `settings` handler's `default_provider` validation.
-6. Add a fake CLI under `testdata/fakes/<name>/` for deterministic tests, following the existing
-   `fakeclaude`/`fakecodex` pattern, and add unit tests for argument building and event normalization.
+6. If Studio access or the playtest validation loop should apply to the new provider, add it to
+   `scheduler.studioCapable`'s provider check alongside `claude` and `openrouter` — it is not automatic.
 
 ## Adding or allowlisting a new Studio MCP tool
 

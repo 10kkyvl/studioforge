@@ -12,6 +12,8 @@ The browser first POSTs the one-use token to `/session/bootstrap`; success sets 
 
 `GET /runs/{id}/diff` diffs against that run's own git checkpoint commit when one was recorded, falling back to the working tree against `HEAD` otherwise. `POST /runs/{id}/rollback` non-destructively restores a run's checkpoint commit onto a new `studioforge/rollback-<timestamp>` branch (400 if the run has no checkpoint, 409 if the project's write lease is currently held by another run). `GET /projects/{id}/git/status` and `POST /projects/{id}/git/tag` expose the project's `git status` and create an annotated tag.
 
+`GET /openrouter/status`, `POST /openrouter/key`, `DELETE /openrouter/key`, and `POST /openrouter/key/test` manage the OpenRouter API key. The key itself is never returned or logged — every response reports only its verification state (`not_configured`/`unverified`/`configured`/`invalid`) and source (`keychain`/`session`/`env`); a 503 `openrouter_unavailable` means the daemon has no credential manager wired up at all. `GET /openrouter/models` returns the cached model catalog (add `?refresh=1` to force a live refetch), filtered to tool-capable models plus the curated recommendation list; `GET /openrouter/capabilities` reports a specific model's vision/tool support and pricing. `POST /runs/{id}/{action}` on a run whose `provider` is the removed `"codex"` returns 409 for `restart` and `resume` — that run stays fully readable, just not re-runnable.
+
 No stack trace is returned. Request bodies are bounded and unknown JSON fields are rejected.
 
 ---

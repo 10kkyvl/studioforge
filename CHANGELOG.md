@@ -8,6 +8,105 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ## [Unreleased]
 
+### Added
+
+- New OpenRouter provider (`internal/providers/openrouter`). Unlike Claude Code, which runs as a
+  local CLI subprocess, OpenRouter is an HTTP API and StudioForge drives it with its own in-process
+  bounded agent loop (`agentloop.go`) — no subprocess is spawned for it. The loop streams from
+  OpenRouter and executes local workspace tools (list/read/search/grep/create/edit/patch/mkdir/git/
+  run_command, `internal/providers/openrouter/agenttools`) gated by the same read-only /
+  workspace-write / danger-full-access permission profiles used elsewhere, plus Roblox Studio MCP
+  tools through a live per-run MCP client wrapped by `internal/providers/openrouter/mcpbridge`, which
+  enforces the permission profile's tool allowlist fail-closed exactly like the Claude path. The API
+  key (`internal/providers/openrouter/credential`) is kept in the OS secure credential store (Windows
+  Credential Manager / macOS Keychain) via `internal/platform.SecretStore`, with an environment
+  variable (`OPENROUTER_API_KEY`) and an in-memory session-only fallback when the store is
+  unavailable — the key is never written to SQLite, run events, application logs, or the diagnostic
+  bundle, and it is required even to run free models. Its verification state is tracked in the
+  `openrouter_key_state` application setting (`not_configured` / `unverified` / `configured` /
+  `invalid`). The model catalog (`internal/providers/openrouter/catalog`) fetches OpenRouter's public
+  Models API, caches it in the new `openrouter_model_cache` table (`fetched_at` plus the raw JSON
+  payload, `internal/migrations/sql/012_openrouter_model_cache.sql`) with a 6-hour TTL and manual
+  refresh, falls back to the last-good cached copy on a fetch error, and as a last resort to an
+  embedded dated snapshot (`FallbackSnapshotDate`) when the cache is empty. Only tool-capable text
+  models are offered as agents, since tool support is model-dependent and not every OpenRouter model
+  has it. A curated, hand-reviewed set of recommendations (`catalog/curated.go`, reviewed
+  2026-07-21) groups models into Free automatic (`openrouter/free`, which auto-picks a capable free
+  model), Free recommended, Best coding, Balanced, Fast and cheap, Strong reasoning, and Large
+  context; free models are called out as less stable — variable quality and latency, lower rate
+  limits, availability that can change — and best suited to small tasks, and free mode never silently
+  falls back to a paid model. Provider routing always forces `require_parameters: true` so tool calls
+  keep working regardless of which upstream provider OpenRouter selects; optional Advanced settings
+  (`Provider.SetRouting`) cover data-collection preference, zero-data-retention, and fallback
+  ordering, but no experimental server-side tools or plugins are ever enabled. The doctor report
+  gained an `openrouter` dependency check (key state plus catalog reachability) alongside `git`,
+  `claude`, and `rojo` — there is no executable path for OpenRouter, since it is not a CLI.
+- Post-run Studio playtest validation, budget ceilings re-checked every turn, and usage/cost
+  reporting (preferring OpenRouter's own `usage.cost`, falling back to catalog pricing when it is
+  exactly zero) now work the same way for OpenRouter runs as for Claude Code runs.
+- The OpenRouter provider now persists its conversation per chat thread instead of starting fresh on
+  every run: each user prompt, assistant turn (with its tool calls), and tool result is written to a
+  new `openrouter_messages` table (`internal/migrations/sql/011_openrouter_conversations.sql`,
+  FK'd to `chat_threads(id)` with `ON DELETE CASCADE`) as the agent loop produces it, and the next
+  run on that thread loads and replays the history before its first request. This survives a daemon
+  restart, since it is read straight from SQLite rather than kept in memory, and it is model-agnostic
+  — a thread can switch models between runs and still replay the same history. A history saved by an
+  interrupted run (an assistant tool call with no persisted tool result yet) is made safe to resume
+  by `sanitizeHistory`, which synthesizes a placeholder tool result for any dangling tool call and
+  drops orphaned tool messages, so OpenRouter's tool-call pairing requirement is never violated on
+  replay. When a thread's accumulated history grows past roughly 75K tokens, `compactMessages`
+  deterministically trims it before each request — whole turns are dropped from the oldest end first
+  (never splitting an assistant message from its tool results), a single fixed system note marks the
+  gap, and, only if still oversized, older tool results are shrunk to a small cap; no model call and
+  no fabricated content are involved, and the run emits one `openrouter.compacted` status event the
+  first time it happens. Persistence is entirely best-effort and wired through a small
+  `ConversationStore` seam (`internal/providers/openrouter/conversation.go`) backed by the database
+  in `internal/app/conversation.go`: a database error never fails a run, and a run with no thread ID
+  or no store configured behaves exactly as before.
+- The OpenRouter provider now accepts image attachments on vision-capable models and wires the model
+  catalog in for capability and pricing lookups. `RunRequest.Attachments` (plumbed from
+  `POST /api/v1/runs`'s already-validated `body.Attachments` through `scheduler.Job.Attachments`, a
+  fresh-user-turn-only field left empty on resume/restart/correction runs) carries project-relative
+  attachment paths as data, not just as text in the prompt. `Provider.SetModelInfo` gives the agent
+  loop a `catalog`-backed lookup of a model's vision support and per-token pricing; when a run
+  attaches images to a model that isn't vision-capable (or whose capabilities aren't known), it fails
+  with a controlled `openrouter.image_unsupported` error instead of silently dropping the image or
+  switching models. Otherwise `buildUserMessage` re-resolves each attachment through the run's
+  `agenttools.Workspace` (so a path can never escape the project root), reads and MIME-sniffs it
+  (`image/png|jpeg|gif|webp` only, 10 MB cap), and folds it into the request as a base64 `data:` URL
+  content part; a missing or invalid attachment is skipped, not fatal. Only the attachment's path is
+  ever persisted (`StoredMessage.Attachments`), never the image bytes, and on resume `storedToMessages`
+  rebuilds a stored user turn's image parts the same way — re-validating each path — only when the
+  current model is vision-capable, otherwise replaying the stored text alone. Turn cost prefers
+  OpenRouter's own `usage.cost`; only when that is exactly zero and the catalog knows the model's
+  per-token pricing does the loop estimate cost from prompt/completion tokens, marking that turn's
+  `openrouter.usage` event `estimated: true` (also now carrying `reasoningTokens` alongside the
+  existing `cacheReadTokens` as informational fields). `Provider.SetRouting` exposes operator-facing
+  provider-routing preferences (`allow_fallbacks`, `data_collection`, `zdr`, `order`), but
+  `require_parameters: true` is always forced regardless of configuration, and no experimental
+  server-side tools or plugins are ever enabled. `internal/app/app.go` constructs the catalog service
+  once at startup and wires both seams from settings; the catalog's own network fetch happens lazily
+  on first use (falling back to the DB cache or the embedded snapshot), never blocking startup.
+
+### Changed
+
+- Changing the **default model** in Settings now re-points every existing project's agents to the new
+  model, not just projects created afterward (`Store.SetAllAgentsModel`, applied from the settings
+  handler in `internal/api/api.go`). Agents already set to a different model are left untouched, and
+  the default provider and effort still apply only to newly created projects.
+
+### Removed
+
+- The Codex CLI provider. It no longer runs, is not discovered by `studioforge doctor`, has no
+  executable-path setting (`codex_path` is gone from Settings and from the app-settings whitelist),
+  reads no `CODEX_HOME`, and cannot be selected for a new run or agent — `Scheduler.Diagnose` reports
+  it unconfigured and `Scheduler.Submit` rejects it. Runs saved earlier with `provider="codex"` are
+  not migrated, rewritten, or deleted: they remain fully readable in history, serialize normally, and
+  are shown in the UI with a **Legacy provider** badge ("This run used a removed provider and is
+  read-only history."). Restart and Resume on a legacy Codex run now return a controlled 409
+  (`this run used the removed "codex" provider and is read-only history; it cannot be restarted or
+  resumed`) instead of attempting to relaunch a CLI that is no longer wired up.
+
 ## [0.3.0-alpha.1] - 2026-07-20
 
 ### Added

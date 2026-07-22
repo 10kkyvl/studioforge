@@ -8,15 +8,18 @@ no prior public release (first tag will be `v0.1.0-alpha.1`).
 ## Overview and the core assumption
 
 StudioForge is a **local, single-user development tool**. One Go daemon runs on the operator's own
-machine, binds a loopback TCP listener, and drives external CLIs (`claude`, `codex`, `rojo`, `git`)
-and the official Roblox Studio MCP launcher on the operator's behalf. There is no server-side
-multi-tenant component and no remote account system.
+machine, binds a loopback TCP listener, and drives external CLIs (`claude`, `rojo`, `git`) and the
+official Roblox Studio MCP launcher on the operator's behalf. A second agent provider, OpenRouter, is
+not a subprocess at all — the daemon talks to OpenRouter's HTTP API directly, in-process, using an API
+key the operator supplies. There is no server-side multi-tenant component and no remote account
+system.
 
 The core assumption that follows from this: **localhost is not a trust boundary**. StudioForge does
 not defend against another process running as the same OS user account. If malware is already
-running as you, it can already read your files, read your Claude/Codex CLI session, and talk to
-anything on `127.0.0.1` that your other local software exposes — with or without StudioForge
-installed. StudioForge's local protections (bootstrap token, session cookie, Host/Origin checks —
+running as you, it can already read your files, read your Claude CLI session, read your OpenRouter API
+key out of the OS credential store the same way StudioForge itself does, and talk to anything on
+`127.0.0.1` that your other local software exposes — with or without StudioForge installed.
+StudioForge's local protections (bootstrap token, session cookie, Host/Origin checks —
 see [Browser/session security](#browsersession-security)) exist to stop a **web page or another
 site's script** from driving the daemon through your browser, not to stop same-user malware. Keep
 the workstation itself trustworthy; that is the actual boundary.
@@ -27,18 +30,20 @@ Enumerated honestly, StudioForge can:
 
 - Read and write files under the canonical root of each **registered project** (see
   [Local file access](#local-file-access)).
-- Execute external CLIs already installed by the operator: `claude`, `codex`, `rojo`, and `git`,
+- Execute external CLIs already installed by the operator: `claude`, `rojo`, and `git`,
   plus the official Roblox Studio MCP launcher (`%LOCALAPPDATA%\Roblox\mcp.bat` on Windows,
   `RobloxStudio.app/Contents/MacOS/StudioMCP` on macOS). On Windows it can also launch the Roblox
   Studio application itself directly (`RobloxStudioBeta.exe -task EditFile -localPlaceFile <path>`)
   from the **Open in Studio** action (`internal/roblox/studio/studio.go`) — a separate thing from
   launching the MCP launcher for tool access.
-- Reach Roblox Studio only through that official launcher's MCP JSON-RPC interface, and only for
-  Claude runs (`internal/roblox/mcp`). StudioForge contains no Roblox Studio plugin.
+- Reach Roblox Studio only through that official launcher's MCP JSON-RPC interface, for Claude and
+  OpenRouter runs (`internal/roblox/mcp`). StudioForge contains no Roblox Studio plugin.
 - Accept HTTP connections on the loopback listener (or a non-loopback one only if you pass
   `--unsafe-host`), plus whatever network access the external CLIs make on their own — e.g. Claude
-  Code and the Codex CLI talking to their own vendor APIs. StudioForge does not add a proxy in front
-  of those calls and does not inspect their contents.
+  Code talking to its own vendor API — and, separately, StudioForge's own HTTP client talking directly
+  to OpenRouter's API using the operator's key. StudioForge does not add a proxy in front of Claude
+  Code's own calls and does not inspect their contents; the OpenRouter calls are its own code, not a
+  third-party CLI's, but still carry only what the run's prompt and tool results require.
 
 It does **not** ship a Roblox Studio plugin, does not reach the Roblox Marketplace or DataStores
 directly, and does not open any listener other than the one loopback (or explicitly unsafe) port.
@@ -62,14 +67,21 @@ directly, and does not open any listener other than the one loopback (or explici
   project — `.agent/constitution.yaml` and `.agent/requirements.md` — verbatim, and prepends them to
   the run's system prompt (`internal/projects/context.go`). It also writes a Rojo skeleton on first
   registration if none exists (`internal/projects/scaffold.go`), and builds/writes a place file under
-  `.studioforge/` when you open Studio. Beyond that, **the agent subprocess itself runs with the
-  full filesystem permissions of the user account that started StudioForge.** The external CLI
-  (`claude` or `codex`) is started with its working directory (`cmd.Dir`) set to the project's
-  canonical root, but StudioForge does not sandbox, chroot, or otherwise fence that process's own
-  file access — whatever the CLI (or a tool it invokes) chooses to read or write, it can, anywhere
-  the OS account can reach. Codex additionally applies its own `--sandbox` mode (see
-  [Command execution](#command-execution)); Claude Code has no equivalent OS-level sandbox, only its
-  own tool-approval gate.
+  `.studioforge/` when you open Studio. Beyond that, the two providers differ in a way worth being
+  precise about: **a Claude run's subprocess itself runs with the full filesystem permissions of the
+  user account that started StudioForge.** `claude` is started with its working directory (`cmd.Dir`)
+  set to the project's canonical root, but StudioForge does not sandbox, chroot, or otherwise fence
+  that process's own file access — whatever the CLI (or a tool it invokes) chooses to read or write,
+  it can, anywhere the OS account can reach. Claude Code has no OS-level sandbox from StudioForge's
+  side, only its own tool-approval gate. **An OpenRouter run's file tools are contained by
+  StudioForge's own code, not by the model's good behavior**: `agenttools.Workspace` resolves every
+  path a workspace tool touches (list/read/search/grep/create/edit/patch/mkdir/git) against the
+  project's canonical root, rejects absolute paths and `..` traversal, and rejects a symlink used to
+  escape the root — a request outside the root fails the tool call rather than reaching the
+  filesystem. The one OpenRouter tool that is not contained this way is `run_command`: shell execution
+  (`shell: true`) is refused outside `danger-full-access`, `workspace-write` restricts it to a fixed
+  allowlist of command names, and `danger-full-access` allows an arbitrary command with the full
+  filesystem permissions of the user account — the same ceiling a Claude run already has.
 
 ## Roblox Studio access
 
@@ -96,8 +108,12 @@ directly, and does not open any listener other than the one loopback (or explici
     send synthetic keyboard/mouse input to the desktop, so they are gated behind the highest tier
     only.
   - An unrecognized profile string grants nothing — a typo denies access rather than widening it.
-- **Claude runs only.** The Codex adapter has no `--mcp-config` equivalent, so Codex agents cannot
-  reach Studio at all, regardless of permission profile.
+- **Claude and OpenRouter runs.** Claude reaches Studio through a generated `--mcp-config` naming the
+  `mcp-shim`; OpenRouter's in-process agent loop is instead handed a live MCP client directly
+  (`grant.Client`, wrapped by `internal/providers/openrouter/mcpbridge`, which re-applies the same
+  `AllowedTools` list). Both paths are fail-closed on the same single-instance rule and the same
+  permission-profile allowlist — neither provider gets a wider or narrower grant than the other for
+  the same permission profile.
 - **The playtest validation loop is a second, daemon-initiated Studio MCP connection**
   (`internal/roblox/mcp/validator.go`, `Provisioner.Validate`), separate from the connection the
   agent's own `claude` subprocess used — which has already exited by the time validation runs. Be
@@ -111,15 +127,18 @@ directly, and does not open any listener other than the one loopback (or explici
   `user_keyboard_input`/`user_mouse_input`/`upload_image`/`store_image`/`http_get`
   (`danger-full-access`-only tools) and never Studio content edits (`multi_edit`/`execute_luau`). It is
   further gated behind an explicit per-agent opt-in (`validate_after_run`, off by default) and only
-  triggers when the run's own Studio grant succeeded, so a `read-only` run, a Codex run, a plan-mode
-  run, or an agent that never opted in never causes the daemon to touch Play mode on its own.
+  triggers when the run's own Studio grant succeeded, so a `read-only` run, a mock-provider run, a
+  plan-mode run, or an agent that never opted in never causes the daemon to touch Play mode on its
+  own. It runs the same way after a qualifying Claude run or a qualifying OpenRouter run — the check
+  is `provider == "claude" || provider == "openrouter"` (`scheduler.studioCapable`).
 - **Real Studio session discovery is a third kind of daemon-initiated Studio MCP connection**
   (`internal/roblox/mcp/sessions.go`, `Provisioner.ListSessions`), run only on explicit request
   (`POST /api/v1/studio/sessions/refresh`) rather than per-run or on a background timer. It calls
   exactly three read-only-tier tools — `list_roblox_studios`, `set_active_studio`,
   `get_studio_state` — never a tool that changes the open place or reaches beyond it, and it is not
-  gated by an agent's permission profile at all, because it never runs as part of a Claude or Codex
-  run in the first place. Unlike `Provision` and `Validate`, it deliberately does **not** refuse when
+  gated by an agent's permission profile at all, because it never runs as part of any agent run in the
+  first place — it is a daemon-initiated probe triggered by an operator's click, not a run. Unlike
+  `Provision` and `Validate`, it deliberately does **not** refuse when
   more than one Studio instance is open: showing every open instance is what a listing view is for,
   not an access grant, so the fail-closed-on-ambiguity rule that governs Studio *access* does not
   apply here. A discovered instance is auto-bound to a registered project only when its reported name
@@ -131,22 +150,23 @@ directly, and does not open any listener other than the one loopback (or explici
 
 ## Command execution
 
-- **What gets spawned.** A run execs one external CLI: `claude -p ...` or `codex exec --json ...`,
-  in the project's own directory. Separately, StudioForge can exec `rojo build`/`rojo plugin
-  install`/`rojo serve`, `git` (for checkpoints and `doctor`), and the Roblox Studio MCP launcher.
-  All of these are executables the operator already has installed; StudioForge does not download or
-  execute anything it fetches over the network itself.
+- **What gets spawned.** A Claude run execs one external CLI, `claude -p ...`, in the project's own
+  directory. An OpenRouter run spawns nothing for the model call itself — StudioForge's own
+  `agentloop.go` calls OpenRouter's API over HTTPS in-process — though its `run_command` tool can
+  spawn arbitrary child processes under the same rules described below. Separately, StudioForge can
+  exec `rojo build`/`rojo plugin install`/`rojo serve`, `git` (for checkpoints and `doctor`), and the
+  Roblox Studio MCP launcher. All of these are executables the operator already has installed;
+  StudioForge does not download or execute anything it fetches over the network itself.
 - **Reduced environment.** Provider subprocesses receive a fixed allowlist of environment variables
   copied from StudioForge's own process, nothing else (`processes.MinimalEnvironment`,
   `internal/processes/supervisor.go`): `PATH`, `PATHEXT`, `HOME`, `USERPROFILE`, `LOCALAPPDATA`,
-  `APPDATA`, `TMPDIR`, `TMP`, `TEMP`, `SYSTEMROOT`, `WINDIR`, `COMSPEC`, `CODEX_HOME`,
+  `APPDATA`, `TMPDIR`, `TMP`, `TEMP`, `SYSTEMROOT`, `WINDIR`, `COMSPEC`,
   `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, `SSL_CERT_DIR`. In production no extra
-  variables are appended to that list — the parameter that allows extras is only used by tests.
+  variables are appended to that list — the parameter that allows extras is only used by tests. This
+  does not apply to the OpenRouter API call itself, since it is not a subprocess; its only credential
+  is the API key read from the credential manager at request time (see
+  [Credential handling](#credential-handling)), not from an inherited environment.
 - **Permission profile enforcement differs by provider, and is worth being precise about:**
-  - Codex: the profile name is passed straight through as Codex's own `--sandbox` flag value
-    (`read-only` / `workspace-write` / `danger-full-access`, defaulting to `workspace-write` for
-    anything else) alongside `--ask-for-approval never` (`internal/providers/codex/codex.go`).
-    Enforcement of that sandbox is Codex's own, not StudioForge's.
   - Claude: the profile maps to Claude Code's `--permission-mode` — `read-only` → `default` (file
     edits are blocked), `workspace-write` → `acceptEdits` (file edits are auto-accepted; any other
     tool call that Claude Code does not separately auto-approve is simply denied, because
@@ -155,18 +175,28 @@ directly, and does not open any listener other than the one loopback (or explici
     (the chat "Plan" toggle) always forces `--permission-mode plan` regardless of the agent's
     profile. Claude Code enforces this itself; StudioForge applies no additional OS-level sandbox
     around the Claude process on any tier, including `danger-full-access`.
+  - OpenRouter: StudioForge's own `agenttools` package enforces the profile directly, tool by tool,
+    rather than delegating to the model or an external sandbox — see
+    [Local file access](#local-file-access) for the workspace-containment detail. `read-only` exposes
+    no write/edit/patch/mkdir/git-write/run_command tools at all; `workspace-write` adds them, plus
+    `run_command` restricted to a fixed allowlist of command names with no shell; `danger-full-access`
+    additionally allows `run_command` with `shell: true` (arbitrary command line, platform shell) and
+    the higher-tier Studio MCP tools. There is no separate plan mode for OpenRouter today — a
+    workspace-write-or-above profile can always write.
   - In short: **an agent given `workspace-write` or `danger-full-access` can change the operator's
-    project files**, and for Claude with `danger-full-access` it can run arbitrary commands the OS
-    account is allowed to run. This is expected of an AI coding agent; do not treat any profile name
-    as a promise of confinement equivalent to a container or VM.
+    project files**, and with `danger-full-access` it can run arbitrary commands the OS account is
+    allowed to run — true for both providers. This is expected of an AI coding agent; do not treat
+    any profile name as a promise of confinement equivalent to a container or VM.
 - **Git checkpoint, a recovery mechanism, not a preventative control.** Before every Claude run whose
   mode is not `plan`, StudioForge stages and commits the project's current working tree with `git
   -C <root> commit` (`internal/gitcheckpoint/gitcheckpoint.go`), using a fixed local identity so it
   works even without a configured Git author. It is entirely best-effort: a project that is not a
   Git repository, or one with nothing to commit, is a silent no-op, and a checkpoint failure never
   blocks the run. This exists so a bad edit can be reverted with ordinary Git commands afterward — it
-  does not stop the edit from happening, and it does not run before Codex or mock runs, nor before a
-  `restart` of an interrupted/failed run (only the initial `POST /api/v1/runs` path invokes it).
+  does not stop the edit from happening, and it does not run before OpenRouter or mock runs, nor
+  before a `restart` of an interrupted/failed run (only the initial `POST /api/v1/runs` path invokes
+  it). An OpenRouter run's changes therefore have no automatic checkpoint today — rely on your own
+  Git discipline (or the project's existing history) for those.
 - **Safe mode** (`--safe-mode`) makes `POST /api/v1/runs` refuse to start any run
   (`internal/api/api.go`, error code `safe_mode`), while diagnostics, settings, backups, and
   export/import stay available. One nuance worth stating precisely: safe mode is checked in the
@@ -186,22 +216,32 @@ directly, and does not open any listener other than the one loopback (or explici
   (verified: none exist in `internal/api`), so a browser's default same-origin policy is the only
   thing standing between another site and the API — which is why Host/Origin validation
   (below) exists as a second layer for the mutating routes.
-- Beyond the daemon's own listener, network access is whatever the external CLIs make on their own —
-  Claude Code and the Codex CLI reach their respective vendor APIs using their own authentication;
-  StudioForge does not proxy, inspect, or rate-limit those calls.
+- Beyond the daemon's own listener, network access is whatever the external CLI makes on its own —
+  Claude Code reaches its vendor API using its own authentication; StudioForge does not proxy,
+  inspect, or rate-limit those calls. OpenRouter is different: StudioForge's own code makes the
+  outbound HTTPS request, using the operator's OpenRouter API key, to `openrouter.ai` (the model
+  catalog fetch) and to whichever inference endpoint OpenRouter's own routing selects for a chat
+  request — StudioForge does not run its own proxy or inspection layer in front of that either, it is
+  simply the direct caller instead of a CLI being the caller.
 
 ## Credential handling
 
 - StudioForge does not store an Anthropic API token or OAuth credential anywhere. Claude
   authentication is entirely owned by the `claude` CLI; StudioForge only shells out to it and reads
   `claude auth status`/`--help` output.
-- Codex CLI authentication works the same way: StudioForge runs `codex login status` to check it and
-  never reads or stores the underlying credential.
-- `internal/platform/secretstore.go` defines a `SecretStore` interface with a Windows Credential
-  Manager adapter and a macOS Keychain adapter. Today both are stubs — every method on both types
-  unconditionally returns "secret store unavailable" — and nothing else in the daemon calls this
-  interface. These are adapter boundaries reserved for a future feature, not an active secret store;
-  no credential passes through them in this release.
+- The OpenRouter API key is the one credential StudioForge does actively manage
+  (`internal/providers/openrouter/credential/manager.go`). Saving a key
+  (`POST /api/v1/openrouter/key`) writes it through `internal/platform.SecretStore` — a real Windows
+  Credential Manager adapter (`secretstore_windows.go`, `CredWriteW`/`CredReadW`/`CredDeleteW`) or a
+  real macOS Keychain adapter (`secretstore_darwin.go`, shelling out to `/usr/bin/security`), not a
+  stub. If the store is unavailable (`ErrSecretStoreUnavailable` — e.g. an unsupported platform, or
+  the backend genuinely cannot be reached), the manager falls back to holding the key in memory for
+  the current daemon process only, never written to disk; the key is never written to SQLite, a run
+  event, or a `slog` log line. `OPENROUTER_API_KEY` is checked last, after the secure store and the
+  in-memory session value. `GET /api/v1/openrouter/status` and `studioforge doctor` report only the
+  key's verification state (`not_configured`/`unverified`/`configured`/`invalid`) and source
+  (`keychain`/`session`/`env`) — never the key itself — and `Doctor.ExportBundle` never includes it.
+  An API key is required to use OpenRouter at all, including its free models.
 - Secret redaction (`internal/security/redact.go`) matches common patterns — `key=`/`token=`/
   `password=`-style assignments, `sk-ant-...`/`sk-...` API key shapes, `Authorization: Bearer/Basic`
   headers, and PEM private key blocks — and replaces matches with `[REDACTED]`. It has two production
@@ -246,14 +286,18 @@ Stated explicitly, StudioForge trusts:
 - **The operator** — the person running the daemon and approving what an agent does.
 - **The local OS user account** — anything that account can already do, StudioForge's local
   protections do not add a second gate against (see [Overview](#overview-and-the-core-assumption)).
-- **The installed external CLIs and their own authentication** — `claude`, `codex`, `git`, `rojo`,
+- **The installed external CLIs and their own authentication** — `claude`, `git`, `rojo`,
   and whatever those tools decide to do with the permission profile/sandbox mode they are given.
+- **OpenRouter itself, once the operator has supplied a key** — StudioForge trusts OpenRouter's API
+  to honor the `require_parameters: true` routing constraint and to return the usage/cost figures its
+  loop reports; it does not independently verify either.
 - **Roblox's official Studio MCP launcher** — StudioForge does not reimplement Studio operations; it
   detects and speaks MCP to Roblox's own launcher.
 
 StudioForge does **not** trust the network: it does not listen beyond loopback by default, adds no
 remote-authentication layer if you force it to, and assumes any code on the same OS user account
-could reach anything StudioForge or its subprocesses can reach.
+could reach anything StudioForge or its subprocesses can reach — including, for OpenRouter, the same
+OS credential store StudioForge itself reads the API key from.
 
 ## Honest gaps for the alpha release
 
@@ -288,6 +332,14 @@ could reach anything StudioForge or its subprocesses can reach.
   HTTP endpoint is guarded, because none currently calls it.
 - Safe mode's run-blocking check is not repeated on the run-restart endpoint (see
   [Command execution](#command-execution)).
+- **Free OpenRouter models are less predictable than paid ones.** Quality, latency, and rate limits
+  vary more, and a given free model's availability can change without notice — treat them as suited to
+  small tasks, not long unattended runs. StudioForge never silently switches a free-mode run to a paid
+  model to work around this.
+- **The removed Codex CLI provider is history-only, not migrated.** A run saved earlier with
+  `provider="codex"` still reads back and serializes correctly, and its stored events are unaffected,
+  but `scheduler.Manager.Diagnose` reports the provider unconfigured, so it cannot be restarted,
+  resumed, or selected for a new run — see `internal/api/legacy_codex_test.go`.
 
 ## Safe usage recommendations
 
@@ -300,8 +352,10 @@ could reach anything StudioForge or its subprocesses can reach.
   removes the loopback restriction with no remote authentication added.
 - Review checkpoint commits and diffs after a run (`git log`, `git diff`) rather than assuming a
   permissive profile only did what you asked.
-- Keep `claude`, `codex`, `rojo`, and `git` themselves up to date; StudioForge inherits whatever
-  security posture those tools have.
+- Keep `claude`, `rojo`, and `git` themselves up to date; StudioForge inherits whatever security
+  posture those tools have. Rotate the OpenRouter API key from OpenRouter's own dashboard if you
+  suspect it leaked; StudioForge has no revocation mechanism of its own beyond removing the stored key
+  (`DELETE /api/v1/openrouter/key`).
 - Review a diagnostic bundle (`studioforge doctor --bundle diagnostics.zip`) before sharing it, even
   though it already excludes prompts, environment variables, and project source by design, and
   applies pattern-based redaction on top of that.

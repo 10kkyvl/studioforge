@@ -5,7 +5,7 @@ guide gets you from a clean checkout (or a downloaded package) to a running daem
 project, and your first agent run.
 
 After setup you get a single local Go daemon with an embedded browser UI. It manages one or more
-Roblox project registrations, agent definitions backed by Claude Code or Codex CLI, a SQLite-backed
+Roblox project registrations, agent definitions backed by Claude Code or OpenRouter, a SQLite-backed
 run history and event log, a fair per-project scheduler, and optional access to Roblox Studio through
 Roblox's own official Studio MCP launcher. Several features described in the codebase are not yet
 reachable from the UI or API — see [Known Limitations](KNOWN_LIMITATIONS.md) before you plan work
@@ -35,7 +35,7 @@ you are changing the frontend and want to rebuild it.
 - **macOS arm64 (Apple Silicon)** — packaged target, fully supported.
 - **Linux** — builds and runs from source (the daemon itself is CGO-free Go plus embedded SQLite), but
   is not part of the packaging pipeline and is not Studio-capable: Roblox Studio does not run on Linux,
-  so there is no Studio MCP launcher to detect there. Everything else (daemon, UI, Codex provider,
+  so there is no Studio MCP launcher to detect there. Everything else (daemon, UI, OpenRouter provider,
   database, Git checkpoints) works.
 
 ---
@@ -134,8 +134,8 @@ studioforge --mock
 ```
 
 `--mock` seeds and runs a deterministic three-project demo (a mobile obby, a tycoon, and an arena
-prototype) that exercises the real domain model and API without needing Claude Code, Codex, Roblox
-Studio, or Rojo installed. Each demo project gets its own on-disk workspace under
+prototype) that exercises the real domain model and API without needing Claude Code, an OpenRouter
+API key, Roblox Studio, or Rojo installed. Each demo project gets its own on-disk workspace under
 `<data-dir>/demo-projects/<id>/` with a `default.project.json` and a `.agent/` folder, three preset
 agents (orchestrator/engineer/QA), a budget, and a completed sample run with a usage record.
 
@@ -155,12 +155,15 @@ directory without launching any external process.
 
 ## Configuration
 
-Open **Settings** in the UI to override the executable paths StudioForge uses for Codex, Claude Code,
-Rojo, Git, and the Studio MCP launcher (`studio_mcp_path`), plus the default provider/model/effort and
+Open **Settings** in the UI to override the executable paths StudioForge uses for Claude Code, Rojo,
+Git, and the Studio MCP launcher (`studio_mcp_path`), plus the default provider/model/effort and
 global concurrency. Changes apply immediately, without restarting the daemon — the underlying
-providers pick up the new executable path on the next run. Leaving a field blank falls back to
+providers pick up the new executable path on the next run. Changing the **default model** also
+re-points every existing project's agents to the new model (agents already on a different model are
+left alone); the default provider and effort still apply only to newly created projects. Leaving a field blank falls back to
 resolving the tool from `PATH` (or, for the Studio MCP launcher, the platform-specific default
-location).
+location). OpenRouter has no executable path — it is an HTTP API — and is configured with an API key
+in **Settings** instead (see [Connecting OpenRouter](#connecting-openrouter) below).
 
 Run `studioforge doctor` to see what StudioForge actually detected:
 
@@ -170,9 +173,11 @@ studioforge doctor
 
 This reports, as JSON, the StudioForge version/commit/build date, OS/arch, data directory, database
 integrity and WAL status, FTS5 availability, safe/mock mode, and a per-dependency check (`git`,
-`codex`, `claude`, `rojo`, `studioMcp`) with detected path, version string, and a status of `ok`,
+`claude`, `rojo`, `studioMcp`, `openrouter`) with detected path, version string, and a status of `ok`,
 `warning` (found but not authenticated), `error`, or `missing`, plus a `dataDirectory` writability
-check. The same report backs the in-app Settings integration cards.
+check. The `openrouter` check reports the API key's verification state and whether the model catalog
+is reachable, since there is no executable or version string for an HTTP provider. The same report
+backs the in-app Settings integration cards.
 
 ---
 
@@ -197,8 +202,43 @@ MCP servers. There is currently no way to fully isolate a run from your local Cl
 without `--bare`, which in turn requires `ANTHROPIC_API_KEY` and cannot use OAuth/subscription
 authentication.
 
-If Windows PATH resolves an inaccessible executable (this affects Codex more than Claude Code — see
-below), set an explicit path in **Settings**.
+If Windows PATH resolves an inaccessible executable, set an explicit path in **Settings**.
+
+---
+
+## Connecting OpenRouter
+
+OpenRouter is a different kind of provider from Claude Code: it is not a local CLI, it is an HTTP
+API, and StudioForge drives it with its own in-process agent loop rather than execing a subprocess.
+You need an OpenRouter account and an API key — **an API key is required even to run free models**.
+
+Set the key one of two ways:
+
+- Environment variable: `OPENROUTER_API_KEY`.
+- **Settings -> Agents and integrations -> OpenRouter**: paste the key and click **Test connection**.
+
+Either way, the key is written to the OS secure credential store (Windows Credential Manager on
+Windows, Keychain on macOS) — never to SQLite, run events, application logs, or the diagnostic
+bundle. If the secure store is unavailable, StudioForge falls back to holding the key in memory for
+the current session only (not persisted); the environment variable is checked last. `studioforge
+doctor` and the Settings integration card both report the key's state (`not_configured` /
+`unverified` / `configured` / `invalid`) and its source (keychain / session / env), never the key
+itself.
+
+The model picker is populated from OpenRouter's public Models API, cached for 6 hours with a manual
+refresh action, falling back to the last successfully fetched copy and then to a bundled snapshot if
+OpenRouter's API cannot be reached at all. Only models that support tool calling are offered, since
+StudioForge's agent loop is built around tool use and not every OpenRouter model supports it. A
+curated shortlist (Free automatic, Free recommended, Best coding, Balanced, Fast and cheap, Strong
+reasoning, Large context) sits above the full catalog; **Free automatic** (`openrouter/free`)
+auto-picks a capable free model for you. Free models are worth treating differently from paid ones:
+quality, latency, and rate limits vary more, and availability can change without notice, so they suit
+small tasks better than long unattended runs — StudioForge will never silently switch a free-mode run
+to a paid model to compensate.
+
+Image attachments are sent as real image data (not just referenced by path) to vision-capable models;
+attaching an image to a model without vision support fails the run with a clear error rather than
+silently dropping the image.
 
 ---
 
@@ -221,8 +261,10 @@ and StudioForge cannot pin an instance onto the agent's own connection from outs
 accepts no instance-selection argument. With several Studio instances open, StudioForge refuses access
 rather than guessing which one the agent should use, and the run simply continues without Studio.
 
-Studio access is granted to **Claude runs only**. The Codex adapter has no equivalent of
-`--mcp-config`, so Codex agents cannot reach Studio regardless of how many instances are open.
+Studio access is granted to **Claude and OpenRouter runs**. Claude reaches the launcher through a
+generated `--mcp-config`; OpenRouter's in-process agent loop opens its own live per-run MCP client to
+the same launcher instead. Both are subject to the identical fail-closed single-instance rule and the
+same permission-profile tool allowlist.
 
 Studio tools are auto-approved by the agent's permission profile: `read-only` gets observation tools
 only; `workspace-write` adds tools that change the open place; tools that reach past the open place
@@ -266,7 +308,7 @@ workflow today.
    auto-commits the project's working tree (`git add -A` + a commit authored as `StudioForge`) before
    the run starts, so you can revert an agent's changes with ordinary Git. This is best-effort: a
    project that is not a Git repository, or has nothing to commit, is a silent no-op, and a checkpoint
-   failure never blocks the run. Codex and mock-provider runs are not checkpointed.
+   failure never blocks the run. OpenRouter and mock-provider runs are not checkpointed.
 
 ---
 
@@ -318,7 +360,9 @@ Adapt the content freely — these are illustrative, not a schema StudioForge va
 - **Several Roblox Studio instances open at once.** Access is refused by design, not by bug — see the
   fail-closed rule above. Close down to a single relevant instance, or check
   [Troubleshooting](TROUBLESHOOTING.md) for how to confirm which instance holds which project's place.
-- **Expecting a Codex agent to reach Roblox Studio.** It cannot; Studio access is Claude-only.
+- **Expecting a run saved under the old Codex provider to restart or resume.** The Codex CLI provider
+  is removed; those runs remain visible in history with a **Legacy provider** badge, but Restart and
+  Resume return a controlled error instead of relaunching a CLI that no longer runs.
 - **Expecting a task's dependencies to block it from running.** Dependencies are persisted and
   validated for cycles, but a run does not check whether a task's dependencies are finished before
   starting — see [Known Limitations](KNOWN_LIMITATIONS.md).

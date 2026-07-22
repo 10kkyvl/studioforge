@@ -29,11 +29,14 @@ tooling, not a replacement for it.
 - Persisted run events with a live SSE stream.
 - A Claude Code provider that runs the real `claude` CLI, discovers its supported flags, streams and
   classifies NDJSON events, and supports session resume and usage reporting.
-- A Codex CLI provider that runs `codex exec --json` with workspace sandboxing, saved authentication,
-  thread resume, and classified failures.
+- An OpenRouter provider — a different execution model from Claude Code: instead of a local CLI
+  subprocess, StudioForge drives OpenRouter's HTTP API with its own in-process bounded tool loop,
+  executing local workspace tools and Roblox Studio MCP tools, persisting conversation history per
+  chat thread, reporting usage and cost, and enforcing budget ceilings every turn. The API key is
+  kept in the OS secure credential store, never in SQLite, and is required even for free models.
 - Orchestrator delegation to other enabled agents through Claude's native `--agents` flag.
-- Roblox Studio MCP handed to Claude runs, fail-closed to exactly one open Studio instance (see
-  Known limitations for why).
+- Roblox Studio MCP handed to Claude and OpenRouter runs, fail-closed to exactly one open Studio
+  instance (see Known limitations for why).
 - An automatic git checkpoint before every non-plan Claude run.
 - Rojo build-and-open: compiling a place file and opening it in Studio.
 - Static project context: `.agent/constitution.yaml` and `.agent/requirements.md`, read verbatim into
@@ -113,7 +116,9 @@ ad hoc scripts and a single long-lived terminal session.
 ## Who this is not for yet
 
 - Anyone who needs signed or notarized installers today — both packages are unsigned.
-- Anyone who needs Codex agents to reach Roblox Studio — Studio access is Claude-only right now.
+- Anyone who needs guaranteed quality or availability from free OpenRouter models — free models are
+  less stable (variable quality/latency, lower rate limits, availability can change) and best used
+  for small tasks; free mode never silently falls back to a paid model.
 - Anyone who needs multiple simultaneous writers per project, remote or multi-user access, or a
   hosted service — none of that exists.
 - Anyone relying on screenshot-driven iteration, automated playtest validation, or persistent
@@ -123,11 +128,11 @@ ad hoc scripts and a single long-lived terminal session.
 ## Known limitations
 
 The full list is in [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md). The largest ones:
-Studio access is granted only when exactly one Studio instance is open, and only to Claude runs; a
-Claude run inherits the operator's own Claude Code configuration (`CLAUDE.md`, hooks, plugins,
-skills), which is billed to every run; the portable project archive copies metadata/agents/tasks but
-not source, and import needs an existing project root; and detailed run-event retention has no
-automatic pruning yet.
+Studio access is granted only when exactly one Studio instance is open; a Claude run inherits the
+operator's own Claude Code configuration (`CLAUDE.md`, hooks, plugins, skills), which is billed to
+every run; free OpenRouter models are less stable than paid ones; the portable project archive
+copies metadata/agents/tasks but not source, and import needs an existing project root; and detailed
+run-event retention has no automatic pruning yet.
 
 ## This is an alpha
 

@@ -7,7 +7,7 @@ Full Windows verification:
 go test -race ./...
 ```
 
-The suite covers migrations/pragmas, isolation, default-agent repair and agent CRUD, runtime settings, write bursts, backup, budgets, scheduler fairness and state machines, lease cancellation/deadlock, multi-project runs/recovery, SSE replay/slow clients, Host/Origin/session security, path traversal/symlinks, prompts/redaction, memory FTS/fallback, process termination, Codex JSONL/auth/resume argument handling, Claude stream/failures/resume capabilities, Studio binding, Rojo lifecycle, Git rollback, quarantine, and portable export. Browser E2E creates a real project, creates and launches its mock agent, saves integration settings, and checks for console errors.
+The suite covers migrations/pragmas, isolation, default-agent repair and agent CRUD, runtime settings, write bursts, backup, budgets, scheduler fairness and state machines, lease cancellation/deadlock, multi-project runs/recovery, SSE replay/slow clients, Host/Origin/session security, path traversal/symlinks, prompts/redaction, memory FTS/fallback, process termination, Claude stream/failures/resume capabilities, the OpenRouter agent loop (tool execution against a fake `agenttools.Workspace`, streamed/malformed-response handling, budget and image-attachment failure paths), the OpenRouter credential manager (keychain/session/env precedence, save/remove/test-connection), the model catalog (live fetch, TTL expiry, last-good-cache fallback, embedded snapshot), conversation persistence and history sanitization/compaction, legacy-Codex-run read-back and the removed-provider restart/resume error, Studio binding, Rojo lifecycle, Git rollback, quarantine, and portable export. Browser E2E creates a real project, creates and launches its mock agent, saves integration settings, and checks for console errors.
 
 This pass added deterministic regression tests, with no sleep-based flakiness for the concurrency-sensitive ones: the supervisor duplicate-ID race (`internal/processes`), honest pause together with cancel/pause races and storage-write-failure consistency (`internal/scheduler`), validation aborting to `inconclusive` on write-lease loss, correction-checkpoint ordering and idempotency, and the shared `studioforge-question` contract between the backend's `detectQuestion` and the frontend's `questionCard` (`web/src/lib`).
 
@@ -26,7 +26,7 @@ CI runs Windows and Linux Go tests on minimum/current Go, the race detector on L
 
 ## What CI cannot verify
 
-CI has no Roblox Studio, no authenticated Claude or Codex account, and no GUI. Everything involving those is exercised against fake CLIs (`testdata/fakes/`) or skipped. The following therefore has to be checked by hand before a release, and the result recorded in the pull request or release notes.
+CI has no Roblox Studio, no authenticated Claude account, no configured OpenRouter API key, and no GUI. Everything involving those is exercised against fake CLIs (`testdata/fakes/`) or a fake OpenRouter HTTP endpoint, or skipped. The following therefore has to be checked by hand before a release, and the result recorded in the pull request or release notes.
 
 Run `go test -race ./...` on Linux or macOS; it requires CGO and will not run on a Windows box with `CGO_ENABLED=0`.
 
@@ -45,7 +45,7 @@ Mark each item pass, fail, or not-tested. Do not report an item as passing unles
 
 ### Diagnostics
 
-- [ ] `studioforge doctor` reports correct detected paths and versions for Git, Claude Code, Codex, Rojo, and the Studio MCP launcher on this machine.
+- [ ] `studioforge doctor` reports correct detected paths and versions for Git, Claude Code, Rojo, and the Studio MCP launcher on this machine, and the correct key-verification state and catalog reachability for OpenRouter.
 - [ ] `studioforge doctor --bundle diagnostics.zip` produces an archive, and a manual read of its contents shows no tokens, cookies, or credential-shaped strings.
 
 ### Claude Code integration (needs an authenticated, billable account)
@@ -55,19 +55,23 @@ Mark each item pass, fail, or not-tested. Do not report an item as passing unles
 - [ ] Resuming a session continues the prior conversation.
 - [ ] A Git checkpoint commit exists in the project repository from before the run, and `git diff` against it shows exactly what the agent changed.
 
-### Codex integration (needs saved CLI authentication)
+### OpenRouter integration (needs a real API key and a small budget)
 
-- [ ] A real `codex exec` run streams events and completes.
-- [ ] Studio access is correctly *not* offered to a Codex agent.
+- [ ] Saving a key in Settings reports `configured` after **Test connection**; deleting it reports `not_configured`.
+- [ ] A real run against a free model (`openrouter/free`) and a real run against a paid model both stream events and complete with a recorded usage/cost figure.
+- [ ] Restarting the daemon and continuing an OpenRouter thread replays its prior conversation correctly (no duplicated or dropped turns).
+- [ ] Attaching an image to a vision-capable model succeeds; attaching one to a non-vision model fails the run with `openrouter.image_unsupported` instead of silently dropping it.
+- [ ] Studio access is correctly offered to an OpenRouter agent under the same fail-closed rule as Claude.
+- [ ] Restart/Resume on an old run saved with `provider="codex"` (from a pre-upgrade database, or inserted directly for the test) returns a controlled error and does not attempt to exec anything.
 
 ### Roblox Studio access (needs Studio with its official MCP launcher)
 
-- [ ] With exactly one Studio instance open, a Claude run is granted Studio access and can call an allowlisted tool.
+- [ ] With exactly one Studio instance open, a Claude run and an OpenRouter run are both granted Studio access and can call an allowlisted tool.
 - [ ] With two or more Studio instances open, access is refused and the run continues without Studio rather than guessing an instance.
 - [ ] With no Studio open, the run proceeds without Studio access and says so.
 - [ ] A `read-only` profile cannot call a tool that modifies the open place.
 - [ ] A `workspace-write` profile cannot call `upload_image`, `store_image`, `http_get`, `user_keyboard_input`, or `user_mouse_input`.
-- [ ] With another MCP client already holding the launcher's WS-host slot, the shim still advertises a usable tool list.
+- [ ] With another MCP client already holding the launcher's WS-host slot, the shim still advertises a usable tool list to a Claude run; an OpenRouter run's grant is withheld instead (no shim fallback for its direct client), and the run continues without Studio.
 
 ### Rojo
 

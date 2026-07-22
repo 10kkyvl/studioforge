@@ -18,9 +18,6 @@ adding new surface area:
 
 ## Near-term
 
-- Codex access to Roblox Studio MCP, if and when a configuration mechanism appears for it. The Codex
-  CLI has no `--mcp-config`-equivalent today, so this is blocked on upstream Codex, not on
-  StudioForge's own code.
 - Project context beyond the two static files read verbatim today
   (`.agent/constitution.yaml`, `.agent/requirements.md`). Any richer context mechanism needs its own
   design before it is added.

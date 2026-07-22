@@ -7,16 +7,26 @@ code in this repository actually does, not a target state.
 
 StudioForge is a single Go daemon (`cmd/studioforge` → `internal/app`) that embeds a compiled SvelteKit
 SPA, stores its state in a local SQLite database, and drives external developer tools — `claude`,
-`codex`, Roblox's official Studio MCP launcher, and `rojo` — as supervised subprocesses. There is no
-second runtime service, no remote component, and no Roblox Studio plugin in this repository.
+Roblox's official Studio MCP launcher, and `rojo` — as supervised subprocesses. A second agent
+provider, OpenRouter, is not a subprocess at all: it is an HTTP API that StudioForge drives with its
+own in-process bounded tool loop (`internal/providers/openrouter`). There is no second runtime
+service, no remote component, and no Roblox Studio plugin in this repository.
 
 The central idea is that StudioForge is a **project-level workflow layer**, not a replacement for any of
-the tools it orchestrates. It does not reimplement Claude Code, Codex, Rojo, or Roblox Studio's MCP
-integration. Instead it registers a project, keeps per-project state (agents, tasks, runs, event
-history) separate from every other project, schedules and rate-limits work against that state, and
-generates the per-run configuration each external tool needs, then starts that tool as a child process
-and streams its output back to the browser. The value it adds is in context, scheduling, budgets,
-checkpoints, and access control around calls to tools it does not own.
+the tools it orchestrates. It does not reimplement Claude Code, Rojo, or Roblox Studio's MCP
+integration, and for OpenRouter it does not reimplement the model itself — only the loop that turns a
+prompt into tool calls against the local workspace and Roblox Studio. Instead it registers a project,
+keeps per-project state (agents, tasks, runs, event history) separate from every other project,
+schedules and rate-limits work against that state, and either starts an external tool as a child
+process and streams its output back to the browser (Claude, Rojo) or drives an HTTP API directly and
+streams its own loop's output the same way (OpenRouter). The value it adds is in context, scheduling,
+budgets, checkpoints, and access control around calls to tools and models it does not own.
+
+The Codex CLI provider that once filled this second-provider role has been removed from the codebase
+entirely — no package, no subprocess, no discovery, no settings field. Runs saved earlier with
+`provider="codex"` remain in SQLite unmodified and readable through the normal run API; they are
+flagged in the UI as legacy and cannot be restarted or resumed (see "Failure handling" and
+`internal/api/legacy_codex_test.go`).
 
 ## Component map
 
@@ -93,9 +103,17 @@ plugin loading or dynamic linking.
   discovers which flags it supports by parsing `claude --help`, builds arguments accordingly, streams and
   classifies `stream-json` NDJSON events, and supports session resume and orchestrator subagent
   delegation via `--agents`.
-- `internal/providers/codex` — execs `codex exec --json` (or `codex exec resume --json` for resume),
-  parses Codex's JSONL event stream, maps its sandbox modes to the shared permission profiles, and
-  classifies failures (rate limit, auth, approval configuration).
+- `internal/providers/openrouter` — a fundamentally different shape from the two CLI adapters: no
+  subprocess is exec'd. `agentloop.go` runs a bounded loop that calls OpenRouter's chat-completions
+  endpoint over HTTPS, streams the response, and executes whichever tool calls the model requests
+  against two tool sources — `agenttools` (local workspace list/read/search/grep/create/edit/patch/
+  mkdir/git/run_command, gated by the run's read-only / workspace-write / danger-full-access profile)
+  and `mcpbridge` (a live per-run Roblox Studio MCP client, wrapped to enforce the same
+  permission-profile tool allowlist fail-closed). `credential` manages the OpenRouter API key through
+  `internal/platform.SecretStore` with an env/session fallback; `catalog` fetches and caches the
+  OpenRouter model list and curated recommendations; `conversation.go` persists and replays per-thread
+  chat history; `images.go` resolves and encodes image attachments for vision-capable models; `orclient`
+  is the thin OpenRouter HTTP client itself.
 - `internal/providers/mock` — a deterministic adapter used by the `--mock` demo and by tests; it needs no
   external binary.
 
@@ -184,9 +202,13 @@ plugin loading or dynamic linking.
   instance — closing a race where two concurrent `Start` calls for the same ID could both launch a
   child and clobber each other's map entry.
 - `internal/platform` — data-directory resolution, the single-instance lock file, browser launching, a
-  `SecretStore` interface with Windows Credential Manager and macOS Keychain adapter stubs (both
-  currently return "unavailable"; StudioForge does not store Anthropic credentials), and
-  `toolpath`, which probes PATH and known install locations for each external tool.
+  `SecretStore` interface backed by real adapters — Windows Credential Manager
+  (`secretstore_windows.go`, via `CredWriteW`/`CredReadW`/`CredDeleteW`) and macOS Keychain
+  (`secretstore_darwin.go`, via the `security` CLI) — used to store the OpenRouter API key
+  (`ErrSecretStoreUnavailable` triggers the credential manager's session-only fallback on a platform or
+  environment without a working store; StudioForge still does not store an Anthropic token, since
+  Claude Code owns its own authentication), and `toolpath`, which probes PATH and known install
+  locations for each external tool.
 - `internal/portable` — `Export`/`Inspect`/`Apply` for the `studioforge export`/`import` CLI commands.
 
 ## Process boundaries
@@ -196,8 +218,8 @@ plugin loading or dynamic linking.
 | StudioForge daemon | the user (`studioforge`, or `studioforge --mock`) | until stopped or the terminal closes | SQLite file, all subprocesses below, the browser over HTTP |
 | Browser | opened automatically (or manually) against the daemon's loopback URL | until closed | the daemon, over HTTP + SSE only |
 | `claude` | the daemon, per run | one run (`-p` exits when the turn completes) | stdout/stderr NDJSON to the daemon; optionally the `mcp-shim` subprocess over stdio, per its generated `--mcp-config` |
-| `codex` | the daemon, per run | one run (`codex exec` exits when the turn completes) | stdout/stderr JSONL to the daemon |
-| Roblox Studio MCP launcher (`mcp.bat` / `StudioMCP`) | the daemon (via provisioning/status probes) or the `mcp-shim` subprocess | per probe, or for the shim's lifetime | Roblox Studio's own WebSocket host inside the Studio process; JSON-RPC over stdio to whichever process spawned it |
+| OpenRouter agent loop | in-process, inside the daemon, per run — not a subprocess | one run (the loop returns when the turn/tool sequence completes) | HTTPS to `openrouter.ai`; JSON-RPC over stdio directly to the Studio MCP launcher when Studio access is granted |
+| Roblox Studio MCP launcher (`mcp.bat` / `StudioMCP`) | the daemon (via provisioning/status probes), the `mcp-shim` subprocess, or the OpenRouter loop's own MCP client | per probe, or for the shim's/loop's lifetime | Roblox Studio's own WebSocket host inside the Studio process; JSON-RPC over stdio to whichever process spawned it |
 | `studioforge mcp-shim` | `claude`, as the command in its generated `--mcp-config` | for the run's duration | the Studio MCP launcher over stdio (lazily, on first request); the `claude` process over stdio |
 | `rojo build` | the daemon, when opening a project in Studio | one build (exits when done) | stdout/stderr captured by the daemon |
 | `rojo serve` | the daemon, on `POST /api/v1/projects/{id}/sync` | until `DELETE /api/v1/projects/{id}/sync`, or daemon shutdown | stdout/stderr captured by the daemon as log lines; Studio talks to it over its own loopback port, not through the daemon |
@@ -210,17 +232,26 @@ triggered it) and talks to its MCP launcher.
 
 - **Browser ↔ daemon** — HTTP for commands (`/api/v1/...`) and Server-Sent Events for the live run-event
   stream (`GET /api/v1/events`). There is no WebSocket in this repository.
-- **Daemon ↔ `claude`/`codex`** — the daemon execs the CLI with constructed arguments and a reduced
-  environment (`processes.MinimalEnvironment`), then reads newline-delimited JSON from its stdout:
-  `stream-json` events for Claude, JSONL events for Codex. Both are parsed line-by-line and normalized
-  into the shared `providers.Event` shape before being persisted and re-published.
+- **Daemon ↔ `claude`** — the daemon execs the CLI with constructed arguments and a reduced
+  environment (`processes.MinimalEnvironment`), then reads newline-delimited `stream-json` events from
+  its stdout, parsed line-by-line and normalized into the shared `providers.Event` shape before being
+  persisted and re-published.
+- **Daemon ↔ OpenRouter** — no subprocess and no NDJSON parsing: `internal/providers/openrouter`'s
+  in-process loop calls OpenRouter's chat-completions endpoint directly over HTTPS with the operator's
+  API key, streams the response, and normalizes it into the same `providers.Event` shape as the CLI
+  adapters, so the rest of the daemon (persistence, SSE, budgets) cannot tell the difference between a
+  Claude event and an OpenRouter one once it reaches that shape.
 - **Daemon/shim ↔ Roblox Studio MCP launcher** — real MCP JSON-RPC 2.0 over stdio
   (`internal/roblox/mcp/transport.go`): an `initialize` handshake, `tools/list`, and `tools/call`,
-  multiplexed by numeric request ID over one child process's stdin/stdout.
+  multiplexed by numeric request ID over one child process's stdin/stdout. Claude reaches it through the
+  `mcp-shim` subprocess; OpenRouter's in-process loop opens its own client directly against the same
+  transport, wrapped by `mcpbridge`.
 - **Per-run MCP config** — when a Claude run is granted Studio access, the provisioner writes a small JSON
   file (`{"mcpServers": {"Roblox_Studio": {"command": ..., "args": [...]}}}`) to
   `<data-dir>/mcp/<run-id>.json` and passes its path to `claude --mcp-config`; the file is removed when
-  the run's grant is released.
+  the run's grant is released. An OpenRouter run has no such file — the provisioner hands its loop a
+  live client handle (`grant.Client`) directly instead of a config path, since there is no subprocess to
+  pass a flag to.
 
 ## Roblox Studio integration
 
@@ -287,20 +318,24 @@ itself) is also connected. `studioforge mcp-shim` sits between the agent and the
 earlier successful connection, then a hardcoded fallback list with an open argument schema) and forwards
 `tools/call` through untouched, so the agent's toolset stops depending on a race it cannot observe.
 
-**Studio access applies to Claude runs only.** The Codex CLI has no `--mcp-config` equivalent, so Codex
-agents cannot reach Studio through this mechanism at all.
+**Studio access applies to Claude and OpenRouter runs.** They reach it through two different
+mechanisms that share the same underlying provisioner and fail-closed decision: Claude gets a
+generated `--mcp-config` pointing at the shim; OpenRouter's in-process loop is handed a live client
+directly (`grant.Client`, wrapped by `mcpbridge`) with no file or subprocess involved. Both are bound
+by the identical permission-profile tool allowlist.
 
 **The self-correcting playtest validation loop** (`mcp.Provisioner.Validate`, called through the
 scheduler's `MCPValidator` hook) is a *second* Studio MCP connection the daemon opens itself, separate
-from the one the agent's own `claude` subprocess used during the run (which has, by this point, already
-exited). It reuses `Provisioner`'s own launcher discovery and instance-selection logic (`probe`/
-`selectForTarget`) to reach the same Studio instance, then on one held-open transport: `start_stop_play`
-(enter Play mode), `screen_capture` (once), polls `get_console_output` for a configurable window
-(`playtest_window_seconds`, default 30s), `start_stop_play` again (exit Play mode), and classifies the
-collected console text. It only runs for a job that is Claude, non-plan, `workspace-write` permission or
-above, opted in per-agent (`validate_after_run`), and actually holds a Studio grant for that run — an
-absent, ambiguous, or unreachable Studio during validation resolves to `inconclusive`, the same fail-open
-posture `Provision` itself takes. A `failed` outcome schedules a correction run (`parent_run_id`,
+from the one the agent's own run used (Claude's subprocess or OpenRouter's in-process client, both of
+which have, by this point, already exited or finished their turn). It reuses `Provisioner`'s own
+launcher discovery and instance-selection logic (`probe`/`selectForTarget`) to reach the same Studio
+instance, then on one held-open transport: `start_stop_play` (enter Play mode), `screen_capture`
+(once), polls `get_console_output` for a configurable window (`playtest_window_seconds`, default 30s),
+`start_stop_play` again (exit Play mode), and classifies the collected console text. It only runs for a
+job whose provider is Claude or OpenRouter (`scheduler.studioCapable`), non-plan, `workspace-write`
+permission or above, opted in per-agent (`validate_after_run`), and actually holds a Studio grant for
+that run — an absent, ambiguous, or unreachable Studio during validation resolves to `inconclusive`,
+the same fail-open posture `Provision` itself takes. A `failed` outcome schedules a correction run (`parent_run_id`,
 `correction_depth` on the `runs` table) that resumes the same CLI session with the console error lines
 and the screenshot reference folded into its prompt; when that correction later resolves, its own
 outcome is propagated one hop up (`corrected` or `correction_failed` on its direct parent), bounded by
@@ -382,15 +417,20 @@ correction lineage.
    the run. Once the run itself is created, a successful checkpoint is persisted as a `checkpoints` row
    linking the run to its commit hash and branch (`database.Store.CreateCheckpoint`), so `GET
    /api/v1/runs/{id}/diff` and `POST /api/v1/runs/{id}/rollback` can later act on that exact commit.
-7. **MCP provisioning** — if the run's provider is Claude, the installed `MCPProvisioner` hook
-   (`mcp.Provisioner.Provision`) runs the fail-closed Studio access check described above and, if granted,
-   returns a config path and allowed-tools list; a snapshot of the open place's state is also prepended to
-   the prompt so the agent does not have to re-explore it.
-8. **Provider subprocess exec** — the scheduler calls `provider.Start` (or `.Resume`, if the thread has a
-   prior session ID), which execs `claude` or `codex` with arguments built from the run request (model,
-   effort, permission mode/sandbox, MCP config path, allowed tools, subagents) and a minimized environment.
-9. **Streamed events** — the provider adapter reads the subprocess's stdout line by line, classifies each
-   line into a `providers.Event`, and sends it on a channel the scheduler drains.
+7. **MCP provisioning** — if the run's provider is Claude or OpenRouter, the installed `MCPProvisioner`
+   hook (`mcp.Provisioner.Provision`) runs the fail-closed Studio access check described above and, if
+   granted, returns either a config path and allowed-tools list (Claude) or a live client handle and
+   allowed-tools list (OpenRouter); a snapshot of the open place's state is also prepended to the prompt
+   so the agent does not have to re-explore it.
+8. **Provider start** — the scheduler calls `provider.Start` (or `.Resume`, if the thread has a prior
+   session ID). For Claude this execs the `claude` binary with arguments built from the run request
+   (model, effort, permission mode, MCP config path, allowed tools, subagents) and a minimized
+   environment. For OpenRouter there is no exec at all: `agentloop.go` starts its in-process bounded
+   loop directly, with the run's model, permission profile, MCP client (if granted), and — on resume —
+   the thread's replayed conversation history.
+9. **Streamed events** — the Claude adapter reads the subprocess's stdout line by line and classifies
+   each line into a `providers.Event`; the OpenRouter loop classifies its own streamed HTTP response the
+   same way. Either way, events land on a channel the scheduler drains identically.
 10. **Persisted events** — the scheduler publishes each event through `events.Hub.Publish`, which first
     calls `Store.AppendEvents` (an INSERT that assigns a monotonically increasing `id`) and only then
     fans the now-persisted event out to subscribers. Events are never delivered live-only; every event a
@@ -420,11 +460,14 @@ same session once the operator answers.
   otherwise it is `os.UserConfigDir()/StudioForge`. `EnsurePrivateDirs` creates `backups`, `exports`,
   `logs`, `artifacts`, `runtime`, and `mcp` subdirectories with `0o700` permissions.
 - **Settings-page path overrides applied without restart**: `POST /api/v1/settings` persists a key/value
-  to the `app_settings` table and, for a fixed set of keys (`codex_path`, `claude_path`, `rojo_path`,
+  to the `app_settings` table and, for a fixed set of keys (`claude_path`, `rojo_path`,
   `git_path`, `studio_mcp_path`, `studio_auto_open`, `concurrency`), calls an `applySetting` callback
   wired in `internal/app` that updates the live provider adapters, the Doctor's override fields, the
   Studio MCP override (an `atomic.Value`), the auto-open flag, or the scheduler's concurrency limits in
-  place — no process restart is involved.
+  place — no process restart is involved. OpenRouter has no path setting (it is not a CLI); its
+  `POST /api/v1/openrouter/key` endpoint instead writes through `credential.Manager.Save`, which
+  updates the live provider's key and the `openrouter_key_state` setting directly, also without a
+  restart.
 - **Version metadata**: `Version`, `Commit`, and `BuildDate` in `internal/config` default to
   `dev`/`none`/`unknown` and are overwritten at build time via `-ldflags -X ...` in `scripts/build.ps1` /
   `scripts/build.sh`, derived from `git describe` and `git rev-parse`.
@@ -450,6 +493,31 @@ same session once the operator answers.
   the archive.
 - **Single-instance lock**: `platform.AcquireLock` writes a PID-stamped lock file in the data directory
   and refuses to start a second daemon against the same data directory while the recorded PID is alive.
+- **OpenRouter conversation persistence**: `openrouter_messages` (FK'd to `chat_threads(id)` ON DELETE
+  CASCADE) stores each turn of the OpenRouter provider's agent loop — user prompt, assistant message with
+  its `tool_calls`, and each tool result — so the next run on a thread reloads and replays the history
+  instead of starting over, and it survives a daemon restart. `internal/providers/openrouter.sanitizeHistory`
+  makes a history saved by an interrupted run safe to replay, and `compactMessages` deterministically trims
+  it once it grows past the provider's history budget. See `internal/providers/openrouter/conversation.go`
+  and `internal/app/conversation.go` for the persistence seam and its database-backed adapter.
+- **OpenRouter model catalog, images, and cost estimate**: `internal/providers/openrouter/catalog.Service`
+  fetches OpenRouter's model list, memoizing it in-process with a TTL and persisting it to the
+  `openrouter_model_cache` table (`internal/database/model_cache.go`) so a failed live fetch falls back to
+  the last cached snapshot, and a cold start with no cache at all falls back to an embedded snapshot
+  (`catalog.FallbackModels`) — nothing blocks daemon startup on a network call. `internal/app.Run` wires
+  it into the provider once via `Provider.SetModelInfo`, giving the agent loop a model's vision support and
+  per-token pricing by ID. A run with attachments against a model the catalog doesn't know, or knows isn't
+  vision-capable, fails with a controlled `openrouter.image_unsupported` error rather than dropping the
+  image or silently switching models; otherwise `buildUserMessage`
+  (`internal/providers/openrouter/images.go`) re-resolves each attachment through the run's
+  `agenttools.Workspace` (path containment), MIME-sniffs it, and folds it into the request as a base64
+  `data:` URL content part — only the path is ever persisted, never the image bytes, and
+  `storedToMessages` re-validates and rebuilds those parts from disk on resume, only when the current model
+  is vision-capable. Turn cost prefers OpenRouter's own `usage.cost`; only when that is exactly zero does
+  the loop fall back to `PromptPrice*inputTokens + CompletionPrice*outputTokens` from the catalog, marking
+  that turn's `openrouter.usage` event `estimated: true`. `Provider.SetRouting` exposes
+  `allow_fallbacks`/`data_collection`/`zdr`/`order` provider-routing preferences, but the request always
+  forces `require_parameters: true` regardless of configuration.
 
 ## Trust boundaries
 
@@ -477,9 +545,11 @@ of the following is enforced independently:
   what stops a project-scoped operation from being redirected outside the registered directory via a
   symlink or a `..` segment.
 - **Reduced provider environment**: `processes.MinimalEnvironment` passes only an explicit allowlist of
-  environment variables (`PATH`, `HOME`/`USERPROFILE`, temp-dir variables, proxy variables, `CODEX_HOME`,
-  etc.) to `claude`, `codex`, and `rojo` subprocesses — the daemon's own environment is not inherited
-  wholesale.
+  environment variables (`PATH`, `HOME`/`USERPROFILE`, temp-dir variables, proxy variables, etc.) to
+  `claude` and `rojo` subprocesses — the daemon's own environment is not inherited wholesale. This does
+  not apply to OpenRouter, since it is not a subprocess; its API key is read once at request time from
+  the credential manager (secure store, then session, then the `OPENROUTER_API_KEY` environment
+  variable), not passed down an inherited environment.
 - **Secret redaction**: `security.Redact` strips API keys, `Authorization: Bearer/Basic` headers,
   `sk-ant-...`/`sk-...`-shaped tokens, and PEM private key blocks from diagnostic bundle exports
   (`Doctor.ExportBundle`).
@@ -504,10 +574,17 @@ of the following is enforced independently:
   lease (`resources.Handle.Heartbeat`); a lease left un-renewed past its TTL is reaped by the manager's
   background sweep, freeing the resource key for the next run even if the holder never releases it
   explicitly.
-- **Provider error classification**: both `claudecode` and `codex` adapters pattern-match combined
-  stdout/stderr/error text into typed messages — rate limit, authentication, budget exceeded, capability
-  mismatch (an unsupported flag), approval configuration error — so a failure surfaces as an actionable
-  category rather than a raw stack trace.
+- **Provider error classification**: `claudecode` pattern-matches combined stdout/stderr/error text into
+  typed messages — rate limit, authentication, budget exceeded, capability mismatch (an unsupported
+  flag), approval configuration error — so a failure surfaces as an actionable category rather than a
+  raw stack trace. The OpenRouter loop classifies its own HTTP/streaming failures the same way (rate
+  limit, authentication, budget, an unsupported model/parameter combination) without a subprocess's
+  stdout/stderr to parse.
+- **Legacy Codex runs**: `scheduler.Manager.Diagnose` reports the removed `"codex"` provider as
+  unconfigured, so `scheduler.Manager.Submit` refuses any new job against it, and restart/resume on an
+  existing `provider="codex"` run return a controlled error (`internal/api/api.go`'s `runAction`/
+  `resumeRun`) instead of trying to exec a CLI that is no longer wired up. The run row itself, and its
+  events, are untouched — read and diff endpoints work on it exactly as before.
 - **Fail-closed Studio access**: covered above — ambiguous or absent Studio instances yield no grant
   rather than a guess, and the run always continues (without Studio tools) rather than failing outright.
 - **Budget ceilings**: `Store.BudgetAllowed` is checked before a queued job is allowed to acquire its
@@ -526,8 +603,11 @@ of the following is enforced independently:
   in a new package under `internal/providers/<name>`, register an instance in the `adapters` map built in
   `internal/app.Run`, and add the provider name to the validation lists in `internal/api/api.go`
   (`normalizeAgent`, the `settings` handler's `default_provider` check). Per CONTRIBUTING's rule, keep the
-  new package independent of HTTP, SQLite, and the other adapters — it should only depend on
-  `internal/providers` and `internal/processes`.
+  new package independent of HTTP, SQLite, and the other adapters. A CLI-subprocess adapter (like
+  `claudecode`) should only depend on `internal/providers` and `internal/processes`; an HTTP-API adapter
+  with its own in-process loop (like `openrouter`) instead depends on `internal/providers` and whatever
+  seams it needs for tools, credentials, and persistence — see that package's own `agenttools`,
+  `credential`, and `conversation.go` for the pattern.
 - **Adding a Studio tool to the allowlist**: add the tool's name to the appropriate tier
   (`readOnlyTools`, `workspaceTools`, or `reachingTools`) in `internal/roblox/mcp/config.go`, and add it to
   `OfficialTools` so the shim's fallback tool list also advertises it when no live schema is available.
@@ -552,25 +632,33 @@ flowchart LR
         API["internal/api<br/>HTTP + SSE"]
         Scheduler["internal/scheduler<br/>fair queue, leases, budgets"]
         DB[("SQLite (WAL)<br/>internal/database")]
-        Providers["internal/providers/{claudecode,codex,mock}"]
+        Providers["internal/providers/{claudecode,mock}"]
+        OR["internal/providers/openrouter<br/>in-process agent loop"]
+        Secure[("OS credential store<br/>Credential Manager / Keychain")]
         MCP["internal/roblox/mcp<br/>provisioner + transport"]
     end
 
     Claude["claude subprocess"]
-    Codex["codex subprocess"]
     Shim["studioforge mcp-shim<br/>subprocess"]
     Launcher["Roblox Studio MCP launcher<br/>(official, mcp.bat / StudioMCP)"]
     Studio["Roblox Studio<br/>(separate GUI process)"]
     Rojo["rojo subprocess<br/>(build, or serve for live-sync)"]
+    ORAPI[("OpenRouter API<br/>(external HTTPS)")]
+    WS["Project working tree<br/>(workspace tools: list/read/search/<br/>grep/create/edit/patch/mkdir/git/run_command)"]
 
     Browser <-->|HTTP + SSE| API
     API --> Scheduler
     API --> DB
     Scheduler --> DB
     Scheduler --> Providers
+    Scheduler --> OR
     Scheduler --> MCP
     Providers --> Claude
-    Providers --> Codex
+    OR -->|HTTPS, streamed| ORAPI
+    OR -->|reads API key| Secure
+    OR -->|conversation history| DB
+    OR -->|permission-gated tool calls| WS
+    OR -.->|MCP JSON-RPC over stdio<br/>live per-run client| Launcher
     MCP -->|status probes; writes --mcp-config naming the shim| Launcher
     Claude -.->|spawns, per generated --mcp-config| Shim
     Shim --> Launcher

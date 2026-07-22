@@ -11,7 +11,7 @@ point of this demo is that every second of it is real.
 - Starting the StudioForge daemon from source or a packaged build and reading the printed URL.
 - The embedded browser UI opening with an authenticated session (one-use bootstrap token).
 - Registering/opening a project and running `studioforge doctor` to confirm detected tooling
-  (Git, Claude Code, Rojo, Codex if installed, the official Roblox Studio MCP launcher).
+  (Git, Claude Code, Rojo, an OpenRouter key if configured, the official Roblox Studio MCP launcher).
 - Sending one instruction to a Claude Code agent in the chat and watching the run stream events
   live over SSE.
 - The git checkpoint commit StudioForge creates before the run, and the resulting diff.
@@ -93,7 +93,7 @@ or in surrounding text (title, description, thumbnail).
 
 ## Do not show
 
-- Real Claude Code or Codex authentication tokens, API keys, or session cookies.
+- Real Claude Code authentication tokens, OpenRouter API keys, or session cookies.
 - Absolute personal file paths (drive letters plus real usernames, e.g. anything under a real
   `C:\Users\<name>` or `/Users/<name>` profile).
 - Private repository names, client names, or project names not meant for a public audience.

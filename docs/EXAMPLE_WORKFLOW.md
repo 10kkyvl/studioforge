@@ -4,8 +4,8 @@ This is a small, reproducible walkthrough of StudioForge, split into two tracks.
 ships no bundled example Roblox place, so Track B uses your own project directory instead of a
 fixture.
 
-- **Track A — No external dependencies**: `studioforge --mock`. No Claude, Codex, Git, Rojo, or
-  Roblox Studio required. Everything you see is either the daemon's own domain/API running for
+- **Track A — No external dependencies**: `studioforge --mock`. No Claude, OpenRouter key, Git, Rojo,
+  or Roblox Studio required. Everything you see is either the daemon's own domain/API running for
   real, or data seeded once at startup — this page tells you which is which.
 - **Track B — With a real project**: registers one of your own directories, creates the two
   optional `.agent/` context files, creates a Claude Code agent, sends one instruction through
@@ -57,7 +57,8 @@ its own on-disk workspace under the data directory's `demo-projects/` folder:
 | Harbor Tycoon (`demo-tycoon`) | Economy | same three roles | same three tasks |
 | Neon Arena (`demo-arena`) | Prototype | same three roles | same three tasks |
 
-All demo agents use the built-in `mock` provider — no Claude/Codex CLI is exec'd. Each project also
+All demo agents use the built-in `mock` provider — no Claude CLI is exec'd and no OpenRouter call is
+made. Each project also
 shows one already-`completed` run in its history with a small mock cost (`$0.28`, `$0.47`, and
 `$0.66` respectively).
 
@@ -81,7 +82,7 @@ external dependency: open a project's **Chat** view and send any message to its 
 scripted events about 90&nbsp;ms apart — a start status, two partial assistant messages, a simulated
 tool call, an artifact note, a usage/cost event, and a final message reading "Acceptance criteria
 verified in mock mode." — then reports `$0.42` in cost. This is a genuine run through the same
-scheduler, event stream, and persistence path a Claude or Codex run uses; only the "provider" is
+scheduler, event stream, and persistence path a Claude or OpenRouter run uses; only the "provider" is
 scripted.
 
 ### Expected output
@@ -108,7 +109,7 @@ scripted.
 - A packaged StudioForge build, or Go 1.25+/Node.js 22+/npm to run from source.
 - `git`, reachable on `PATH` (or configured under Settings).
 - Claude Code CLI installed and authenticated (`claude --version` and `claude auth status`). This
-  walkthrough deliberately uses Claude, not Codex or the mock provider, because the automatic Git
+  walkthrough deliberately uses Claude, not OpenRouter or the mock provider, because the automatic Git
   checkpoint step (below) only runs before a **Claude** run — see
   [docs/SECURITY.md](SECURITY.md#command-execution).
 - A project directory you own. It can be empty (StudioForge can create it and scaffold a minimal
@@ -131,7 +132,7 @@ scripted.
    [docs/SECURITY.md](SECURITY.md#local-file-access)), writes `default.project.json` plus
    `src/server/Main.server.lua` and `src/client/Main.client.lua` only if the folder has no
    `default.project.json` yet, and creates one default agent automatically using your Settings'
-   default provider (Codex, unless you changed it).
+   default provider (Claude, unless you changed it).
 
 3. **Run the doctor check.** In a separate terminal:
 
@@ -140,10 +141,12 @@ scripted.
    ```
 
    (or `go run ./cmd/studioforge doctor` from source). It is safe to run this alongside the running
-   daemon. Read the JSON it prints: `dependencies.git`, `dependencies.claude`, and
-   `dependencies.codex` each report `status` of `ok`, `warning` (found but not authenticated),
-   `missing`, or `error`, plus the detected `path`/`version` and a `help` string. Confirm `claude`
-   shows `ok`. `dependencies.studioMcp` and `dependencies.rojo` are not needed for this walkthrough.
+   daemon. Read the JSON it prints: `dependencies.git` and `dependencies.claude` each report
+   `status` of `ok`, `warning` (found but not authenticated), `missing`, or `error`, plus the
+   detected `path`/`version` and a `help` string. Confirm `claude` shows `ok`.
+   `dependencies.openrouter` reports the API key's verification state instead of a path/version,
+   since OpenRouter is an HTTP API, not a CLI. `dependencies.studioMcp` and `dependencies.rojo` are
+   not needed for this walkthrough.
 
 4. **Add the optional context files.** Create two files in your project's root — exactly these two
    names are the only project context StudioForge reads (`internal/projects/context.go`); their
@@ -181,7 +184,8 @@ scripted.
    submits without naming a specific agent — the server picks the project's **lead agent** if one is
    set, otherwise the first enabled agent (`internal/api/api.go`, `createRun`). Use the **Lead
    agent** dropdown in the chat header and select the Claude agent you just created; otherwise your
-   message may run against the original default (Codex) agent instead.
+   message may run against the original default (Claude, using Settings' default model/effort)
+   agent instead.
 
 7. **Send one concrete instruction.** Make sure the mode toggle reads **Do** (not **Plan** — Plan
    mode makes Claude propose without editing, and it also skips the checkpoint step). Type a small,
@@ -233,7 +237,7 @@ scripted.
 | Symptom | Check |
 |---|---|
 | "Provider is not configured" / "provider_auth" when sending | Re-run `studioforge doctor`; `claude` must report `Available` and `Authenticated`. Run `claude auth status` directly. |
-| No checkpoint commit appears | Confirm the agent's **Provider** is `Claude Code` (not Codex/Mock), the mode was **Do** (not **Plan**), and the project directory is a Git repository (`git rev-parse --git-dir` succeeds in it). |
+| No checkpoint commit appears | Confirm the agent's **Provider** is `Claude Code` (not OpenRouter/Mock), the mode was **Do** (not **Plan**), and the project directory is a Git repository (`git rev-parse --git-dir` succeeds in it). |
 | Chat message runs against the wrong agent | Re-check the **Lead agent** dropdown in the chat header — the composer has no per-message agent picker. |
 | "AI workers are disabled in safe mode" | You started with `--safe-mode`; restart without it. |
 | `.agent/` files seem to have no effect | Confirm the exact file names and location: `<project root>/.agent/constitution.yaml` and `<project root>/.agent/requirements.md`. Any other file name in `.agent/` is not read by StudioForge. |
@@ -289,9 +293,10 @@ automatically before a run** in Settings).
 
 - The Runs view shows a validation badge for both the original and the correction run once each one's
   Play-mode pass completes.
-- A run whose Studio grant was withheld (ambiguous or closed Studio, `read-only` profile, Codex
+- A run whose Studio grant was withheld (ambiguous or closed Studio, `read-only` profile, the `mock`
   provider, plan mode, or the agent simply not opted in) shows no validation badge at all — the loop is
-  fail-open, exactly like Studio access itself.
+  fail-open, exactly like Studio access itself. Claude and OpenRouter runs are both eligible; only
+  `mock` is excluded by provider.
 - With **Max correction runs** at 0, a failure shows both **Correction failed** and a **Decision
   needed** banner offering to override the limit for that one run.
 

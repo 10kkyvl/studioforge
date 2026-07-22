@@ -18,7 +18,7 @@
 StudioForge is a local Go daemon with an embedded browser interface. It sits between your Roblox project and the AI coding tools you already use, and it manages the parts of the work that happen *around* a single AI request:
 
 - Registers Roblox projects and keeps each one's state, agents, runs, and event history separate.
-- Starts and supervises Claude Code (and Codex CLI) as subprocesses, streaming their output as persisted, replayable events.
+- Starts and supervises Claude Code as a local CLI subprocess, and runs OpenRouter through its own in-process HTTP agent loop — two different execution models — streaming both providers' output as persisted, replayable events.
 - Schedules runs with per-project write leases, concurrency limits, and spend ceilings, so concurrent work on one project cannot collide.
 - Grants Roblox Studio access to a run through Roblox's **official** Studio MCP launcher, with a tool allowlist scoped to the agent's permission profile.
 - Commits a Git checkpoint before each non-plan Claude run, so any change an agent makes can be reviewed and reverted.
@@ -52,6 +52,8 @@ The value StudioForge aims to add is in context, orchestration, validation, repe
 
 The project is an alpha as a whole. The table below describes individual capabilities.
 
+The Codex CLI provider has been removed: it no longer runs, is not discovered, and is not selectable for new runs. Runs saved earlier with `provider="codex"` stay readable in history only, shown with a **Legacy provider** badge; Restart and Resume return a controlled error for them instead of re-running. They are never migrated, rewritten, or deleted.
+
 ### Implemented — works and is covered by tests
 
 | Capability | Notes |
@@ -62,7 +64,7 @@ The project is an alpha as a whole. The table below describes individual capabil
 | Run scheduler | Fair queue, writer leases, per-project/provider/model limits, budgets, pause (a controlled cancel that stops the agent and stays resumable)/resume (submits a new run continuing the saved session)/cancel/restart, interrupted-run recovery |
 | Persisted events + live stream | Server-sent events at `/api/v1/events` |
 | Claude Code provider | Real `claude` subprocess, runtime flag discovery, NDJSON streaming, session resume, classified failures |
-| Codex CLI provider | `codex exec --json`, JSONL events, workspace sandbox, thread resume |
+| OpenRouter provider | HTTP API with its own in-process bounded tool loop (not a subprocess): local workspace tools (list/read/search/grep/create/edit/patch/mkdir/git/run_command, gated by the same read-only / workspace-write / danger-full-access profiles) plus Roblox Studio MCP tools over a live per-run client, per-thread conversation persistence with deterministic token compaction, usage and monetary cost reporting, and budget ceilings re-checked every turn |
 | Orchestrator delegation | Agents with an orchestrator role pass other enabled agents to Claude's native `--agents` flag |
 | Official Studio MCP integration | Launcher discovery, per-run config, permission-scoped tool allowlist, JSON-RPC stdio transport, `mcp-shim` |
 | Studio MCP tool guidance | The standing system prompt steers agents toward Studio's own tools — `generate_mesh`/`generate_material`/`generate_procedural_model`, `search_asset` + `insert_asset`, `wait_job_finished`, `subagent`/`skill` delegation, `screen_capture`/console/playtest checks — over hand-written Luau |
@@ -71,7 +73,7 @@ The project is an alpha as a whole. The table below describes individual capabil
 | Rojo build + open | Compiles a place file and opens it in Studio |
 | Rojo live-sync | `POST`/`DELETE /api/v1/projects/{id}/sync` start and stop a `rojo serve` session that pushes on-disk edits into an already-open Studio; the project Overview shows whether a session is running, its port, and its most recent log lines |
 | Static project context | Reads `.agent/constitution.yaml` and `.agent/requirements.md` verbatim into the system prompt |
-| Image attachments | Paste a screenshot into the chat composer; it uploads and is folded into the prompt as a file path the agent can read |
+| Image attachments | Paste a screenshot into the chat composer; it uploads and is folded into the prompt as a file path the agent can read. On the OpenRouter provider, attachments are also sent as real image data to vision-capable models (base64 `data:` URLs); a non-vision model fails the run with a clear error instead of silently dropping the image |
 | Run pace indicator | `GET /api/v1/projects/{id}/pace` averages a project's last ~20 completed runs into a typical duration; the chat progress bar scales against it |
 | Diagnostics | `studioforge doctor`, redacted `--bundle` archive, unit-tested |
 | Deterministic demo | `--mock` runs three seeded projects with no Claude, Studio, or Rojo |
@@ -91,6 +93,7 @@ The project is an alpha as a whole. The table below describes individual capabil
 | Studio access grant | Fail-closed: granted only when exactly one Studio instance is open; the chat badge also reports a distinct blocked state (Studio open, connection held by another MCP client) separately from closed (see [Known limitations](#known-limitations)) |
 | Permission-profile tool tiers | `read-only`, `workspace-write`, and `danger-full-access` gates are implemented and unit-tested |
 | End-to-end Claude and Studio paths | Covered only by opt-in smoke tests behind `STUDIOFORGE_REAL_CLAUDE=1` / `STUDIOFORGE_REAL_STUDIO=1`; default tests and CI use fake CLIs |
+| End-to-end OpenRouter path | Covered only by opt-in smoke tests (`internal/providers/openrouter/smoke_test.go`) gated on a real `OPENROUTER_API_KEY` env var, using free models with a tiny budget; skipped by default so `go test ./...` never spends money |
 
 ### Present in code, but not reachable from the running product
 
@@ -123,9 +126,12 @@ flowchart TD
     end
 
     SCH -->|exec, NDJSON stream| CC[claude subprocess]
-    SCH -->|exec, JSONL stream| CX[codex subprocess]
+    SCH -->|in-process tool loop| OR[OpenRouter agent runtime]
     SCH -->|git commit| GIT[Git checkpoint<br/>in project repo]
     SCH -->|build + open place| RJ[rojo subprocess]
+
+    OR -->|HTTPS, streamed| ORAPI[(OpenRouter API)]
+    OR -->|MCP JSON-RPC over stdio<br/>live per-run client| LAU
 
     CC -->|MCP over stdio<br/>via generated --mcp-config| SHIM[studioforge mcp-shim]
     SHIM -->|MCP JSON-RPC over stdio| LAU[Official Roblox<br/>Studio MCP launcher]
@@ -141,7 +147,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for components, protocols, data
 | Run a packaged build | Windows 10+ (amd64) or macOS (Apple Silicon). No Go or Node.js at runtime. |
 | Build from source | Go 1.25.12 or newer, Node.js 22 or newer, npm, Git |
 | Use Claude Code runs | Claude Code installed and authenticated (StudioForge stores no Anthropic token) |
-| Use Codex runs | Codex CLI installed with saved CLI authentication |
+| Use OpenRouter runs | An OpenRouter API key (`OPENROUTER_API_KEY` env, or saved in Settings) — required even for free models |
 | Use Roblox Studio access | Roblox Studio with its official MCP launcher, on Windows or macOS |
 | Use Rojo | Rojo 7 |
 
@@ -200,7 +206,7 @@ studioforge import --file project.zip [--apply --path EXISTING_ROOT]
 studioforge --version
 ```
 
-Runtime data is stored in the OS user configuration directory unless `--data-dir` is set. Executable paths for Claude, Codex, Rojo, Git, and the Studio MCP launcher can be overridden from the Settings page without restarting.
+Runtime data is stored in the OS user configuration directory unless `--data-dir` is set. Executable paths for Claude, Rojo, Git, and the Studio MCP launcher can be overridden from the Settings page without restarting. OpenRouter has no executable path — it is an HTTP API — and is configured with an API key instead, stored in the OS secure credential store (Windows Credential Manager / macOS Keychain), never in SQLite, run events, logs, or the diagnostic bundle.
 
 Non-loopback binding is refused unless `--unsafe-host` is supplied explicitly. StudioForge has no remote authentication of any kind; do not expose it to an untrusted network.
 
@@ -235,7 +241,7 @@ No recorded demo exists yet. [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) contains
 The most important ones for a new user:
 
 - **Studio access is granted only when exactly one Studio instance is open.** Claude Code runs its own MCP client and `set_active_studio` is per-connection state, so StudioForge cannot pin an instance on the agent's connection from outside, and the launcher takes no instance-selection argument. With several Studios open, access is refused rather than guessed, and the run continues without Studio.
-- **Studio access applies to Claude runs only.** The Codex adapter has no `--mcp-config` equivalent.
+- **Studio access applies to Claude and OpenRouter runs.** Both reach Studio through the official Studio MCP launcher — Claude via a generated `--mcp-config`, OpenRouter via its own live per-run MCP client — subject to the same fail-closed single-instance grant and permission-profile allowlist.
 - **A Claude run inherits your own Claude Code configuration** — `CLAUDE.md`, hooks, plugins, and skills — which is billed to every run and makes behaviour depend on your local install.
 - **`--max-turns` is not enforced.** The flag does not exist in current Claude Code, so only budget ceilings bound a run.
 - **The playtest validation loop classifies the console heuristically** (script-error and infinite-yield phrase matching), not by parsing a documented Studio MCP schema, and it only ever runs when an agent opted in and the run reached Studio — like Studio access itself, an absent or ambiguous Studio makes it silently `inconclusive` rather than failing the run.
@@ -252,7 +258,7 @@ StudioForge binds to loopback, issues a one-use bootstrap token exchanged for an
 
 Two details worth knowing precisely: redaction does not cover StudioForge's own application logs, only diagnostic bundles and stored run event payloads; and the per-request path traversal and symlink-escape check exists but is unused, because no endpoint accepts a project-relative path today.
 
-Localhost is not a trust boundary. An agent running with a permissive profile can change your project files; the Git checkpoint is a recovery mechanism, not a preventative control. StudioForge stores no Anthropic token — Claude Code owns its own authentication.
+Localhost is not a trust boundary. An agent running with a permissive profile can change your project files; the Git checkpoint is a recovery mechanism, not a preventative control. StudioForge stores no Anthropic token — Claude Code owns its own authentication. The OpenRouter API key lives in the OS secure credential store (Windows Credential Manager / macOS Keychain), with an environment-variable and session-only fallback when the store is unavailable — it is never written to SQLite, run events, application logs, or the diagnostic bundle.
 
 See [docs/SECURITY.md](docs/SECURITY.md) for the full model and [SECURITY.md](SECURITY.md) to report a vulnerability.
 
@@ -269,7 +275,7 @@ Issues and pull requests are welcome. Please open an issue before large behavior
 | Document | Contents |
 | --- | --- |
 | [Getting started](docs/GETTING_STARTED.md) | Prerequisites, installation, first workflow, uninstall |
-| [Integration guide](docs/en/README.md) · [Русский](docs/ru/README.md) | Per-integration detail: Codex CLI, Claude Code, Studio MCP, Rojo |
+| [Integration guide](docs/en/README.md) · [Русский](docs/ru/README.md) | Per-integration detail: Claude Code, OpenRouter, Studio MCP, Rojo |
 | [Architecture](docs/ARCHITECTURE.md) | Components, protocols, data flow, trust boundaries |
 | [Development](docs/DEVELOPMENT.md) | Local setup, commands, tests, adding integrations |
 | [Example workflow](docs/EXAMPLE_WORKFLOW.md) | Reproducible worked example |

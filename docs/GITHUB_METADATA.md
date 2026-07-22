@@ -22,6 +22,7 @@ roblox
 roblox-studio
 claude
 claude-code
+openrouter
 mcp
 model-context-protocol
 ai-assisted-development
@@ -60,7 +61,7 @@ Public alpha
 Title: StudioForge — an open-source workflow layer for Claude Code + Roblox Studio (public alpha, feedback wanted)
 
 I've just made StudioForge public as an alpha. It's a local, single-binary daemon with a small
-web UI that helps Claude Code (and optionally Codex) work on a Roblox/Rojo project: it registers
+web UI that helps Claude Code (or, via OpenRouter, other models) work on a Roblox/Rojo project: it registers
 your project, runs an agent against it, streams the run's events live, makes a git checkpoint
 before every change so you can review or revert it, and can build your place with Rojo and open it
 in Studio.
@@ -88,7 +89,7 @@ against it.
 ## DevForum announcement (more conservative tone)
 
 ```
-Title: StudioForge (public alpha) — a workflow layer around Claude Code, Codex, and Studio's official MCP tooling
+Title: StudioForge (public alpha) — a workflow layer around Claude Code, OpenRouter, and Studio's official MCP tooling
 
 Hi all — I wanted to share an early, public alpha of an open-source tool called StudioForge. It's a
 local daemon with a web UI that sits alongside your existing Roblox Studio and Rojo setup.
@@ -96,8 +97,9 @@ local daemon with a web UI that sits alongside your existing Roblox Studio and R
 To be clear about scope: StudioForge does not replace or modify Roblox Studio, and it does not ship
 a Studio plugin. Roblox Studio already provides its own official MCP server (enabled via
 Assistant → Manage MCP Servers → Studio as MCP server), and StudioForge's role is to detect that
-official launcher, start it per run, and connect an AI coding agent (Claude Code, or Codex without
-Studio access) to it under a scoped tool allowlist. On top of that it adds a project registry, a
+official launcher, start it per run, and connect an AI coding agent — Claude Code as a local CLI, or
+OpenRouter through its own in-process agent loop, both with Studio access — to it under a scoped tool
+allowlist. On top of that it adds a project registry, a
 run scheduler, live event streaming, and an automatic git checkpoint before each change so results
 are easy to review or revert.
 
@@ -140,7 +142,7 @@ v0.1.0-alpha.1 — first public alpha
 
 ```
 This is StudioForge's first public release: a single Go binary with an embedded web UI that
-registers Roblox/Rojo projects, runs Claude Code or Codex agents against them, streams run events
+registers Roblox/Rojo projects, runs Claude Code or OpenRouter agents against them, streams run events
 live, checkpoints changes with git before each run, and can build and open a project in Roblox
 Studio through Rojo and Studio's official MCP tooling. Windows (amd64) and macOS (arm64) builds are
 provided as unsigned development packages. This release is an alpha: some implemented packages are

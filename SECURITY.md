@@ -24,7 +24,7 @@ In the current alpha this is a rule for contributors, not an enforced runtime co
 
 An agent running under a permissive profile can change your project files. The Git checkpoint is a recovery mechanism, not a preventative one.
 
-Never include API keys, OAuth tokens, complete environment dumps, private prompts, or user source in a report. Claude Code v1 authentication remains owned by Claude Code; StudioForge does not store the Anthropic token in SQLite.
+Never include API keys, OAuth tokens, complete environment dumps, private prompts, or user source in a report. Claude Code v1 authentication remains owned by Claude Code; StudioForge does not store the Anthropic token in SQLite. The OpenRouter API key is kept in the OS secure credential store (Windows Credential Manager / macOS Keychain), with an environment-variable and session-only fallback when the store is unavailable — it is never written to SQLite, run events, application logs, or the diagnostic bundle, and it is required even to run free models.
 
 ---
 
