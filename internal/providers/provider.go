@@ -17,6 +17,7 @@ type RunRequest struct {
 	RunID, ProjectID, AgentID, ThreadID, WorkingDirectory, Prompt, SystemPrompt, Mode, Model, Effort, PermissionProfile string
 	MaxTurns                                                                                                            int
 	MaxBudget                                                                                                           float64
+	AllowUnverifiedModel                                                                                                bool
 	MCPConfigPath                                                                                                       string
 	// AllowedTools names the tools the run may call without an interactive
 	// approval, which non-interactive runs cannot answer.

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/10kkyvl/studioforge/internal/platform"
 )
@@ -17,7 +18,9 @@ type fakeSecretStore struct {
 	mu        sync.Mutex
 	values    map[string][]byte
 	setErr    error
+	getErr    error
 	deleteErr error
+	retain    bool
 }
 
 func (f *fakeSecretStore) Set(_ context.Context, key string, value []byte) error {
@@ -36,6 +39,9 @@ func (f *fakeSecretStore) Set(_ context.Context, key string, value []byte) error
 func (f *fakeSecretStore) Get(_ context.Context, key string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
 	v, ok := f.values[key]
 	if !ok {
 		return nil, platform.ErrSecretNotFound
@@ -49,7 +55,9 @@ func (f *fakeSecretStore) Delete(_ context.Context, key string) error {
 	if f.deleteErr != nil {
 		return f.deleteErr
 	}
-	delete(f.values, key)
+	if !f.retain {
+		delete(f.values, key)
+	}
 	return nil
 }
 
@@ -177,7 +185,7 @@ func TestSaveFallsBackToSessionWhenSecureSetErrors(t *testing.T) {
 	}
 }
 
-func TestRemoveDoesNotFailHardWhenSecureDeleteErrors(t *testing.T) {
+func TestRemoveReturnsSecureDeleteError(t *testing.T) {
 	ctx := context.Background()
 	fake := &fakeSecretStore{deleteErr: errors.New("access denied")}
 	m, fs := newTestManager(t, fake)
@@ -186,11 +194,65 @@ func TestRemoveDoesNotFailHardWhenSecureDeleteErrors(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	if err := m.Remove(ctx); err != nil {
-		t.Fatalf("Remove: %v", err)
+	if err := m.Remove(ctx); err == nil {
+		t.Fatal("Remove must fail when secure deletion fails")
 	}
-	if fs.state != "" {
-		t.Errorf("fake state store after Remove = %q want empty", fs.state)
+	if fs.state == "" {
+		t.Fatal("verification state was cleared despite failed deletion")
+	}
+}
+
+func TestRemoveReturnsVerificationFailureWhenKeyRemains(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeSecretStore{retain: true}
+	m, _ := newTestManager(t, fake)
+	if _, err := m.Save(ctx, "sk-or-remains"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Remove(ctx); err == nil {
+		t.Fatal("Remove must fail when the secure key remains")
+	}
+}
+
+func TestRemoveReturnsVerificationReadFailure(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeSecretStore{}
+	m, _ := newTestManager(t, fake)
+	if _, err := m.Save(ctx, "sk-or-read-fails"); err != nil {
+		t.Fatal(err)
+	}
+	fake.getErr = errors.New("keychain locked")
+	if err := m.Remove(ctx); err == nil {
+		t.Fatal("Remove must fail when deletion cannot be verified")
+	}
+}
+
+func TestRemoveRevealsEnvironmentFallback(t *testing.T) {
+	t.Setenv("STUDIOFORGE_TEST_OPENROUTER_KEY", "sk-or-env")
+	ctx := context.Background()
+	m, _ := newTestManager(t, platform.NewMemorySecretStore())
+	if _, err := m.Save(ctx, "sk-or-stored"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Remove(ctx); err != nil {
+		t.Fatal(err)
+	}
+	status := m.Status(ctx)
+	if status.Source != SourceEnv || status.State != StateUnverified {
+		t.Fatalf("status after removal = %+v", status)
+	}
+	if got := m.Key(); got != "sk-or-env" {
+		t.Fatalf("active key source was not the environment fallback")
+	}
+}
+
+func TestSaveNormalizesWhitespace(t *testing.T) {
+	m, _ := newTestManager(t, platform.NewMemorySecretStore())
+	if _, err := m.Save(context.Background(), " \r\nsk-or-normalized\n "); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Key(); got != "sk-or-normalized" {
+		t.Fatalf("Key() = %q", got)
 	}
 }
 
@@ -272,6 +334,35 @@ func TestTestConnectionOtherStatusReturnsError(t *testing.T) {
 	if strings.Contains(err.Error(), "sk-or-secret-500") {
 		t.Fatalf("error contains the key: %v", err)
 	}
+}
+
+func TestTestConnectionClassifiesTimeout(t *testing.T) {
+	started := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	state := &fakeStateStore{}
+	m := NewManager(Config{
+		Account:    "openrouter",
+		Secure:     platform.NewMemorySecretStore(),
+		GetState:   state.Get,
+		SetState:   state.Set,
+		BaseURL:    server.URL,
+		HTTPClient: &http.Client{Timeout: 20 * time.Millisecond},
+	})
+	if _, err := m.Save(context.Background(), "sk-or-timeout"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := m.TestConnection(context.Background())
+	var connectionErr *ConnectionError
+	if !errors.As(err, &connectionErr) || connectionErr.Kind != ConnectionTimeout {
+		t.Fatalf("error = %v, want timeout classification", err)
+	}
+	<-started
 }
 
 func TestNoLeak(t *testing.T) {

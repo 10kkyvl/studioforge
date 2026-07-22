@@ -107,6 +107,7 @@ type Server struct {
 	leases                *resources.Manager
 	orCreds               *credential.Manager
 	orCatalog             *catalog.Service
+	nvidiaCreds           *credential.Manager
 }
 type Dependencies struct {
 	Store                 *database.Store
@@ -135,6 +136,7 @@ type Dependencies struct {
 	Leases            *resources.Manager
 	OpenRouterCreds   *credential.Manager
 	OpenRouterCatalog *catalog.Service
+	NVIDIACreds       *credential.Manager
 }
 
 func New(d Dependencies) (*Server, error) {
@@ -145,7 +147,7 @@ func New(d Dependencies) (*Server, error) {
 	if d.Logger == nil {
 		d.Logger = slog.Default()
 	}
-	return &Server{store: d.Store, db: d.DB, scheduler: d.Scheduler, hub: d.Hub, doctor: d.Doctor, sessions: d.Sessions, guard: d.Guard, safeMode: d.SafeMode, allowedHost: d.AllowedHost, dataDir: d.DataDir, logger: d.Logger, applySetting: d.ApplySetting, studio: d.Studio, studioOpenCheck: d.StudioOpenCheck, studioStatus: d.StudioStatus, refreshStudioSessions: d.RefreshStudioSessions, syncer: d.Sync, git: d.Git, memory: d.Memory, stuckSettings: d.StuckSettings, leases: d.Leases, orCreds: d.OpenRouterCreds, orCatalog: d.OpenRouterCatalog, assets: assets, csp: contentSecurityPolicy(assets)}, nil
+	return &Server{store: d.Store, db: d.DB, scheduler: d.Scheduler, hub: d.Hub, doctor: d.Doctor, sessions: d.Sessions, guard: d.Guard, safeMode: d.SafeMode, allowedHost: d.AllowedHost, dataDir: d.DataDir, logger: d.Logger, applySetting: d.ApplySetting, studio: d.Studio, studioOpenCheck: d.StudioOpenCheck, studioStatus: d.StudioStatus, refreshStudioSessions: d.RefreshStudioSessions, syncer: d.Sync, git: d.Git, memory: d.Memory, stuckSettings: d.StuckSettings, leases: d.Leases, orCreds: d.OpenRouterCreds, orCatalog: d.OpenRouterCatalog, nvidiaCreds: d.NVIDIACreds, assets: assets, csp: contentSecurityPolicy(assets)}, nil
 }
 
 func contentSecurityPolicy(assets fs.FS) string {
@@ -197,6 +199,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/openrouter/key/test", s.openrouterTestKey)
 	mux.HandleFunc("GET /api/v1/openrouter/models", s.openrouterModels)
 	mux.HandleFunc("GET /api/v1/openrouter/capabilities", s.openrouterCapabilities)
+	mux.HandleFunc("GET /api/v1/nvidia/status", s.nvidiaStatus)
+	mux.HandleFunc("POST /api/v1/nvidia/key", s.nvidiaSaveKey)
+	mux.HandleFunc("DELETE /api/v1/nvidia/key", s.nvidiaDeleteKey)
+	mux.HandleFunc("POST /api/v1/nvidia/key/test", s.nvidiaTestKey)
+	mux.HandleFunc("GET /api/v1/nvidia/models", s.nvidiaModels)
+	mux.HandleFunc("GET /api/v1/nvidia/capabilities", s.nvidiaCapabilities)
 	mux.HandleFunc("GET /api/v1/openapi.yaml", s.openapi)
 	mux.HandleFunc("/", s.static)
 	return s.security(mux)
@@ -394,8 +402,8 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, 400, "invalid_locale", "Locale must be en, ru, or auto", nil)
 			return
 		}
-		if key == "default_provider" && value != "claude" && value != "openrouter" && value != "mock" {
-			writeError(w, r, 400, "invalid_provider", "Default provider must be claude, openrouter, or mock", nil)
+		if key == "default_provider" && value != "claude" && value != "openrouter" && value != "nvidia" && value != "mock" {
+			writeError(w, r, 400, "invalid_provider", "Default provider must be claude, openrouter, nvidia, or mock", nil)
 			return
 		}
 		if key == "default_effort" && value != "low" && value != "medium" && value != "high" && value != "xhigh" {
@@ -422,6 +430,29 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	defaultProvider := body["default_provider"]
+	if defaultProvider == "" {
+		defaultProvider, _, _ = s.store.Setting(r.Context(), "default_provider")
+	}
+	if defaultProvider == "" {
+		defaultProvider = "claude"
+	}
+	defaultModel, modelChanged := body["default_model"]
+	defaultModel = strings.TrimSpace(defaultModel)
+	if modelChanged && defaultModel != "" && defaultProvider == "openrouter" {
+		agent := models.Agent{Provider: "openrouter", ModelAlias: defaultModel}
+		if err := s.validateOpenRouterAgent(r.Context(), &agent, false); err != nil {
+			writeError(w, r, 400, "openrouter_model_incompatible", err.Error(), nil)
+			return
+		}
+	}
+	if modelChanged && defaultModel != "" && defaultProvider == "nvidia" {
+		agent := models.Agent{Provider: "nvidia", ModelAlias: defaultModel}
+		if err := validateNVIDIAAgent(&agent); err != nil {
+			writeError(w, r, 400, "nvidia_model_incompatible", err.Error(), nil)
+			return
+		}
+	}
 	// Validate the complete request before persisting any entry. Map iteration
 	// order is intentionally undefined, so validation and mutation must be
 	// separate to prevent a rejected request from partially changing settings.
@@ -430,17 +461,17 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, 500, "database_error", "Unable to save settings", err)
 			return
 		}
-		if key == "default_model" && value != "" {
-			if _, err := s.store.SetAllAgentsModel(r.Context(), value); err != nil {
-				writeError(w, r, 500, "database_error", "Saved the default model but could not apply it to existing projects", err)
-				return
-			}
-		}
 		if s.applySetting != nil {
 			if err := s.applySetting(key, value); err != nil {
 				writeError(w, r, 400, "setting_apply_failed", err.Error(), nil)
 				return
 			}
+		}
+	}
+	if modelChanged && defaultModel != "" {
+		if _, err := s.store.SetAgentsModelByProvider(r.Context(), defaultProvider, defaultModel); err != nil {
+			writeError(w, r, 500, "database_error", "Saved the default model but could not apply it to existing projects", err)
+			return
 		}
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
@@ -531,8 +562,8 @@ func normalizeAgent(agent *models.Agent) error {
 	if agent.Role == "" {
 		agent.Role = "Roblox Engineer"
 	}
-	if agent.Provider != "claude" && agent.Provider != "openrouter" && agent.Provider != "mock" {
-		return errors.New("provider must be claude, openrouter, or mock")
+	if agent.Provider != "claude" && agent.Provider != "openrouter" && agent.Provider != "nvidia" && agent.Provider != "mock" {
+		return errors.New("provider must be claude, openrouter, nvidia, or mock")
 	}
 	if agent.ModelAlias == "" {
 		agent.ModelAlias = "default"
@@ -579,6 +610,14 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, 400, "validation", err.Error(), nil)
 		return
 	}
+	if err := s.validateOpenRouterAgent(r.Context(), &agent, false); err != nil {
+		writeError(w, r, 400, "openrouter_model_incompatible", err.Error(), nil)
+		return
+	}
+	if err := validateNVIDIAAgent(&agent); err != nil {
+		writeError(w, r, 400, "nvidia_model_incompatible", err.Error(), nil)
+		return
+	}
 	created, err := s.store.CreateAgent(r.Context(), agent)
 	if err != nil {
 		writeError(w, r, 409, "agent_conflict", "Unable to create agent", err)
@@ -596,6 +635,14 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 	agent.ID, agent.ProjectID = r.PathValue("agentID"), r.PathValue("id")
 	if err := normalizeAgent(&agent); err != nil {
 		writeError(w, r, 400, "validation", err.Error(), nil)
+		return
+	}
+	if err := s.validateOpenRouterAgent(r.Context(), &agent, false); err != nil {
+		writeError(w, r, 400, "openrouter_model_incompatible", err.Error(), nil)
+		return
+	}
+	if err := validateNVIDIAAgent(&agent); err != nil {
+		writeError(w, r, 400, "nvidia_model_incompatible", err.Error(), nil)
 		return
 	}
 	updated, err := s.store.UpdateAgent(r.Context(), agent)
@@ -907,6 +954,14 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if err := s.validateOpenRouterAgent(r.Context(), &agent, true); err != nil {
+		writeError(w, r, 409, "openrouter_model_unavailable", err.Error(), nil)
+		return
+	}
+	if err := validateNVIDIAAgent(&agent); err != nil {
+		writeError(w, r, 409, "nvidia_model_unavailable", err.Error(), nil)
+		return
+	}
 	diag, configured := s.scheduler.Diagnose(r.Context(), agent.Provider)
 	if !configured {
 		writeError(w, r, 409, "provider_missing", "Provider is not configured: "+agent.Provider, nil)
@@ -936,11 +991,6 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, 500, "database_error", "Unable to open chat thread", err)
 			return
 		}
-	}
-	resumeSession, err := s.store.LatestThreadSession(r.Context(), thread.ID)
-	if err != nil {
-		writeError(w, r, 500, "database_error", "Unable to read chat history", err)
-		return
 	}
 	prevStuckEscalated, err := s.store.LatestThreadStuckState(r.Context(), thread.ID)
 	if err != nil {
@@ -988,7 +1038,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	}
 	key := r.Header.Get("Idempotency-Key")
 	stuckDetectionEnabled := stuckSettings.Enabled && !agent.StuckDetectionDisabled && !stuckContinueSuppresses(prevStuckEscalated, rawPrompt)
-	run, created, err := s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: project.ID, AgentID: agent.ID, TaskID: body.TaskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, WorkingDirectory: project.Path, Prompt: body.Prompt, SystemPrompt: systemPrompt, Mode: body.Mode, ThreadID: thread.ID, ResumeSessionID: resumeSession, Scenario: body.Scenario, MaxBudget: maxBudget, Resources: []string{"project:" + project.ID + ":write"}, IdempotencyKey: key, Subagents: subagents, ValidateAfterRun: agent.ValidateAfterRun, MaxCorrectionRuns: agent.MaxCorrectionRuns, StuckDetectionEnabled: stuckDetectionEnabled, StuckIdleSeconds: stuckSettings.IdleSeconds, StuckRepetitionCap: stuckSettings.RepetitionCap, Attachments: body.Attachments})
+	run, created, err := s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: project.ID, AgentID: agent.ID, TaskID: body.TaskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, WorkingDirectory: project.Path, Prompt: body.Prompt, SystemPrompt: systemPrompt, Mode: body.Mode, ThreadID: thread.ID, ResumeThread: true, Scenario: body.Scenario, MaxBudget: maxBudget, AllowUnverifiedModel: agent.AllowUnverifiedModel, Resources: []string{"project:" + project.ID + ":write"}, IdempotencyKey: key, Subagents: subagents, ValidateAfterRun: agent.ValidateAfterRun, MaxCorrectionRuns: agent.MaxCorrectionRuns, StuckDetectionEnabled: stuckDetectionEnabled, StuckIdleSeconds: stuckSettings.IdleSeconds, StuckRepetitionCap: stuckSettings.RepetitionCap, Attachments: body.Attachments})
 	if err != nil {
 		writeError(w, r, 400, "run_error", err.Error(), nil)
 		return
@@ -1078,7 +1128,13 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 					if agent == nil {
 						err = errors.New("the original agent is missing or disabled")
 					} else {
-						_, _, err = s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: run.ProjectID, AgentID: run.AgentID, TaskID: run.TaskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, WorkingDirectory: project.Path, Prompt: "Restart the interrupted task. Inspect the previous failure and complete the task with verification.", SystemPrompt: prompts.ForRun(agent.SystemPrompt, projects.LoadContext(project.Path)), MaxBudget: agent.Budget, Resources: []string{"project:" + run.ProjectID + ":write"}})
+						if validateErr := s.validateOpenRouterAgent(r.Context(), agent, true); validateErr != nil {
+							err = validateErr
+						} else if validateErr := validateNVIDIAAgent(agent); validateErr != nil {
+							err = validateErr
+						} else {
+							_, _, err = s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: run.ProjectID, AgentID: run.AgentID, TaskID: run.TaskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, WorkingDirectory: project.Path, Prompt: "Restart the interrupted task. Inspect the previous failure and complete the task with verification.", SystemPrompt: prompts.ForRun(agent.SystemPrompt, projects.LoadContext(project.Path)), MaxBudget: agent.Budget, AllowUnverifiedModel: agent.AllowUnverifiedModel, Resources: []string{"project:" + run.ProjectID + ":write"}})
+						}
 					}
 				}
 			}
@@ -1131,6 +1187,12 @@ func (s *Server) resumeRun(ctx context.Context, runID string) error {
 	if agent == nil {
 		return errors.New("the original agent is missing or disabled")
 	}
+	if err := s.validateOpenRouterAgent(ctx, agent, true); err != nil {
+		return err
+	}
+	if err := validateNVIDIAAgent(agent); err != nil {
+		return err
+	}
 	systemPrompt := prompts.ForRun(agent.SystemPrompt, projects.LoadContext(project.Path))
 	var subagents []providers.Subagent
 	if strings.Contains(strings.ToLower(agent.Role), "orchestrator") {
@@ -1160,7 +1222,7 @@ func (s *Server) resumeRun(ctx context.Context, runID string) error {
 		PermissionProfile: agent.Permission, WorkingDirectory: project.Path,
 		Prompt:       "Continue the task you were working on before it was paused. Pick up where you left off and finish it, then report back.",
 		SystemPrompt: systemPrompt, ThreadID: run.ThreadID, ResumeSessionID: run.ProviderSession,
-		MaxBudget: agent.Budget, Resources: []string{"project:" + project.ID + ":write"},
+		MaxBudget: agent.Budget, AllowUnverifiedModel: agent.AllowUnverifiedModel, Resources: []string{"project:" + project.ID + ":write"},
 		Subagents: subagents, ValidateAfterRun: agent.ValidateAfterRun, MaxCorrectionRuns: agent.MaxCorrectionRuns,
 		StuckDetectionEnabled: stuckSettings.Enabled && !agent.StuckDetectionDisabled, StuckIdleSeconds: stuckSettings.IdleSeconds, StuckRepetitionCap: stuckSettings.RepetitionCap,
 	})
@@ -1237,6 +1299,20 @@ func (s *Server) resolveDecision(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, 500, "decision_payload", "Stored decision payload could not be read", err)
 			return
 		}
+		if job.Provider == "openrouter" {
+			agent := models.Agent{Provider: job.Provider, ModelAlias: job.Model, AllowUnverifiedModel: job.AllowUnverifiedModel}
+			if err := s.validateOpenRouterAgent(r.Context(), &agent, true); err != nil {
+				writeError(w, r, 409, "openrouter_model_unavailable", err.Error(), nil)
+				return
+			}
+		}
+		if job.Provider == "nvidia" {
+			agent := models.Agent{Provider: job.Provider, ModelAlias: job.Model}
+			if err := validateNVIDIAAgent(&agent); err != nil {
+				writeError(w, r, 409, "nvidia_model_unavailable", err.Error(), nil)
+				return
+			}
+		}
 		if _, _, err := s.scheduler.Submit(r.Context(), job); err != nil {
 			writeError(w, r, 409, "run_error", err.Error(), nil)
 			return
@@ -1298,29 +1374,41 @@ func (s *Server) sse(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
-	replay, err := s.store.EventsAfter(r.Context(), after, r.URL.Query().Get("projectId"), r.URL.Query().Get("runId"), 1000)
-	if err != nil {
-		writeError(w, r, 500, "replay_failed", "Unable to replay events", err)
-		return
-	}
+	stream, cancel := s.hub.Subscribe(256)
+	defer cancel()
 	send := func(event models.RunEvent) error {
 		body, err := json.Marshal(event)
 		if err != nil {
 			return err
 		}
-		_, err = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", event.ID, event.Type, body)
+		if event.ID > 0 {
+			_, err = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", event.ID, event.Type, body)
+		} else {
+			_, err = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, body)
+		}
 		if err == nil {
 			flusher.Flush()
 		}
 		return err
 	}
-	for _, event := range replay {
-		if err := send(event); err != nil {
+	for {
+		replay, err := s.store.EventsAfter(r.Context(), after, r.URL.Query().Get("projectId"), r.URL.Query().Get("runId"), 1000)
+		if err != nil {
+			writeError(w, r, 500, "replay_failed", "Unable to replay events", err)
 			return
 		}
+		for _, event := range replay {
+			if err := send(event); err != nil {
+				return
+			}
+			if event.ID > after {
+				after = event.ID
+			}
+		}
+		if len(replay) < 1000 {
+			break
+		}
 	}
-	stream, cancel := s.hub.Subscribe(256)
-	defer cancel()
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
 	for {
@@ -1331,11 +1419,14 @@ func (s *Server) sse(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			if event.ID <= after {
+			if event.ID > 0 && event.ID <= after {
 				continue
 			}
 			if err := send(event); err != nil {
 				return
+			}
+			if event.ID > after {
+				after = event.ID
 			}
 		case <-heartbeat.C:
 			if _, err := fmt.Fprint(w, ": heartbeat\n\n"); err != nil {

@@ -40,7 +40,7 @@ func Fetch(ctx context.Context, httpClient *http.Client, baseURL string) ([]Mode
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch models: unexpected status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("fetch models: unexpected status %d", resp.StatusCode)
 	}
 
 	var raw struct {

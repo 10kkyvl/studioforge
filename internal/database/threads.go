@@ -62,6 +62,31 @@ func (s *Store) LatestThreadSession(ctx context.Context, threadID string) (strin
 	return session, nil
 }
 
+// ThreadSessionBefore returns the session produced by the run immediately
+// before runID in the same thread. Unlike LatestThreadSession, this lookup is
+// safe for queued follow-ups: it is evaluated when the queued run is actually
+// ready to start, after its predecessor has released the project lock. Using
+// rowid keeps several quickly submitted follow-ups chained in insertion order
+// even when their created_at timestamps are identical.
+func (s *Store) ThreadSessionBefore(ctx context.Context, threadID, runID string) (string, error) {
+	var status, session string
+	err := s.db.SQL.QueryRowContext(ctx, `SELECT status, COALESCE(provider_session_id,'')
+FROM runs
+WHERE thread_id=? AND rowid < (SELECT rowid FROM runs WHERE id=?)
+ORDER BY rowid DESC
+LIMIT 1`, threadID, runID).Scan(&status, &session)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if status != "completed" && status != "waiting_decision" && status != "paused" {
+		return "", nil
+	}
+	return session, nil
+}
+
 // LatestThreadStuckState reports the same latest run LatestThreadSession just
 // looked at, but its stuck-escalation bookkeeping instead of its session id:
 // whether that run's own termination was a stuck escalation. This is what
@@ -147,19 +172,19 @@ func (s *Store) ThreadMessages(ctx context.Context, threadID string) ([]models.C
 	// created_at ties at this OS clock's resolution are broken by rowid so
 	// runs created back-to-back in the same request still read in the order
 	// they were submitted (see ListThreads for the same issue).
-	rows, err := s.db.SQL.QueryContext(ctx, `SELECT id,status,prompt_snapshot,created_at FROM runs WHERE thread_id=? ORDER BY created_at, rowid`, threadID)
+	rows, err := s.db.SQL.QueryContext(ctx, `SELECT id,status,prompt_snapshot,provider,model_alias,created_at FROM runs WHERE thread_id=? ORDER BY created_at, rowid`, threadID)
 	if err != nil {
 		return nil, err
 	}
 	type runRow struct {
-		id, status, prompt string
-		createdAt          time.Time
+		id, status, prompt, provider, modelAlias string
+		createdAt                                time.Time
 	}
 	var runs []runRow
 	for rows.Next() {
 		var r runRow
 		var created string
-		if err := rows.Scan(&r.id, &r.status, &r.prompt, &created); err != nil {
+		if err := rows.Scan(&r.id, &r.status, &r.prompt, &r.provider, &r.modelAlias, &created); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -176,7 +201,7 @@ func (s *Store) ThreadMessages(ctx context.Context, threadID string) ([]models.C
 		if r.prompt != "" {
 			out = append(out, models.ChatMessage{Role: "user", Text: r.prompt, At: r.createdAt, RunID: r.id})
 		}
-		eventRows, err := s.db.SQL.QueryContext(ctx, `SELECT payload,raw_type,created_at FROM run_events WHERE run_id=? AND event_type='message' ORDER BY id`, r.id)
+		eventRows, err := s.db.SQL.QueryContext(ctx, `SELECT payload,raw_type,created_at FROM run_events WHERE run_id=? AND event_type='message' AND raw_type NOT LIKE '%.message.partial' ORDER BY id`, r.id)
 		if err != nil {
 			return nil, err
 		}
@@ -190,7 +215,10 @@ func (s *Store) ThreadMessages(ctx context.Context, threadID string) ([]models.C
 			if text == "" {
 				continue
 			}
-			out = append(out, models.ChatMessage{Role: "agent", Text: text, At: parseTime(created), RunID: r.id, Status: r.status, RawType: rawType})
+			out = append(out, models.ChatMessage{
+				Role: "agent", Text: text, At: parseTime(created), RunID: r.id,
+				Status: r.status, Provider: r.provider, ModelAlias: r.modelAlias, RawType: rawType,
+			})
 		}
 		if err := eventRows.Err(); err != nil {
 			eventRows.Close()

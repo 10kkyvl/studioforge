@@ -159,6 +159,41 @@ func TestSchedulerResumesWhenSessionProvided(t *testing.T) {
 	}
 }
 
+// A follow-up submitted while its predecessor is still running cannot know
+// that predecessor's session yet. It must resolve the session after waiting
+// for the project lock, otherwise it silently starts a disconnected chat.
+func TestSchedulerQueuedFollowUpResumesPredecessorAtStart(t *testing.T) {
+	manager, provider, store, ctx := newHarness(t)
+	provider.inner.(*mock.Provider).StepDelay = 20 * time.Millisecond
+	thread, err := store.CreateThread(ctx, "demo-obby", "Queued continuation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _, err := manager.Submit(ctx, Job{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", Model: "balanced", ThreadID: thread.ID, ResumeThread: true, WorkingDirectory: t.TempDir(), Prompt: "first", MaxBudget: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, store, first.ID, "running", 5*time.Second)
+	second, _, err := manager.Submit(ctx, Job{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", Model: "balanced", ThreadID: thread.ID, ResumeThread: true, WorkingDirectory: t.TempDir(), Prompt: "follow-up", MaxBudget: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, store, first.ID, "completed", 5*time.Second)
+	waitStatus(t, store, second.ID, "completed", 5*time.Second)
+	provider.mu.Lock()
+	resumes := append([]providers.ResumeRequest(nil), provider.resumes...)
+	provider.mu.Unlock()
+	if len(resumes) != 1 {
+		t.Fatalf("resume calls=%d, want exactly one for the queued follow-up", len(resumes))
+	}
+	if got, want := resumes[0].SessionID, "mock-session-"+first.ID; got != want {
+		t.Fatalf("queued follow-up resumed session %q, want %q", got, want)
+	}
+	if resumes[0].Prompt != "follow-up" {
+		t.Fatalf("queued follow-up prompt=%q", resumes[0].Prompt)
+	}
+}
+
 // The PLAN/DO choice must reach the provider so it can pass --permission-mode plan.
 func TestSchedulerPassesModeToProvider(t *testing.T) {
 	manager, provider, _, ctx := newHarness(t)

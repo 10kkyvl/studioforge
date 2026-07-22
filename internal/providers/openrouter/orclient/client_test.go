@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -179,6 +180,36 @@ func TestStreamChat_KeepaliveComments(t *testing.T) {
 	}
 }
 
+func TestStreamChat_DoesNotExposeRawReasoning(t *testing.T) {
+	const secretReasoning = "hidden-chain-of-thought-secret"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		writeSSE(t, w, flusher, wireChunk{Choices: []wireChoice{{Delta: wireDelta{Reasoning: secretReasoning}}}})
+		writeSSE(t, w, flusher, wireChunk{Choices: []wireChoice{{Delta: wireDelta{Content: "safe answer"}, FinishReason: "stop"}}})
+		writeDone(w, flusher)
+	}))
+	defer srv.Close()
+
+	var deltas []Delta
+	result, err := New(Config{APIKey: "k", BaseURL: srv.URL}).StreamChat(context.Background(), basicReq("m"), func(delta Delta) {
+		deltas = append(deltas, delta)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(struct {
+		Deltas []Delta
+		Result *Completion
+	}{deltas, result})
+	if strings.Contains(string(encoded), secretReasoning) {
+		t.Fatalf("raw reasoning escaped the stream parser: %s", encoded)
+	}
+	if len(deltas) != 2 || !deltas[0].Reasoning || deltas[0].Text != "" {
+		t.Fatalf("reasoning indicator deltas = %+v", deltas)
+	}
+}
+
 func TestStreamChat_FragmentedLines(t *testing.T) {
 	full := mustSSELine(t, wireChunk{
 		Model:   "m",
@@ -300,6 +331,160 @@ func TestStreamChat_MalformedJSON(t *testing.T) {
 	}
 	if apiErr.Kind != KindMalformedResponse {
 		t.Errorf("Kind = %v, want %v", apiErr.Kind, KindMalformedResponse)
+	}
+}
+
+func TestStreamChat_RequiresDoneMarker(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(t, w, w.(http.Flusher), wireChunk{Choices: []wireChoice{{Delta: wireDelta{Content: "partial"}, FinishReason: "stop"}}})
+	}))
+	defer srv.Close()
+
+	_, err := New(Config{APIKey: "k", BaseURL: srv.URL}).StreamChat(context.Background(), basicReq("m"), nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != KindMalformedResponse {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestStreamChat_RejectsEmptyCompletion(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		writeSSE(t, w, flusher, wireChunk{Choices: []wireChoice{{FinishReason: "stop"}}})
+		writeDone(w, flusher)
+	}))
+	defer srv.Close()
+
+	_, err := New(Config{APIKey: "k", BaseURL: srv.URL}).StreamChat(context.Background(), basicReq("m"), nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != KindMalformedResponse {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestStreamChat_ClassifiesOutputLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		writeSSE(t, w, flusher, wireChunk{Choices: []wireChoice{{Delta: wireDelta{Content: "truncated"}, FinishReason: "length"}}})
+		writeDone(w, flusher)
+	}))
+	defer srv.Close()
+
+	_, err := New(Config{APIKey: "k", BaseURL: srv.URL}).StreamChat(context.Background(), basicReq("m"), nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != KindOutputLimit {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestStreamChat_RejectsUnexpectedFinishReason(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		writeSSE(t, w, flusher, wireChunk{Choices: []wireChoice{{Delta: wireDelta{Content: "filtered"}, FinishReason: "content_filter"}}})
+		writeDone(w, flusher)
+	}))
+	defer srv.Close()
+
+	_, err := New(Config{APIKey: "k", BaseURL: srv.URL}).StreamChat(context.Background(), basicReq("m"), nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != KindProviderFailure {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestStreamChat_RejectsToolFinishWithoutCalls(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		writeSSE(t, w, flusher, wireChunk{Choices: []wireChoice{{FinishReason: "tool_calls"}}})
+		writeDone(w, flusher)
+	}))
+	defer srv.Close()
+
+	_, err := New(Config{APIKey: "k", BaseURL: srv.URL}).StreamChat(context.Background(), basicReq("m"), nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != KindMalformedResponse {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestStreamChat_RejectsInvalidUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		writeSSE(t, w, flusher, wireChunk{Choices: []wireChoice{{Delta: wireDelta{Content: "done"}, FinishReason: "stop"}}, Usage: &Usage{PromptTokens: -1}})
+		writeDone(w, flusher)
+	}))
+	defer srv.Close()
+
+	_, err := New(Config{APIKey: "k", BaseURL: srv.URL}).StreamChat(context.Background(), basicReq("m"), nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != KindMalformedResponse {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestStreamChat_RejectsIncompleteToolCalls(t *testing.T) {
+	tests := []wireToolCallDelta{
+		{Index: 0, Type: "function", Function: wireFunctionDelta{Name: "read_file", Arguments: `{}`}},
+		{Index: 0, ID: "call-1", Type: "function", Function: wireFunctionDelta{Name: "read_file", Arguments: `{"path":`}},
+	}
+	for _, toolCall := range tests {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher := w.(http.Flusher)
+			writeSSE(t, w, flusher, wireChunk{Choices: []wireChoice{{Delta: wireDelta{ToolCalls: []wireToolCallDelta{toolCall}}, FinishReason: "tool_calls"}}})
+			writeDone(w, flusher)
+		}))
+		_, err := New(Config{APIKey: "k", BaseURL: srv.URL}).StreamChat(context.Background(), basicReq("m"), nil)
+		srv.Close()
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.Kind != KindMalformedResponse {
+			t.Fatalf("tool call=%+v error=%v", toolCall, err)
+		}
+	}
+}
+
+func TestStreamChat_UsesChoiceZero(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		writeSSE(t, w, flusher, wireChunk{Choices: []wireChoice{
+			{Index: 1, Delta: wireDelta{Content: "wrong"}, FinishReason: "stop"},
+			{Index: 0, Delta: wireDelta{Content: "right"}, FinishReason: "stop"},
+		}})
+		writeDone(w, flusher)
+	}))
+	defer srv.Close()
+
+	result, err := New(Config{APIKey: "k", BaseURL: srv.URL}).StreamChat(context.Background(), basicReq("m"), nil)
+	if err != nil || result.Content != "right" {
+		t.Fatalf("result=%+v error=%v", result, err)
+	}
+}
+
+func TestNewClientHasTimeout(t *testing.T) {
+	client := New(Config{APIKey: "k"})
+	if client.httpClient.Timeout <= 0 {
+		t.Fatal("default HTTP client has no timeout")
+	}
+}
+
+func TestErrorResponseDoesNotExposeUpstreamBody(t *testing.T) {
+	const secret = "secret-upstream-payload"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"` + secret + ` unsupported parameter"}}`))
+	}))
+	defer srv.Close()
+
+	_, err := New(Config{APIKey: "k", BaseURL: srv.URL}).StreamChat(context.Background(), basicReq("m"), nil)
+	if err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("error leaked upstream payload: %v", err)
 	}
 }
 
@@ -432,6 +617,87 @@ func TestStreamChat_Timeout(t *testing.T) {
 	}
 	if apiErr.Kind != KindCancelled {
 		t.Errorf("Kind = %v, want %v", apiErr.Kind, KindCancelled)
+	}
+}
+
+func TestStreamChat_ClientTimeoutIsNetworkFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(time.Second):
+		}
+	}))
+	defer srv.Close()
+
+	client := New(Config{APIKey: "k", BaseURL: srv.URL, HTTPClient: &http.Client{Timeout: 20 * time.Millisecond}})
+	_, err := client.StreamChat(context.Background(), basicReq("m"), nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != KindNetworkFailure {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+type failOnceTransport struct {
+	base  http.RoundTripper
+	hits  atomic.Int32
+	error error
+}
+
+func (t *failOnceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.hits.Add(1) == 1 {
+		return nil, t.error
+	}
+	return t.base.RoundTrip(req)
+}
+
+func TestStreamChat_RetriesTransportFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		writeSSE(t, w, flusher, wireChunk{Choices: []wireChoice{{Delta: wireDelta{Content: "recovered"}, FinishReason: "stop"}}})
+		writeDone(w, flusher)
+	}))
+	defer srv.Close()
+
+	transport := &failOnceTransport{base: http.DefaultTransport, error: errors.New("temporary dial failure")}
+	var retries []Retry
+	client := New(Config{
+		APIKey: "k", BaseURL: srv.URL, HTTPClient: &http.Client{Transport: transport}, MaxRetries: 1,
+		OnRetry: func(retry Retry) { retries = append(retries, retry) },
+	})
+	result, err := client.StreamChat(context.Background(), basicReq("m"), nil)
+	if err != nil || result.Content != "recovered" {
+		t.Fatalf("result=%+v error=%v", result, err)
+	}
+	if transport.hits.Load() != 2 || len(retries) != 1 || retries[0].Kind != KindNetworkFailure {
+		t.Fatalf("hits=%d retries=%+v", transport.hits.Load(), retries)
+	}
+}
+
+func TestStreamChat_RetriesTruncatedSSE(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := hits.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		if attempt == 1 {
+			writeSSE(t, w, flusher, wireChunk{Choices: []wireChoice{{Delta: wireDelta{Content: "partial"}}}})
+			return // connection closed without the required [DONE] marker
+		}
+		writeSSE(t, w, flusher, wireChunk{Choices: []wireChoice{{Delta: wireDelta{Content: "complete"}, FinishReason: "stop"}}})
+		writeDone(w, flusher)
+	}))
+	defer srv.Close()
+
+	client := New(Config{APIKey: "k", BaseURL: srv.URL, MaxRetries: 1})
+	result, err := client.StreamChat(context.Background(), basicReq("m"), nil)
+	if err != nil || result.Content != "complete" {
+		t.Fatalf("result=%+v error=%v", result, err)
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("hits=%d, want 2", hits.Load())
 	}
 }
 

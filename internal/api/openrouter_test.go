@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/10kkyvl/studioforge/internal/models"
 	"github.com/10kkyvl/studioforge/internal/platform"
 	"github.com/10kkyvl/studioforge/internal/providers/openrouter/catalog"
 	"github.com/10kkyvl/studioforge/internal/providers/openrouter/credential"
@@ -138,7 +139,7 @@ func TestOpenRouterKeyLifecycleNeverLeaksKey(t *testing.T) {
 	}
 }
 
-func TestOpenRouterKeyTestFailureReturns200WithOkFalse(t *testing.T) {
+func TestOpenRouterKeyTestUnexpectedUpstreamReturns502(t *testing.T) {
 	a := newTestAPI(t)
 	cookie := bootstrapCookie(t, a)
 	keyTestServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -154,13 +155,49 @@ func TestOpenRouterKeyTestFailureReturns200WithOkFalse(t *testing.T) {
 
 	doRequest(t, a, cookie, "POST", "/api/v1/openrouter/key", `{"key":"sk-or-whatever"}`)
 	recorder := doRequest(t, a, cookie, "POST", "/api/v1/openrouter/key/test", "")
-	if recorder.Code != 200 {
+	if recorder.Code != 502 {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	var body map[string]any
-	_ = json.Unmarshal(recorder.Body.Bytes(), &body)
-	if body["ok"] != false {
-		t.Fatalf("expected ok:false on transport/status failure, got %v", body)
+	if strings.Contains(recorder.Body.String(), "500") {
+		t.Fatalf("response exposed upstream status: %s", recorder.Body.String())
+	}
+}
+
+func TestOpenRouterSaveKeyNormalizesWhitespace(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	var auth string
+	keyTestServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer keyTestServer.Close()
+	modelsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(testModelsResponse)) }))
+	defer modelsServer.Close()
+	withOpenRouter(t, a, keyTestServer, modelsServer)
+
+	recorder := doRequest(t, a, cookie, "POST", "/api/v1/openrouter/key", `{"key":"  sk-or-normalized\n "}`)
+	if recorder.Code != 200 {
+		t.Fatalf("save status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	recorder = doRequest(t, a, cookie, "POST", "/api/v1/openrouter/key/test", "")
+	if recorder.Code != 200 || auth != "Bearer sk-or-normalized" {
+		t.Fatalf("test status=%d auth=%q body=%s", recorder.Code, auth, recorder.Body.String())
+	}
+}
+
+func TestOpenRouterKeyTestMissingReturns409(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	keyTestServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer keyTestServer.Close()
+	modelsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(testModelsResponse)) }))
+	defer modelsServer.Close()
+	withOpenRouter(t, a, keyTestServer, modelsServer)
+
+	recorder := doRequest(t, a, cookie, "POST", "/api/v1/openrouter/key/test", "")
+	if recorder.Code != 409 {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -192,13 +229,20 @@ func TestOpenRouterModelsFiltersAndMarksCuratedAvailability(t *testing.T) {
 	if body.Source != "live" {
 		t.Fatalf("source=%q", body.Source)
 	}
-	if len(body.Models) != 2 {
-		t.Fatalf("expected only the 2 tool-capable models, got %d: %+v", len(body.Models), body.Models)
+	if len(body.Models) != 3 {
+		t.Fatalf("expected all 3 text models, got %d: %+v", len(body.Models), body.Models)
 	}
+	foundNonTool := false
 	for _, m := range body.Models {
 		if m["id"] == "vendor/chat-only" {
-			t.Fatalf("non-tool model leaked into models list: %+v", m)
+			foundNonTool = true
+			if m["tools"] != false {
+				t.Fatalf("non-tool model reported tool support: %+v", m)
+			}
 		}
+	}
+	if !foundNonTool {
+		t.Fatal("known non-tool model was missing from capability display")
 	}
 	if len(body.Categories) == 0 {
 		t.Fatal("expected non-empty categories")
@@ -240,7 +284,7 @@ func TestOpenRouterCapabilities(t *testing.T) {
 	free := doRequest(t, a, cookie, "GET", "/api/v1/openrouter/capabilities?model=openrouter/free", "")
 	var freeBody map[string]any
 	_ = json.Unmarshal(free.Body.Bytes(), &freeBody)
-	if freeBody["known"] != true || freeBody["tools"] != true || freeBody["vision"] != true || freeBody["free"] != true {
+	if freeBody["known"] != false || freeBody["tools"] != false || freeBody["vision"] != false || freeBody["free"] != true || freeBody["verified"] != false {
 		t.Fatalf("openrouter/free capabilities=%v", freeBody)
 	}
 
@@ -249,6 +293,146 @@ func TestOpenRouterCapabilities(t *testing.T) {
 	_ = json.Unmarshal(unknown.Body.Bytes(), &unknownBody)
 	if unknownBody["known"] != false {
 		t.Fatalf("unknown capabilities=%v", unknownBody)
+	}
+}
+
+func TestOpenRouterCapabilitiesMarksCachedModelUnverified(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	if err := a.store.SetModelCache(context.Background(), []byte(`[{"id":"vendor/cached","architecture":{"output_modalities":["text"]},"supported_parameters":["tools"]}]`), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	keyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer keyServer.Close()
+	modelsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusBadGateway) }))
+	defer modelsServer.Close()
+	withOpenRouter(t, a, keyServer, modelsServer)
+
+	recorder := doRequest(t, a, cookie, "GET", "/api/v1/openrouter/capabilities?model=vendor/cached", "")
+	var body map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["known"] != true || body["tools"] != true || body["verified"] != false {
+		t.Fatalf("cached capabilities=%v", body)
+	}
+}
+
+func TestValidateOpenRouterModelCompatibility(t *testing.T) {
+	catalogModels := []catalog.Model{
+		{ID: "vendor/tools", Architecture: catalog.Architecture{OutputModalities: []string{"text"}}, SupportedParameters: []string{"tools"}},
+		{ID: "vendor/chat", Architecture: catalog.Architecture{OutputModalities: []string{"text"}}},
+	}
+	tests := []struct {
+		name    string
+		agent   models.Agent
+		source  catalog.Source
+		wantErr bool
+	}{
+		{"tool capable", models.Agent{Provider: "openrouter", ModelAlias: "vendor/tools"}, catalog.SourceLive, false},
+		{"known without tools", models.Agent{Provider: "openrouter", ModelAlias: "vendor/chat", AllowUnverifiedModel: true}, catalog.SourceLive, true},
+		{"unknown without confirmation", models.Agent{Provider: "openrouter", ModelAlias: "vendor/missing"}, catalog.SourceLive, true},
+		{"unknown confirmed", models.Agent{Provider: "openrouter", ModelAlias: "vendor/missing", AllowUnverifiedModel: true}, catalog.SourceLive, false},
+		{"stale cache", models.Agent{Provider: "openrouter", ModelAlias: "vendor/tools"}, catalog.SourceCache, true},
+		{"stale cache confirmed", models.Agent{Provider: "openrouter", ModelAlias: "vendor/tools", AllowUnverifiedModel: true}, catalog.SourceCache, false},
+		{"free router without confirmation", models.Agent{Provider: "openrouter", ModelAlias: "openrouter/free"}, catalog.SourceLive, true},
+		{"free router confirmed", models.Agent{Provider: "openrouter", ModelAlias: "openrouter/free", AllowUnverifiedModel: true}, catalog.SourceLive, false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateOpenRouterModel(&test.agent, catalogModels, test.source)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("error=%v wantErr=%v", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestOpenRouterAgentModelValidation(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	keyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer keyServer.Close()
+	modelsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(testModelsResponse)) }))
+	defer modelsServer.Close()
+	withOpenRouter(t, a, keyServer, modelsServer)
+
+	request := func(name, model string, allow bool) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]any{
+			"name": name, "role": "Engineer", "provider": "openrouter", "modelAlias": model,
+			"allowUnverifiedModel": allow, "effort": "medium", "permission": "workspace-write", "concurrency": 1, "budget": 1,
+		})
+		return doRequest(t, a, cookie, "POST", "/api/v1/projects/demo-obby/agents", string(body))
+	}
+
+	if recorder := request("Tools", "vendor/paid-vision", false); recorder.Code != http.StatusCreated {
+		t.Fatalf("tool model status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder := request("Chat", "vendor/chat-only", true); recorder.Code != http.StatusBadRequest {
+		t.Fatalf("non-tool model status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder := request("Unknown", "vendor/missing", false); recorder.Code != http.StatusBadRequest {
+		t.Fatalf("unknown model status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder := request("Unknown confirmed", "vendor/missing", true); recorder.Code != http.StatusCreated {
+		t.Fatalf("confirmed unknown status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder := request("Free router", "openrouter/free", true); recorder.Code != http.StatusCreated {
+		t.Fatalf("confirmed free router status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestDefaultOpenRouterModelImmediatelyRepointsExistingAgents(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	keyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer keyServer.Close()
+	modelsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(testModelsResponse)) }))
+	defer modelsServer.Close()
+	withOpenRouter(t, a, keyServer, modelsServer)
+
+	agent, err := a.store.CreateAgent(context.Background(), models.Agent{ProjectID: "demo-obby", Name: "OpenRouter default", Role: "Engineer", Provider: "openrouter", ModelAlias: "vendor/old-model", AllowUnverifiedModel: true, Effort: "medium", Permission: "workspace-write", Concurrency: 1, Budget: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := doRequest(t, a, cookie, "POST", "/api/v1/settings", `{"default_provider":"openrouter","default_model":"vendor/paid-vision"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	agents, err := a.store.ListAgents(context.Background(), "demo-obby")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, current := range agents {
+		if current.ID == agent.ID {
+			if current.ModelAlias != "vendor/paid-vision" || current.AllowUnverifiedModel {
+				t.Fatalf("agent=%+v", current)
+			}
+			return
+		}
+	}
+	t.Fatal("OpenRouter agent not found")
+}
+
+func TestOpenRouterRunValidationDetectsDisappearedModel(t *testing.T) {
+	var present = true
+	modelsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if present {
+			_, _ = w.Write([]byte(testModelsResponse))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer modelsServer.Close()
+	a := newTestAPI(t)
+	a.server.orCatalog = catalog.NewService(catalog.Config{HTTPClient: modelsServer.Client(), BaseURL: modelsServer.URL, Cache: a.store, TTL: time.Hour})
+	agent := models.Agent{Provider: "openrouter", ModelAlias: "vendor/paid-vision"}
+	if err := a.server.validateOpenRouterAgent(context.Background(), &agent, false); err != nil {
+		t.Fatalf("initial validation: %v", err)
+	}
+	present = false
+	if err := a.server.validateOpenRouterAgent(context.Background(), &agent, true); err == nil {
+		t.Fatal("model disappearance was not detected before run")
 	}
 }
 

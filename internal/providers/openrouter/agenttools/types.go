@@ -18,8 +18,9 @@ const (
 )
 
 type Result struct {
-	Content string
-	IsError bool
+	Content  string
+	IsError  bool
+	ImageURL string
 }
 
 type Tool interface {

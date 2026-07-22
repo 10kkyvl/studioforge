@@ -126,3 +126,18 @@ func TestSnapshotCarriesPendingDecisions(t *testing.T) {
 		t.Fatalf("decisions=%+v, want one pending decision", body.Decisions)
 	}
 }
+
+func TestSnapshotReturnsEmptyDecisionArray(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	rec := getJSON(t, a, cookie, "/api/v1/snapshot")
+	var body struct {
+		Decisions []models.Decision `json:"decisions"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Decisions == nil || len(body.Decisions) != 0 {
+		t.Fatalf("decisions=%+v, want empty array", body.Decisions)
+	}
+}

@@ -51,19 +51,27 @@ func (p *Provider) Resume(ctx context.Context, req providers.ResumeRequest) (pro
 }
 
 func (p *Provider) run(parent context.Context, req providers.RunRequest, priorMessages []orclient.Message) (providers.RunHandle, error) {
+	p.mu.Lock()
+	id := p.id
+	p.mu.Unlock()
 	if req.RunID == "" {
 		return nil, errors.New("run ID is required")
 	}
 	info, err := os.Stat(req.WorkingDirectory)
 	if err != nil {
-		return nil, fmt.Errorf("openrouter: working directory %q is not accessible: %w", req.WorkingDirectory, err)
+		return nil, fmt.Errorf("%s: working directory %q is not accessible: %w", id, req.WorkingDirectory, err)
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("openrouter: working directory %q is not a directory", req.WorkingDirectory)
+		return nil, fmt.Errorf("%s: working directory %q is not a directory", id, req.WorkingDirectory)
 	}
 	ctx, cancel := context.WithCancel(parent)
-	h := &handle{events: make(chan providers.Event, 32), done: make(chan struct{}), cancel: cancel}
 	p.mu.Lock()
+	if _, exists := p.runs[req.RunID]; exists {
+		p.mu.Unlock()
+		cancel()
+		return nil, fmt.Errorf("%s: run %q is already active", id, req.RunID)
+	}
+	h := &handle{events: make(chan providers.Event, 32), done: make(chan struct{}), cancel: cancel}
 	p.runs[req.RunID] = cancel
 	p.mu.Unlock()
 	go p.execute(ctx, req, priorMessages, h)
@@ -117,10 +125,122 @@ func emit(ctx context.Context, h *handle, sessionID string, evt providers.Event)
 	}
 }
 
+func emitAvailable(h *handle, sessionID string, evt providers.Event) {
+	evt.SessionID = sessionID
+	evt.At = time.Now().UTC()
+	select {
+	case h.events <- evt:
+	default:
+	}
+}
+
 func finish(h *handle, result providers.Result) {
 	h.mu.Lock()
 	h.result = result
 	h.mu.Unlock()
+}
+
+const (
+	budgetEpsilon               = 1e-9
+	minimumBudgetedOutputTokens = 16
+	defaultBudgetedOutputTokens = 4096
+	budgetSafetyFraction        = 0.05
+)
+
+func effectiveModel(requested, actual string) string {
+	if actual != "" {
+		return actual
+	}
+	return requested
+}
+
+func estimatedInputTokens(messages []orclient.Message, tools []orclient.Tool) int {
+	body, err := json.Marshal(struct {
+		Messages []orclient.Message `json:"messages"`
+		Tools    []orclient.Tool    `json:"tools"`
+	}{Messages: messages, Tools: tools})
+	if err != nil {
+		return 256
+	}
+	return len(body) + 256
+}
+
+func fixedRequestCost(info ModelInfo, messages []orclient.Message) float64 {
+	images := 0
+	for _, message := range messages {
+		parts, ok := message.Content.([]orclient.ContentPart)
+		if !ok {
+			continue
+		}
+		for _, part := range parts {
+			if part.Type == "image_url" {
+				images++
+			}
+		}
+	}
+	return info.RequestPrice + float64(images)*info.ImagePrice
+}
+
+func budgetedMaxTokens(limit, spent float64, info ModelInfo, known bool, messages []orclient.Message, tools []orclient.Tool) (int, bool) {
+	if limit <= 0 {
+		return 0, true
+	}
+	remaining := limit - spent
+	if remaining <= budgetEpsilon || !known || !info.PriceKnown {
+		return 0, false
+	}
+	usable := remaining*(1-budgetSafetyFraction) - fixedRequestCost(info, messages) - float64(estimatedInputTokens(messages, tools))*info.PromptPrice
+	if usable <= budgetEpsilon {
+		return 0, false
+	}
+	maxTokens := defaultBudgetedOutputTokens
+	if info.CompletionPrice > 0 {
+		maxTokens = int((usable + budgetEpsilon) / info.CompletionPrice)
+	}
+	if info.MaxOutputTokens > 0 && maxTokens > info.MaxOutputTokens {
+		maxTokens = info.MaxOutputTokens
+	}
+	if maxTokens < minimumBudgetedOutputTokens {
+		return 0, false
+	}
+	return maxTokens, true
+}
+
+func completionCost(completion *orclient.Completion, info ModelInfo, known bool, messages []orclient.Message, cachedTokens, cacheWriteTokens, reasoningTokens int) (float64, bool, bool) {
+	if completion.Usage.CostPresent {
+		return completion.Usage.Cost, false, true
+	}
+	if !known || !info.PriceKnown {
+		return 0, false, false
+	}
+	if !completion.UsagePresent {
+		if info.PromptPrice == 0 && info.CompletionPrice == 0 && info.RequestPrice == 0 && info.ImagePrice == 0 && info.CacheReadPrice == 0 && info.CacheWritePrice == 0 && info.ReasoningPrice == 0 {
+			return 0, true, true
+		}
+		return 0, false, false
+	}
+	nonCachedInput := completion.Usage.PromptTokens - cachedTokens - cacheWriteTokens
+	if nonCachedInput < 0 {
+		nonCachedInput = 0
+	}
+	nonReasoningOutput := completion.Usage.CompletionTokens - reasoningTokens
+	if nonReasoningOutput < 0 {
+		nonReasoningOutput = 0
+	}
+	cachePrice := info.CacheReadPrice
+	if cachePrice <= 0 {
+		cachePrice = info.PromptPrice
+	}
+	cacheWritePrice := info.CacheWritePrice
+	if cacheWritePrice <= 0 {
+		cacheWritePrice = info.PromptPrice
+	}
+	reasoningPrice := info.ReasoningPrice
+	if reasoningPrice <= 0 {
+		reasoningPrice = info.CompletionPrice
+	}
+	cost := fixedRequestCost(info, messages) + float64(nonCachedInput)*info.PromptPrice + float64(cachedTokens)*cachePrice + float64(cacheWriteTokens)*cacheWritePrice + float64(nonReasoningOutput)*info.CompletionPrice + float64(reasoningTokens)*reasoningPrice
+	return cost, true, true
 }
 
 func persistTurn(ctx context.Context, convStore ConversationStore, threadID, runID string, assistantMsg StoredMessage, toolResults []orclient.Message) {
@@ -137,29 +257,46 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, priorM
 	defer func() { p.mu.Lock(); delete(p.runs, req.RunID); p.mu.Unlock() }()
 	defer h.Cancel()
 
-	sessionID := "openrouter:" + req.RunID
-
 	p.mu.Lock()
 	keySource := p.keySource
 	baseURL := p.baseURL
+	httpClient := p.httpClient
+	providerID := p.id
+	display := p.display
+	providerRouting := p.providerRouting
 	p.mu.Unlock()
+	sessionID := providerID + ":" + req.RunID
+	rawType := func(suffix string) string { return providerID + "." + suffix }
 
 	key := ""
 	if keySource != nil {
 		key = keySource()
 	}
 	if key == "" {
-		message := "OpenRouter API key is not configured"
-		emit(ctx, h, sessionID, providers.Event{Type: "error", RawType: "openrouter.auth", Payload: map[string]any{"message": message}, Error: message})
+		message := display + " API key is not configured"
+		emit(ctx, h, sessionID, providers.Event{Type: "error", RawType: rawType("auth"), Payload: map[string]any{"message": message}, Error: message})
 		finish(h, providers.Result{SessionID: sessionID, Err: errors.New(message), ExitCode: -1})
 		return
 	}
 
-	client := orclient.New(orclient.Config{APIKey: key, BaseURL: baseURL})
+	client := orclient.New(orclient.Config{
+		APIKey: key, BaseURL: baseURL, HTTPClient: httpClient, ProviderName: display, MaxRetries: 7,
+		OnRetry: func(retry orclient.Retry) {
+			delay := retry.Delay.Round(100 * time.Millisecond)
+			emit(ctx, h, sessionID, providers.Event{
+				Type: "status", RawType: rawType("retry"),
+				Payload: map[string]any{
+					"message": fmt.Sprintf("Temporary %s failure; retrying (%d/%d) in %s…", display, retry.Attempt, retry.MaxRetries, delay),
+					"attempt": retry.Attempt, "maxRetries": retry.MaxRetries, "delayMs": retry.Delay.Milliseconds(),
+					"kind": retry.Kind, "statusCode": retry.StatusCode,
+				},
+			})
+		},
+	})
 
 	ws, err := agenttools.NewWorkspace(req.WorkingDirectory)
 	if err != nil {
-		emit(ctx, h, sessionID, providers.Event{Type: "error", RawType: "openrouter.workspace", Payload: map[string]any{"message": err.Error()}, Error: err.Error()})
+		emit(ctx, h, sessionID, providers.Event{Type: "error", RawType: rawType("workspace"), Payload: map[string]any{"message": err.Error()}, Error: err.Error()})
 		finish(h, providers.Result{SessionID: sessionID, Err: err, ExitCode: -1})
 		return
 	}
@@ -174,11 +311,26 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, priorM
 	if modelInfoFn != nil {
 		info, known = modelInfoFn(req.Model)
 	}
-	vision := known && info.Vision
+	if modelInfoFn != nil {
+		capabilitiesKnown := known && (info.CapabilitiesKnown || info.Verified)
+		switch {
+		case capabilitiesKnown && !info.Tools:
+			message := "The selected " + display + " model does not support tool calling and cannot run as a coding agent."
+			emit(ctx, h, sessionID, providers.Event{Type: "error", RawType: rawType("model_incompatible"), Payload: map[string]any{"message": message}, Error: message})
+			finish(h, providers.Result{SessionID: sessionID, Err: errors.New(message), ExitCode: -1})
+			return
+		case (!capabilitiesKnown || !info.Verified) && !req.AllowUnverifiedModel:
+			message := "The selected " + display + " model's tool compatibility is unverified. Confirm the advanced compatibility warning before using it."
+			emit(ctx, h, sessionID, providers.Event{Type: "error", RawType: rawType("model_unverified"), Payload: map[string]any{"message": message}, Error: message})
+			finish(h, providers.Result{SessionID: sessionID, Err: errors.New(message), ExitCode: -1})
+			return
+		}
+	}
+	vision := known && (info.CapabilitiesKnown || info.Verified) && info.Vision
 
 	if len(req.Attachments) > 0 && !vision {
 		message := "The selected model does not accept image input. Choose a vision-capable model (one marked with image support in the model list), or resend without the attachment."
-		emit(ctx, h, sessionID, providers.Event{Type: "error", RawType: "openrouter.image_unsupported", Payload: map[string]any{"message": message}, Error: message})
+		emit(ctx, h, sessionID, providers.Event{Type: "error", RawType: rawType("image_unsupported"), Payload: map[string]any{"message": message}, Error: message})
 		finish(h, providers.Result{SessionID: sessionID, Err: errors.New(message), ExitCode: -1})
 		return
 	}
@@ -191,7 +343,7 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, priorM
 		RunID:      req.RunID,
 	})
 	if err != nil {
-		emit(ctx, h, sessionID, providers.Event{Type: "error", RawType: "openrouter.tools", Payload: map[string]any{"message": err.Error()}, Error: err.Error()})
+		emit(ctx, h, sessionID, providers.Event{Type: "error", RawType: rawType("tools"), Payload: map[string]any{"message": err.Error()}, Error: err.Error()})
 		finish(h, providers.Result{SessionID: sessionID, Err: err, ExitCode: -1})
 		return
 	}
@@ -205,7 +357,7 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, priorM
 	if connector != nil {
 		grant := connector(ctx, req.ProjectID, req.RunID, req.PermissionProfile)
 		if grant.Notice != "" {
-			emit(ctx, h, sessionID, providers.Event{Type: "status", RawType: "openrouter.studio", Payload: map[string]any{"message": grant.Notice}})
+			emit(ctx, h, sessionID, providers.Event{Type: "status", RawType: rawType("studio"), Payload: map[string]any{"message": grant.Notice}})
 		}
 		if grant.Client != nil {
 			router.studio = mcpbridge.New(ctx, grant.Client, grant.AllowedTools, 0)
@@ -235,7 +387,7 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, priorM
 		}
 		userMsg, err := buildUserMessage(ws, req.Prompt, req.Attachments, vision)
 		if err != nil {
-			emit(ctx, h, sessionID, providers.Event{Type: "error", RawType: "openrouter.attachment", Payload: map[string]any{"message": err.Error()}, Error: err.Error()})
+			emit(ctx, h, sessionID, providers.Event{Type: "error", RawType: rawType("attachment"), Payload: map[string]any{"message": err.Error()}, Error: err.Error()})
 			finish(h, providers.Result{SessionID: sessionID, Err: err, ExitCode: -1})
 			return
 		}
@@ -252,23 +404,26 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, priorM
 
 	var usage providers.Usage
 	var cost float64
+	budgetCostKnown := true
+	var reasoningTokens int
 	toolCallCount := 0
 	totalOutput := 0
 	repeatCounts := map[string]int{}
+	tools := router.Definitions()
 	forceFinal := false
 	compactionNotified := false
+	reasoningNotified := false
+	latestAssistantContent := ""
 
 	for turn := 1; ; turn++ {
+		reasoningNotified = false
 		final := forceFinal
 		switch {
 		case turn > maxTurns:
 			final = true
-			emit(ctx, h, sessionID, providers.Event{Type: "status", RawType: "openrouter.max_turns", Payload: map[string]any{"message": "maximum turns reached; requesting a final answer"}})
-		case req.MaxBudget > 0 && cost >= req.MaxBudget:
-			final = true
-			emit(ctx, h, sessionID, providers.Event{Type: "status", RawType: "openrouter.budget", Payload: map[string]any{"message": "budget ceiling reached; requesting a final answer"}})
+			emit(ctx, h, sessionID, providers.Event{Type: "status", RawType: rawType("max_turns"), Payload: map[string]any{"message": "maximum turns reached; requesting a final answer"}})
 		case forceFinal:
-			emit(ctx, h, sessionID, providers.Event{Type: "status", RawType: "openrouter.force_final", Payload: map[string]any{"message": "forcing a final answer"}})
+			emit(ctx, h, sessionID, providers.Event{Type: "status", RawType: rawType("force_final"), Payload: map[string]any{"message": "forcing a final answer"}})
 		}
 
 		var toolChoice any
@@ -277,42 +432,74 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, priorM
 		}
 
 		sink := func(d orclient.Delta) {
-			if d.Text == "" {
-				return
+			if d.Reasoning && !reasoningNotified {
+				reasoningNotified = true
+				emit(ctx, h, sessionID, providers.Event{Type: "status", RawType: rawType("reasoning"), Payload: map[string]any{"message": "Model is reasoning…", "turn": turn}})
 			}
-			emit(ctx, h, sessionID, providers.Event{Type: "message", RawType: "openrouter.message.partial", Payload: map[string]any{"text": d.Text}})
+			if d.Text != "" {
+				emit(ctx, h, sessionID, providers.Event{Type: "message", RawType: rawType("message.partial"), Payload: map[string]any{"text": d.Text, "turn": turn}})
+			}
 		}
 
 		requestMessages, didCompact := compactMessages(messages, maxHistoryChars)
 		if didCompact && !compactionNotified {
 			compactionNotified = true
-			emit(ctx, h, sessionID, providers.Event{Type: "status", RawType: "openrouter.compacted", Payload: map[string]any{"message": "Earlier conversation history was compacted to fit the context window."}})
+			emit(ctx, h, sessionID, providers.Event{Type: "status", RawType: rawType("compacted"), Payload: map[string]any{"message": "Earlier conversation history was compacted to fit the context window."}})
+		}
+		maxTokens, allowed := budgetedMaxTokens(req.MaxBudget, cost, info, known && budgetCostKnown, requestMessages, tools)
+		if !allowed {
+			message := "Budget ceiling reached; no additional model request was sent."
+			emit(ctx, h, sessionID, providers.Event{Type: "status", RawType: rawType("budget"), Payload: map[string]any{"message": message, "cost": cost, "limit": req.MaxBudget}})
+			if latestAssistantContent == "" {
+				latestAssistantContent = message
+				emit(ctx, h, sessionID, providers.Event{Type: "message", RawType: rawType("message"), Payload: map[string]any{"text": message, "turn": turn}})
+				if persist {
+					persistMessage(ctx, convStore, threadID, req.RunID, StoredMessage{Role: "assistant", Content: message, Model: req.Model})
+				}
+			}
+			finish(h, providers.Result{SessionID: sessionID, Cost: cost, Usage: usage, ExitCode: 0})
+			return
 		}
 
-		providerPrefs := &orclient.ProviderPreferences{RequireParameters: boolPtr(true)}
-		if routing.AllowFallbacks != nil {
-			providerPrefs.AllowFallbacks = routing.AllowFallbacks
-		}
-		if routing.DataCollection != "" {
-			providerPrefs.DataCollection = routing.DataCollection
-		}
-		if routing.ZDR {
-			providerPrefs.ZDR = boolPtr(true)
-		}
-		if len(routing.Order) > 0 {
-			providerPrefs.Order = routing.Order
+		var providerPrefs *orclient.ProviderPreferences
+		if providerRouting {
+			providerPrefs = &orclient.ProviderPreferences{RequireParameters: boolPtr(true)}
+			if routing.AllowFallbacks != nil {
+				providerPrefs.AllowFallbacks = routing.AllowFallbacks
+			}
+			if routing.DataCollection != "" {
+				providerPrefs.DataCollection = routing.DataCollection
+			}
+			if routing.ZDR {
+				providerPrefs.ZDR = boolPtr(true)
+			}
+			if len(routing.Order) > 0 {
+				providerPrefs.Order = routing.Order
+			}
 		}
 
 		chatReq := orclient.ChatRequest{
 			Model:      req.Model,
 			Messages:   requestMessages,
-			Tools:      router.Definitions(),
+			Tools:      tools,
 			ToolChoice: toolChoice,
 			Provider:   providerPrefs,
+			MaxTokens:  maxTokens,
 		}
 
 		completion, err := client.StreamChat(ctx, chatReq, sink)
 		if err != nil {
+			if completion != nil && completion.Content != "" {
+				finalEvent := providers.Event{Type: "message", RawType: rawType("message"), Payload: map[string]any{"text": completion.Content, "turn": turn, "incomplete": true}}
+				if ctx.Err() != nil {
+					emitAvailable(h, sessionID, finalEvent)
+				} else {
+					emit(ctx, h, sessionID, finalEvent)
+				}
+				if persist {
+					persistMessage(context.WithoutCancel(ctx), convStore, threadID, req.RunID, StoredMessage{Role: "assistant", Content: completion.Content, Model: effectiveModel(req.Model, completion.Model)})
+				}
+			}
 			if ctx.Err() != nil {
 				finish(h, providers.Result{SessionID: sessionID, Usage: usage, Cost: cost, Err: ctx.Err(), ExitCode: -1})
 				return
@@ -322,55 +509,58 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, priorM
 			var apiErr *orclient.APIError
 			if errors.As(err, &apiErr) {
 				message = apiErr.Message
-				hint = orclient.Action(apiErr.Kind)
+				hint = orclient.ActionFor(display, apiErr.Kind)
 			}
-			emit(ctx, h, sessionID, providers.Event{Type: "error", RawType: "openrouter.error", Payload: map[string]any{"message": message, "hint": hint}, Error: message})
+			emit(ctx, h, sessionID, providers.Event{Type: "error", RawType: rawType("error"), Payload: map[string]any{"message": message, "hint": hint}, Error: message})
 			finish(h, providers.Result{SessionID: sessionID, Usage: usage, Cost: cost, Err: err, ExitCode: -1})
 			return
 		}
 
 		cachedTokens := 0
+		cacheWriteTokens := 0
 		if completion.Usage.PromptTokensDetails != nil {
 			cachedTokens = completion.Usage.PromptTokensDetails.CachedTokens
+			cacheWriteTokens = completion.Usage.PromptTokensDetails.CacheWriteTokens
 		}
-		reasoningTokens := 0
+		turnReasoningTokens := 0
 		if completion.Usage.CompletionTokensDetails != nil {
-			reasoningTokens = completion.Usage.CompletionTokensDetails.ReasoningTokens
+			turnReasoningTokens = completion.Usage.CompletionTokensDetails.ReasoningTokens
 		}
+		reasoningTokens += turnReasoningTokens
 		turnUsage := providers.Usage{
-			InputTokens:     completion.Usage.PromptTokens - cachedTokens,
-			OutputTokens:    completion.Usage.CompletionTokens,
-			CacheReadTokens: cachedTokens,
+			InputTokens:         completion.Usage.PromptTokens - cachedTokens - cacheWriteTokens,
+			OutputTokens:        completion.Usage.CompletionTokens,
+			CacheReadTokens:     cachedTokens,
+			CacheCreationTokens: cacheWriteTokens,
 		}
 		usage = usage.Add(turnUsage)
-
-		estimated := false
-		switch {
-		case completion.Usage.Cost > 0:
-			cost += completion.Usage.Cost
-		case turnUsage.InputTokens+turnUsage.OutputTokens > 0 && known && (info.PromptPrice > 0 || info.CompletionPrice > 0):
-			cost += info.PromptPrice*float64(turnUsage.InputTokens) + info.CompletionPrice*float64(turnUsage.OutputTokens)
-			estimated = true
-		default:
-			cost += completion.Usage.Cost
+		actualModel := effectiveModel(req.Model, completion.Model)
+		costInfo, costModelKnown := info, known
+		if completion.Model != "" && completion.Model != req.Model && modelInfoFn != nil {
+			costInfo, costModelKnown = modelInfoFn(completion.Model)
 		}
 
+		turnCost, estimated, costKnown := completionCost(completion, costInfo, costModelKnown, requestMessages, cachedTokens, cacheWriteTokens, turnReasoningTokens)
+		cost += turnCost
+		budgetCostKnown = budgetCostKnown && costKnown
+
 		emit(ctx, h, sessionID, providers.Event{
-			Type: "usage", RawType: "openrouter.usage",
+			Type: "usage", RawType: rawType("usage"),
 			Payload: map[string]any{
-				"inputTokens": usage.InputTokens, "outputTokens": usage.OutputTokens, "cacheReadTokens": usage.CacheReadTokens,
-				"reasoningTokens": reasoningTokens, "cost": cost, "estimated": estimated,
+				"inputTokens": usage.InputTokens, "outputTokens": usage.OutputTokens, "cacheReadTokens": usage.CacheReadTokens, "cacheCreationTokens": usage.CacheCreationTokens,
+				"reasoningTokens": reasoningTokens, "cost": cost, "estimated": estimated, "costKnown": costKnown, "model": actualModel,
 			},
 			Usage: usage, Cost: cost,
 		})
 
 		if completion.Content != "" {
-			emit(ctx, h, sessionID, providers.Event{Type: "message", RawType: "openrouter.message", Payload: map[string]any{"text": completion.Content}})
+			latestAssistantContent = completion.Content
+			emit(ctx, h, sessionID, providers.Event{Type: "message", RawType: rawType("message"), Payload: map[string]any{"text": completion.Content, "turn": turn}})
 		}
 
 		if len(completion.ToolCalls) == 0 || final {
 			if persist {
-				persistMessage(ctx, convStore, threadID, req.RunID, StoredMessage{Role: "assistant", Content: completion.Content, Model: req.Model, Usage: turnUsage})
+				persistMessage(ctx, convStore, threadID, req.RunID, StoredMessage{Role: "assistant", Content: completion.Content, Model: actualModel, Usage: turnUsage})
 			}
 			finish(h, providers.Result{SessionID: sessionID, Cost: cost, Usage: usage, ExitCode: 0})
 			return
@@ -383,9 +573,10 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, priorM
 			b, _ := json.Marshal(completion.ToolCalls)
 			toolCallsJSON = string(b)
 		}
-		assistantMsg := StoredMessage{Role: "assistant", Content: completion.Content, ToolCallsJSON: toolCallsJSON, Model: req.Model, Usage: turnUsage}
+		assistantMsg := StoredMessage{Role: "assistant", Content: completion.Content, ToolCallsJSON: toolCallsJSON, Model: actualModel, Usage: turnUsage}
 
 		var turnToolResults []orclient.Message
+		latestStudioImage := ""
 
 		for _, tc := range completion.ToolCalls {
 			toolCallCount++
@@ -413,6 +604,11 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, priorM
 				res := router.Execute(ctx, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
 				content = res.Content
 				isError = res.IsError
+				if vision && res.ImageURL != "" {
+					latestStudioImage = res.ImageURL
+				} else if !vision && res.ImageURL != "" {
+					content = "Screenshot captured, but the current model cannot inspect images."
+				}
 				if content == "" {
 					content = "(no output)"
 				}
@@ -442,6 +638,12 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, priorM
 
 		if persist {
 			persistTurn(ctx, convStore, threadID, req.RunID, assistantMsg, turnToolResults)
+		}
+		if latestStudioImage != "" {
+			messages = append(messages, orclient.Message{Role: "user", Content: []orclient.ContentPart{
+				{Type: "text", Text: "Latest screenshot captured from Roblox Studio:"},
+				{Type: "image_url", ImageURL: &orclient.ImageURL{URL: latestStudioImage}},
+			}})
 		}
 	}
 }

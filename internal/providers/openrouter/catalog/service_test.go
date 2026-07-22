@@ -301,3 +301,31 @@ func TestServiceRefreshFailureKeepsOldCache(t *testing.T) {
 		t.Fatalf("hits=%d, want 2 (one success, one failure)", ts.hitCount())
 	}
 }
+
+func TestServiceRefreshHonorsCallerCancellation(t *testing.T) {
+	started := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	svc := NewService(Config{HTTPClient: server.Client(), BaseURL: server.URL, TTL: time.Hour})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.Refresh(ctx)
+		done <- err
+	}()
+
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected refresh cancellation error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("refresh did not stop after caller cancellation")
+	}
+}

@@ -159,14 +159,21 @@ type RunStore interface {
 	// write (see database.Store.UpdateRunStuck).
 	UpdateRunStuck(ctx context.Context, id, status, phase, resource, errText string) error
 	CreateCheckpoint(ctx context.Context, checkpoint models.Checkpoint) error
+	ThreadSessionBefore(ctx context.Context, threadID, runID string) (string, error)
 }
 type Job struct {
 	RunID, ProjectID, AgentID, TaskID, Provider, Model, Effort, PermissionProfile string
 	WorkingDirectory, Prompt, SystemPrompt, Scenario                              string
 	ThreadID, ResumeSessionID, Mode                                               string
-	Resources                                                                     []string
-	MaxBudget                                                                     float64
-	IdempotencyKey                                                                string
+	// ResumeThread resolves the immediately preceding turn's provider session
+	// only when this job is ready to start. A follow-up may spend minutes queued
+	// behind the project write lock, so resolving it in the HTTP handler would
+	// see the predecessor as still running and incorrectly start a fresh chat.
+	ResumeThread         bool
+	Resources            []string
+	MaxBudget            float64
+	AllowUnverifiedModel bool
+	IdempotencyKey       string
 	// Attachments are project-relative paths to images attached to this job's
 	// prompt. Only ever set on a fresh user turn: resumeRun, restart, and
 	// buildCorrectionJob leave it empty since images are per-user-turn only.
@@ -489,10 +496,18 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 	if grant.Context != "" {
 		prompt = "Current Roblox Studio place state (do not re-list it, build on it):\n" + grant.Context + "\n\n" + prompt
 	}
-	req := providers.RunRequest{RunID: j.RunID, ProjectID: j.ProjectID, AgentID: j.AgentID, ThreadID: j.ThreadID, WorkingDirectory: j.WorkingDirectory, Prompt: prompt, SystemPrompt: j.SystemPrompt, Mode: j.Mode, Model: j.Model, Effort: j.Effort, PermissionProfile: j.PermissionProfile, MaxBudget: j.MaxBudget, Scenario: j.Scenario, MCPConfigPath: grant.ConfigPath, AllowedTools: grant.AllowedTools, Subagents: j.Subagents, Attachments: j.Attachments}
+	req := providers.RunRequest{RunID: j.RunID, ProjectID: j.ProjectID, AgentID: j.AgentID, ThreadID: j.ThreadID, WorkingDirectory: j.WorkingDirectory, Prompt: prompt, SystemPrompt: j.SystemPrompt, Mode: j.Mode, Model: j.Model, Effort: j.Effort, PermissionProfile: j.PermissionProfile, MaxBudget: j.MaxBudget, AllowUnverifiedModel: j.AllowUnverifiedModel, Scenario: j.Scenario, MCPConfigPath: grant.ConfigPath, AllowedTools: grant.AllowedTools, Subagents: j.Subagents, Attachments: j.Attachments}
+	resumeSession := j.ResumeSessionID
+	if j.ResumeThread && j.ThreadID != "" {
+		resumeSession, err = m.store.ThreadSessionBefore(ctx, j.ThreadID, j.RunID)
+		if err != nil {
+			m.fail(context.Background(), j, "resolve previous thread session: "+err.Error())
+			return
+		}
+	}
 	var handle providers.RunHandle
-	if j.ResumeSessionID != "" {
-		handle, err = e.provider.Resume(ctx, providers.ResumeRequest{RunRequest: req, SessionID: j.ResumeSessionID})
+	if resumeSession != "" {
+		handle, err = e.provider.Resume(ctx, providers.ResumeRequest{RunRequest: req, SessionID: resumeSession})
 	} else {
 		handle, err = e.provider.Start(ctx, req)
 	}
@@ -819,7 +834,7 @@ func buildCorrectionJob(j *Job, sessionID string, validation ValidationResult) J
 		Provider: j.Provider, Model: j.Model, Effort: j.Effort, PermissionProfile: j.PermissionProfile,
 		WorkingDirectory: j.WorkingDirectory, SystemPrompt: j.SystemPrompt,
 		Mode: j.Mode, ThreadID: j.ThreadID, ResumeSessionID: sessionID,
-		MaxBudget: j.MaxBudget, Prompt: correctionPrompt(validation),
+		MaxBudget: j.MaxBudget, AllowUnverifiedModel: j.AllowUnverifiedModel, Prompt: correctionPrompt(validation),
 		ParentRunID: j.RunID, CorrectionDepth: j.CorrectionDepth + 1,
 		MaxCorrectionRuns: j.MaxCorrectionRuns, ValidateAfterRun: j.ValidateAfterRun,
 		IdempotencyKey: "correction:" + j.RunID,
@@ -963,6 +978,10 @@ func (m *Manager) emit(run models.Run, agent, eventType, raw string, payload any
 }
 func (m *Manager) emitEvent(ctx context.Context, e *execution, event providers.Event) {
 	j := e.job
+	if strings.HasSuffix(event.RawType, ".message.partial") {
+		m.hub.PublishTransient(models.RunEvent{ProjectID: j.ProjectID, RunID: j.RunID, AgentID: j.AgentID, Type: event.Type, RawType: event.RawType, Payload: event.Payload, CreatedAt: event.At})
+		return
+	}
 	// Providers report tokens in their own shapes and on their own events
 	// (Claude on assistant messages and the result, Codex on turn.completed),
 	// so the totals are republished once in a normalized usage event and the

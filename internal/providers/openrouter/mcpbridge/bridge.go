@@ -96,11 +96,66 @@ func (b *Bridge) Execute(ctx context.Context, name string, args json.RawMessage)
 		}
 		return agenttools.Result{IsError: true, Content: "Studio tool call failed: " + err.Error()}
 	}
-	text, err := mcp.TextResult(raw)
-	if err != nil {
-		return agenttools.Result{IsError: true, Content: truncate(err.Error(), b.maxResultBytes)}
+	return decodeResult(raw, b.maxResultBytes)
+}
+
+func decodeResult(raw json.RawMessage, maxBytes int) agenttools.Result {
+	var result struct {
+		Content []struct {
+			Type     string `json:"type"`
+			Text     string `json:"text"`
+			Data     string `json:"data"`
+			MIMEType string `json:"mimeType"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
 	}
-	return agenttools.Result{Content: truncate(text, b.maxResultBytes)}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return agenttools.Result{IsError: true, Content: "decode Studio tool result: " + err.Error()}
+	}
+	var texts []string
+	imageURL := ""
+	for _, block := range result.Content {
+		switch block.Type {
+		case "text":
+			if block.Text != "" {
+				texts = append(texts, block.Text)
+			}
+		case "image":
+			if block.Data != "" {
+				mimeType := block.MIMEType
+				if mimeType == "" {
+					mimeType = inferImageMIME(block.Data)
+				}
+				imageURL = "data:" + mimeType + ";base64," + block.Data
+			}
+		}
+	}
+	text := strings.Join(texts, "\n")
+	if imageURL != "" && text == "" {
+		text = "Screenshot captured; the image is attached to the next model request."
+	}
+	if text == "" {
+		text = "Studio tool returned no text."
+	}
+	if result.IsError {
+		return agenttools.Result{IsError: true, Content: truncate(text, maxBytes)}
+	}
+	return agenttools.Result{Content: truncate(text, maxBytes), ImageURL: imageURL}
+}
+
+func inferImageMIME(data string) string {
+	switch {
+	case strings.HasPrefix(data, "/9j/"):
+		return "image/jpeg"
+	case strings.HasPrefix(data, "iVBOR"):
+		return "image/png"
+	case strings.HasPrefix(data, "R0lGOD"):
+		return "image/gif"
+	case strings.HasPrefix(data, "UklGR"):
+		return "image/webp"
+	default:
+		return "application/octet-stream"
+	}
 }
 
 func truncate(s string, max int) string {

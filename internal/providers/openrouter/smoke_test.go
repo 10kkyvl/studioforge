@@ -20,6 +20,12 @@ func newSmokeProvider(t *testing.T, key string) *Provider {
 	t.Cleanup(func() { _ = sup.Close(context.Background()) })
 	p := New(sup)
 	p.SetKeySource(func() string { return key })
+	p.SetModelInfo(func(id string) (ModelInfo, bool) {
+		if id == "openrouter/free" {
+			return ModelInfo{PriceKnown: true}, true
+		}
+		return ModelInfo{Tools: true, Verified: true, CapabilitiesKnown: true, PriceKnown: true}, true
+	})
 	return p
 }
 
@@ -78,12 +84,13 @@ func TestSmoke_FreeAutomatic(t *testing.T) {
 
 	p := newSmokeProvider(t, key)
 	req := providers.RunRequest{
-		RunID:            "smoke-free-automatic",
-		ProjectID:        "smoke",
-		WorkingDirectory: t.TempDir(),
-		Prompt:           "Reply with the single word: OK.",
-		Model:            "openrouter/free",
-		MaxBudget:        0.05,
+		RunID:                "smoke-free-automatic",
+		ProjectID:            "smoke",
+		WorkingDirectory:     t.TempDir(),
+		Prompt:               "Reply with the single word: OK.",
+		Model:                "openrouter/free",
+		MaxBudget:            0.05,
+		AllowUnverifiedModel: true,
 	}
 	handle, err := p.Start(ctx, req)
 	if err != nil {

@@ -8,7 +8,35 @@ import (
 	"testing"
 
 	"github.com/10kkyvl/studioforge/internal/providers"
+	"github.com/10kkyvl/studioforge/internal/providers/openrouter/orclient"
 )
+
+func TestCompletionCostAccountsForCacheAndReasoning(t *testing.T) {
+	completion := &orclient.Completion{Usage: orclient.Usage{PromptTokens: 100, CompletionTokens: 50}, UsagePresent: true}
+	info := ModelInfo{PriceKnown: true, PromptPrice: 0.000002, CompletionPrice: 0.000004, RequestPrice: 0.00001, ImagePrice: 0.00002, CacheReadPrice: 0.0000005, CacheWritePrice: 0.000003, ReasoningPrice: 0.000006}
+	messages := []orclient.Message{{Role: "user", Content: []orclient.ContentPart{{Type: "text", Text: "look"}, {Type: "image_url", ImageURL: &orclient.ImageURL{URL: "data:image/png;base64,x"}}}}}
+	cost, estimated, known := completionCost(completion, info, true, messages, 70, 10, 20)
+	want := 0.00001 + 0.00002 + 20*0.000002 + 70*0.0000005 + 10*0.000003 + 30*0.000004 + 20*0.000006
+	if !estimated || !known || cost != want {
+		t.Fatalf("cost=%v estimated=%v known=%v want=%v", cost, estimated, known, want)
+	}
+}
+
+func TestCompletionCostUsesReportedZeroCost(t *testing.T) {
+	completion := &orclient.Completion{Usage: orclient.Usage{PromptTokens: 100, CompletionTokens: 50, CostPresent: true}}
+	cost, estimated, known := completionCost(completion, ModelInfo{PriceKnown: true, PromptPrice: 1, CompletionPrice: 1}, true, nil, 0, 0, 0)
+	if cost != 0 || estimated || !known {
+		t.Fatalf("cost=%v estimated=%v known=%v", cost, estimated, known)
+	}
+}
+
+func TestCompletionCostFailsClosedWhenPricingIsUnknown(t *testing.T) {
+	completion := &orclient.Completion{Usage: orclient.Usage{PromptTokens: 100, CompletionTokens: 50}}
+	cost, estimated, known := completionCost(completion, ModelInfo{}, false, nil, 0, 0, 0)
+	if cost != 0 || estimated || known {
+		t.Fatalf("cost=%v estimated=%v known=%v", cost, estimated, known)
+	}
+}
 
 const testPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 
@@ -93,7 +121,7 @@ func TestAgentLoop_CostEstimateFallback(t *testing.T) {
 	})
 	provider := newTestProvider(t, srv)
 	provider.SetModelInfo(func(id string) (ModelInfo, bool) {
-		return ModelInfo{PromptPrice: 0.000002, CompletionPrice: 0.000004}, true
+		return ModelInfo{Tools: true, Verified: true, PriceKnown: true, PromptPrice: 0.000002, CompletionPrice: 0.000004}, true
 	})
 	dir := t.TempDir()
 	req := providers.RunRequest{RunID: "cost-estimate", ProjectID: "p1", WorkingDirectory: dir, Prompt: "hi", Model: "test-model"}
@@ -125,7 +153,7 @@ func TestAgentLoop_ImageVisionSupportedBuildsDataURL(t *testing.T) {
 		return []wireChunk{{Choices: []wireChoice{{Delta: wireDelta{Content: "I see the image."}, FinishReason: "stop"}}}}
 	})
 	provider := newTestProvider(t, srv)
-	provider.SetModelInfo(func(id string) (ModelInfo, bool) { return ModelInfo{Vision: true}, true })
+	provider.SetModelInfo(func(id string) (ModelInfo, bool) { return ModelInfo{Vision: true, Tools: true, Verified: true}, true })
 	req := providers.RunRequest{RunID: "img-vision", ProjectID: "p1", WorkingDirectory: dir, Prompt: "what is this", Model: "vision-model", Attachments: []string{rel}}
 
 	_, result := runProvider(t, provider, req)
@@ -196,7 +224,7 @@ func TestAgentLoop_ImageSkipsNonImageAndEscapingAttachments(t *testing.T) {
 		return []wireChunk{{Choices: []wireChoice{{Delta: wireDelta{Content: "ok"}, FinishReason: "stop"}}}}
 	})
 	provider := newTestProvider(t, srv)
-	provider.SetModelInfo(func(id string) (ModelInfo, bool) { return ModelInfo{Vision: true}, true })
+	provider.SetModelInfo(func(id string) (ModelInfo, bool) { return ModelInfo{Vision: true, Tools: true, Verified: true}, true })
 	req := providers.RunRequest{
 		RunID: "img-skip", ProjectID: "p1", WorkingDirectory: dir, Prompt: "check", Model: "vision-model",
 		Attachments: []string{".studioforge/attachments/notes.txt", escapeRel},

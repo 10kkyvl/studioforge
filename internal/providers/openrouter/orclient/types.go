@@ -1,6 +1,9 @@
 package orclient
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 type Message struct {
 	Role       string     `json:"role"`
@@ -47,8 +50,24 @@ type Usage struct {
 	CompletionTokens        int                      `json:"completion_tokens"`
 	TotalTokens             int                      `json:"total_tokens"`
 	Cost                    float64                  `json:"cost"`
+	CostPresent             bool                     `json:"-"`
 	PromptTokensDetails     *PromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
 	CompletionTokensDetails *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+}
+
+func (u *Usage) UnmarshalJSON(data []byte) error {
+	type usageAlias Usage
+	var decoded usageAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*u = Usage(decoded)
+	_, u.CostPresent = fields["cost"]
+	return nil
 }
 
 type PromptTokensDetails struct {
@@ -90,16 +109,29 @@ type ChatRequest struct {
 
 type Delta struct {
 	Text      string
-	Reasoning string
+	Reasoning bool
 }
 
 type Sink func(Delta)
+
+// Retry describes an automatic retry of a transient provider request. Attempt
+// is one-based and counts retries, not the initial request.
+type Retry struct {
+	Attempt    int
+	MaxRetries int
+	Delay      time.Duration
+	Kind       Kind
+	StatusCode int
+}
+
+type RetrySink func(Retry)
 
 type Completion struct {
 	Content      string
 	ToolCalls    []ToolCall
 	FinishReason string
 	Usage        Usage
+	UsagePresent bool
 	Model        string
 }
 

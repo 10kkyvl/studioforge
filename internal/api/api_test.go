@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -448,6 +449,71 @@ func TestSSELastEventIDHeaderTakesPriorityOverAfterQueryParam(t *testing.T) {
 	}
 	if !strings.Contains(writer.body.String(), "not-yet-seen") {
 		t.Fatalf("expected the event after Last-Event-ID to be replayed: stream=%s", writer.body.String())
+	}
+}
+
+type replayGapWriter struct {
+	header  http.Header
+	body    bytes.Buffer
+	mu      sync.Mutex
+	once    sync.Once
+	started chan struct{}
+	release chan struct{}
+	cancel  context.CancelFunc
+}
+
+func (w *replayGapWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+func (w *replayGapWriter) WriteHeader(int) {}
+func (w *replayGapWriter) Write(body []byte) (int, error) {
+	w.mu.Lock()
+	n, err := w.body.Write(body)
+	w.mu.Unlock()
+	if bytes.Contains(body, []byte("replayed")) {
+		w.once.Do(func() { close(w.started) })
+		<-w.release
+	}
+	if bytes.Contains(body, []byte("live-during-replay")) {
+		w.cancel()
+	}
+	return n, err
+}
+func (w *replayGapWriter) Flush() {}
+
+func TestSSEDoesNotLoseEventPublishedDuringReplay(t *testing.T) {
+	a := newTestAPI(t)
+	_, err := a.store.AppendEvents(context.Background(), []models.RunEvent{{ProjectID: "demo-obby", RunID: "demo-obby-history", Type: "message", Payload: map[string]string{"text": "replayed"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	writer := &replayGapWriter{started: make(chan struct{}), release: make(chan struct{}), cancel: cancel}
+	request := httptest.NewRequest("GET", "http://127.0.0.1:1234/api/v1/events?runId=demo-obby-history", nil).WithContext(ctx)
+	done := make(chan struct{})
+	go func() { a.server.sse(writer, request); close(done) }()
+	select {
+	case <-writer.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("replay did not start")
+	}
+	if _, err := a.server.hub.Publish(context.Background(), models.RunEvent{ProjectID: "demo-obby", RunID: "demo-obby-history", Type: "message", Payload: map[string]string{"text": "live-during-replay"}}); err != nil {
+		t.Fatal(err)
+	}
+	close(writer.release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SSE did not deliver buffered live event")
+	}
+	writer.mu.Lock()
+	stream := writer.body.String()
+	writer.mu.Unlock()
+	if !strings.Contains(stream, "replayed") || !strings.Contains(stream, "live-during-replay") {
+		t.Fatalf("stream=%s", stream)
 	}
 }
 func TestStaticMissingAssetWithExtensionReturns404(t *testing.T) {

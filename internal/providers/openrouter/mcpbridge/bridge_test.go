@@ -184,6 +184,23 @@ func TestBridgeSurfacesToolReportedErrors(t *testing.T) {
 	}
 }
 
+func TestBridgeReturnsStudioScreenshotWithoutLoggingBase64AsText(t *testing.T) {
+	transport := &fakeTransport{
+		tools: []mcp.Tool{{Name: "screen_capture"}},
+		results: map[string]json.RawMessage{
+			"screen_capture": json.RawMessage(`{"content":[{"type":"image","data":"/9j/example","mimeType":"image/jpeg"}]}`),
+		},
+	}
+	b := New(context.Background(), mcp.NewClient(transport), mcp.AllowedTools("read-only"), 0)
+	res := b.Execute(context.Background(), "screen_capture", json.RawMessage(`{}`))
+	if res.IsError || res.ImageURL != "data:image/jpeg;base64,/9j/example" {
+		t.Fatalf("result=%+v", res)
+	}
+	if strings.Contains(res.Content, "/9j/example") {
+		t.Fatal("base64 leaked into textual tool output")
+	}
+}
+
 func TestBridgeReturnsAControlledErrorForMalformedArguments(t *testing.T) {
 	transport := &fakeTransport{tools: []mcp.Tool{{Name: "script_read"}}}
 	client := mcp.NewClient(transport)

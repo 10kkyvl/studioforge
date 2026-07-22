@@ -96,7 +96,7 @@ func (s *Service) Refresh(ctx context.Context) ([]Model, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fetchTimeout)
+	fetchCtx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 	models, err := Fetch(fetchCtx, s.cfg.HTTPClient, s.cfg.BaseURL)
 	if err != nil {

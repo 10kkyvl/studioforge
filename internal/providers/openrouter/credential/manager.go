@@ -3,7 +3,6 @@ package credential
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -38,19 +37,57 @@ type Status struct {
 	Secure bool   `json:"secure"`
 }
 
+type ConnectionErrorKind string
+
+const (
+	ConnectionMissing  ConnectionErrorKind = "missing_key"
+	ConnectionNetwork  ConnectionErrorKind = "network"
+	ConnectionTimeout  ConnectionErrorKind = "timeout"
+	ConnectionUpstream ConnectionErrorKind = "upstream"
+	ConnectionInternal ConnectionErrorKind = "internal"
+)
+
+type ConnectionError struct {
+	Kind       ConnectionErrorKind
+	StatusCode int
+	Provider   string
+}
+
+func (e *ConnectionError) Error() string {
+	provider := e.Provider
+	if provider == "" {
+		provider = "OpenRouter"
+	}
+	switch e.Kind {
+	case ConnectionMissing:
+		return "no " + provider + " API key is configured"
+	case ConnectionNetwork:
+		return "could not reach " + provider
+	case ConnectionTimeout:
+		return provider + " connection timed out"
+	case ConnectionUpstream:
+		return provider + " returned an unexpected response"
+	default:
+		return "could not update " + provider + " key verification state"
+	}
+}
+
 type Config struct {
-	Service    string
-	Account    string
-	EnvVar     string
-	Secure     platform.SecretStore
-	GetState   func(context.Context) (string, error)
-	SetState   func(context.Context, string) error
-	BaseURL    string
-	HTTPClient *http.Client
+	Service      string
+	Account      string
+	EnvVar       string
+	Secure       platform.SecretStore
+	GetState     func(context.Context) (string, error)
+	SetState     func(context.Context, string) error
+	BaseURL      string
+	ProviderName string
+	TestPath     string
+	HTTPClient   *http.Client
 }
 
 type Manager struct {
 	mu      sync.Mutex
+	opMu    sync.Mutex
 	cfg     Config
 	session []byte
 }
@@ -58,6 +95,12 @@ type Manager struct {
 func NewManager(cfg Config) *Manager {
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "https://openrouter.ai/api/v1"
+	}
+	if cfg.ProviderName == "" {
+		cfg.ProviderName = "OpenRouter"
+	}
+	if cfg.TestPath == "" {
+		cfg.TestPath = "/key"
 	}
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = &http.Client{Timeout: 15 * time.Second}
@@ -90,6 +133,9 @@ func (m *Manager) Key() string {
 }
 
 func (m *Manager) Save(ctx context.Context, key string) (Status, error) {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	key = strings.TrimSpace(key)
 	if key == "" {
 		return Status{}, errors.New("key must not be empty")
 	}
@@ -119,13 +165,22 @@ func (m *Manager) Save(ctx context.Context, key string) (Status, error) {
 }
 
 func (m *Manager) Remove(ctx context.Context) error {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
 	m.mu.Lock()
 	secure := m.cfg.Secure
 	account := m.cfg.Account
 	m.mu.Unlock()
 
 	if secure != nil {
-		_ = secure.Delete(ctx, account)
+		if err := secure.Delete(ctx, account); err != nil {
+			return errors.New("secure credential deletion failed")
+		}
+		if _, err := secure.Get(ctx, account); err == nil {
+			return errors.New("secure credential remained after deletion")
+		} else if !errors.Is(err, platform.ErrSecretNotFound) {
+			return errors.New("secure credential deletion could not be verified")
+		}
 	}
 	m.mu.Lock()
 	m.session = nil
@@ -195,39 +250,62 @@ func (m *Manager) setState(ctx context.Context, s string) error {
 }
 
 func (m *Manager) TestConnection(ctx context.Context) (Status, error) {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
 	key := m.Key()
 	if key == "" {
-		return m.Status(ctx), errors.New("no OpenRouter API key configured")
+		return m.Status(ctx), m.connectionError(ConnectionMissing, 0)
 	}
 
 	m.mu.Lock()
 	baseURL := m.cfg.BaseURL
+	testPath := m.cfg.TestPath
+	provider := m.cfg.ProviderName
 	client := m.cfg.HTTPClient
 	m.mu.Unlock()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(baseURL, "/")+"/key", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(baseURL, "/")+"/"+strings.TrimLeft(testPath, "/"), nil)
 	if err != nil {
-		return m.Status(ctx), errors.New("could not build OpenRouter request")
+		return m.Status(ctx), errors.New("could not build " + provider + " request")
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		_ = m.setState(ctx, string(StateUnverified))
-		return m.Status(ctx), errors.New("could not reach OpenRouter")
+		if stateErr := m.setState(ctx, string(StateUnverified)); stateErr != nil {
+			return m.Status(ctx), m.connectionError(ConnectionInternal, 0)
+		}
+		var netErr interface{ Timeout() bool }
+		if errors.As(err, &netErr) && netErr.Timeout() || errors.Is(err, context.DeadlineExceeded) {
+			return m.Status(ctx), m.connectionError(ConnectionTimeout, 0)
+		}
+		return m.Status(ctx), m.connectionError(ConnectionNetwork, 0)
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
 
 	switch resp.StatusCode {
 	case http.StatusOK:
-		_ = m.setState(ctx, string(StateConfigured))
+		if err := m.setState(ctx, string(StateConfigured)); err != nil {
+			return m.Status(ctx), m.connectionError(ConnectionInternal, 0)
+		}
 		return m.Status(ctx), nil
 	case http.StatusUnauthorized:
-		_ = m.setState(ctx, string(StateInvalid))
+		if err := m.setState(ctx, string(StateInvalid)); err != nil {
+			return m.Status(ctx), m.connectionError(ConnectionInternal, 0)
+		}
 		return m.Status(ctx), nil
 	default:
-		_ = m.setState(ctx, string(StateUnverified))
-		return m.Status(ctx), fmt.Errorf("openrouter key check failed: status %d", resp.StatusCode)
+		if err := m.setState(ctx, string(StateUnverified)); err != nil {
+			return m.Status(ctx), m.connectionError(ConnectionInternal, 0)
+		}
+		return m.Status(ctx), m.connectionError(ConnectionUpstream, resp.StatusCode)
 	}
+}
+
+func (m *Manager) connectionError(kind ConnectionErrorKind, status int) *ConnectionError {
+	m.mu.Lock()
+	provider := m.cfg.ProviderName
+	m.mu.Unlock()
+	return &ConnectionError{Kind: kind, StatusCode: status, Provider: provider}
 }

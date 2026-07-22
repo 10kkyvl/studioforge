@@ -346,7 +346,7 @@ func TestConversation_ResumeRebuildsStoredImagesForVisionModel(t *testing.T) {
 	})
 	provider := newTestProvider(t, srv)
 	provider.SetConversationStore(store)
-	provider.SetModelInfo(func(id string) (ModelInfo, bool) { return ModelInfo{Vision: true}, true })
+	provider.SetModelInfo(func(id string) (ModelInfo, bool) { return ModelInfo{Vision: true, Tools: true, Verified: true}, true })
 
 	_, result := runProvider(t, provider, providers.RunRequest{RunID: "resume-img-1", ProjectID: "p1", ThreadID: "thread-img", WorkingDirectory: dir, Prompt: "continue", Model: "vision-model"})
 	if result.Err != nil {
@@ -396,7 +396,7 @@ func TestConversation_ResumeMissingAttachmentSkippedWithoutError(t *testing.T) {
 	})
 	provider := newTestProvider(t, srv)
 	provider.SetConversationStore(store)
-	provider.SetModelInfo(func(id string) (ModelInfo, bool) { return ModelInfo{Vision: true}, true })
+	provider.SetModelInfo(func(id string) (ModelInfo, bool) { return ModelInfo{Vision: true, Tools: true, Verified: true}, true })
 
 	_, result := runProvider(t, provider, providers.RunRequest{RunID: "resume-img-3", ProjectID: "p1", ThreadID: "thread-img-missing", WorkingDirectory: dir, Prompt: "continue", Model: "vision-model"})
 	if result.Err != nil {
