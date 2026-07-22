@@ -1,9 +1,34 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { Bot, Database, Languages, Moon, RefreshCw, Save, Search, Sun } from '@lucide/svelte';
+  import {
+    Bot,
+    ChevronDown,
+    Database,
+    KeyRound,
+    Languages,
+    Moon,
+    PlugZap,
+    RefreshCw,
+    Save,
+    Search,
+    Sun,
+    Trash2,
+  } from '@lucide/svelte';
   import { detectPaths } from '$lib/api';
+  import {
+    getOpenRouterStatus,
+    removeOpenRouterKey,
+    setOpenRouterKey,
+    testOpenRouterKey,
+  } from '$lib/openrouter';
   import { locale, translate, type Locale, type TranslationKey } from '$lib/i18n';
-  import type { AppSettings, DetectedPaths, Diagnostics, ToolCandidate } from '$lib/types';
+  import type {
+    AppSettings,
+    DetectedPaths,
+    Diagnostics,
+    OpenRouterStatus,
+    ToolCandidate,
+  } from '$lib/types';
 
   export let diagnostics: Diagnostics;
   export let settings: AppSettings;
@@ -15,9 +40,83 @@
   export let onBackup: () => void;
   export let onSave: (settings: AppSettings) => void;
 
+  let orStatus: OpenRouterStatus | null = null;
+  let orLoadingStatus = false;
+  let orStatusError = '';
+  let orKeyInput = '';
+  let orSaving = false;
+  let orRemoving = false;
+  let orConfirmingRemove = false;
+  let orTesting = false;
+  let orTestOk: boolean | null = null;
+  let orNotice = '';
+
+  async function loadOpenRouterStatus() {
+    orLoadingStatus = true;
+    orStatusError = '';
+    try {
+      orStatus = await getOpenRouterStatus();
+    } catch (cause) {
+      orStatusError = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      orLoadingStatus = false;
+    }
+  }
+
+  async function saveOpenRouterKey() {
+    if (!orKeyInput.trim() || orSaving) return;
+    orSaving = true;
+    orStatusError = '';
+    orNotice = '';
+    orTestOk = null;
+    try {
+      orStatus = await setOpenRouterKey(orKeyInput.trim());
+      orKeyInput = '';
+      orNotice = $translate('openrouter.keySaved');
+    } catch (cause) {
+      orStatusError = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      orSaving = false;
+    }
+  }
+
+  async function removeOpenRouterKeyClick() {
+    if (orRemoving) return;
+    orRemoving = true;
+    orStatusError = '';
+    orNotice = '';
+    orTestOk = null;
+    try {
+      await removeOpenRouterKey();
+      orConfirmingRemove = false;
+      orNotice = $translate('openrouter.keyRemoved');
+      await loadOpenRouterStatus();
+    } catch (cause) {
+      orStatusError = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      orRemoving = false;
+    }
+  }
+
+  async function testOpenRouterConnection() {
+    if (orTesting) return;
+    orTesting = true;
+    orStatusError = '';
+    orNotice = '';
+    orTestOk = null;
+    try {
+      const result = await testOpenRouterKey();
+      orStatus = result;
+      orTestOk = result.ok;
+    } catch (cause) {
+      orStatusError = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      orTesting = false;
+    }
+  }
+
   type PathField = { key: keyof AppSettings; label: TranslationKey; placeholder: string };
   const pathFields: PathField[] = [
-    { key: 'codex_path', label: 'settings.codexPath', placeholder: 'codex' },
     { key: 'claude_path', label: 'settings.claudePath', placeholder: 'claude' },
     { key: 'rojo_path', label: 'settings.rojoPath', placeholder: 'rojo' },
     { key: 'git_path', label: 'settings.gitPath', placeholder: 'git' },
@@ -77,6 +176,7 @@
 
   onMount(() => {
     void runDetection('empty');
+    void loadOpenRouterStatus();
   });
 </script>
 
@@ -115,6 +215,94 @@
       >
     </div>
   </article>
+  <article class="settings-card openrouter-card">
+    <header>
+      <KeyRound />
+      <h2>{$translate('openrouter.title')}</h2>
+    </header>
+    {#if orLoadingStatus}
+      <p class="path-hint">{$translate('common.loading')}</p>
+    {:else if orStatus}
+      <p class="or-state-row">
+        <span class="chip or-state" data-state={orStatus.state}
+          >{$translate(`openrouter.keyState.${orStatus.state}` as TranslationKey)}</span
+        >
+        <span class="or-source"
+          >{$translate(`openrouter.source.${orStatus.source}` as TranslationKey)}</span
+        >
+      </p>
+      {#if !orStatus.secure}
+        <p class="path-status" data-status="missing">{$translate('openrouter.insecureWarning')}</p>
+      {/if}
+      {#if orTestOk !== null}
+        <p class="or-test-result" data-ok={orTestOk}>
+          {orTestOk ? $translate('openrouter.testOk') : $translate('openrouter.testFailed')}
+        </p>
+      {/if}
+    {/if}
+    {#if orStatusError}
+      <p class="path-status" data-status="error">{orStatusError}</p>
+    {/if}
+    {#if orNotice}
+      <p class="or-notice">{orNotice}</p>
+    {/if}
+    <form
+      class="or-key-form"
+      onsubmit={(event) => {
+        event.preventDefault();
+        void saveOpenRouterKey();
+      }}
+    >
+      <input
+        type="password"
+        autocomplete="off"
+        bind:value={orKeyInput}
+        placeholder={$translate('openrouter.keyPlaceholder')}
+        aria-label={$translate('openrouter.keyLabel')}
+      />
+      <button class="primary" type="submit" disabled={orSaving || !orKeyInput.trim()}>
+        <Save size={15} />{orSaving
+          ? $translate('openrouter.saving')
+          : orStatus && orStatus.state !== 'not_configured'
+            ? $translate('openrouter.replace')
+            : $translate('openrouter.save')}
+      </button>
+    </form>
+    <footer>
+      <button
+        type="button"
+        onclick={testOpenRouterConnection}
+        disabled={orTesting || !orStatus || orStatus.state === 'not_configured'}
+      >
+        <PlugZap size={15} />{orTesting
+          ? $translate('openrouter.testing')
+          : $translate('openrouter.testConnection')}
+      </button>
+      {#if orConfirmingRemove}
+        <button type="button" onclick={() => (orConfirmingRemove = false)} disabled={orRemoving}
+          >{$translate('common.cancel')}</button
+        ><button
+          type="button"
+          class="danger"
+          onclick={removeOpenRouterKeyClick}
+          disabled={orRemoving}
+        >
+          <Trash2 size={15} />{orRemoving
+            ? $translate('openrouter.removing')
+            : $translate('openrouter.removeConfirmButton')}
+        </button>
+      {:else}
+        <button
+          type="button"
+          class="danger"
+          onclick={() => (orConfirmingRemove = true)}
+          disabled={!orStatus || orStatus.state === 'not_configured'}
+        >
+          <Trash2 size={15} />{$translate('openrouter.remove')}
+        </button>
+      {/if}
+    </footer>
+  </article>
   <form
     class="settings-card integration-settings"
     onsubmit={(event) => {
@@ -132,9 +320,8 @@
     <div class="settings-fields">
       <label
         >{$translate('settings.defaultProvider')}<select bind:value={settings.default_provider}
-          ><option value="codex">Codex</option><option value="claude">Claude Code</option><option
-            value="mock">Mock</option
-          ></select
+          ><option value="claude">Claude Code</option><option value="openrouter">OpenRouter</option
+          ><option value="mock">Mock</option></select
         ></label
       >
       <label
@@ -231,6 +418,36 @@
           /></label
         >
         <p class="path-hint">{$translate('settings.playtestWindowHint')}</p>
+      </div>
+      <div class="wide path-field">
+        <details class="advanced-routing">
+          <summary><ChevronDown size={14} />{$translate('openrouter.routing.title')}</summary>
+          <div class="settings-fields">
+            <label
+              >{$translate('openrouter.routing.dataCollection')}<select
+                bind:value={settings.openrouter_data_collection}
+                ><option value="">{$translate('openrouter.routing.providerDefault')}</option><option
+                  value="allow">{$translate('openrouter.routing.allow')}</option
+                ><option value="deny">{$translate('openrouter.routing.deny')}</option></select
+              ></label
+            >
+            <label
+              >{$translate('openrouter.routing.zdr')}<select bind:value={settings.openrouter_zdr}
+                ><option value="">{$translate('openrouter.routing.providerDefault')}</option><option
+                  value="true">{$translate('openrouter.routing.on')}</option
+                ><option value="false">{$translate('openrouter.routing.off')}</option></select
+              ></label
+            >
+            <label
+              >{$translate('openrouter.routing.allowFallbacks')}<select
+                bind:value={settings.openrouter_allow_fallbacks}
+                ><option value="">{$translate('openrouter.routing.providerDefault')}</option><option
+                  value="true">{$translate('openrouter.routing.on')}</option
+                ><option value="false">{$translate('openrouter.routing.off')}</option></select
+              ></label
+            >
+          </div>
+        </details>
       </div>
       {#if detectError}
         <p class="wide path-status" data-status="error">

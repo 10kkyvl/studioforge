@@ -423,7 +423,6 @@
         default_provider: settings.default_provider,
         default_model: settings.default_model,
         default_effort: settings.default_effort,
-        codex_path: settings.codex_path,
         claude_path: settings.claude_path,
         rojo_path: settings.rojo_path,
         git_path: settings.git_path,
@@ -431,6 +430,9 @@
         studio_auto_open: settings.studio_auto_open === 'false' ? 'false' : 'true',
         concurrency: String(settings.concurrency),
         playtest_window_seconds: String(settings.playtest_window_seconds),
+        openrouter_data_collection: settings.openrouter_data_collection ?? '',
+        openrouter_zdr: settings.openrouter_zdr ?? '',
+        openrouter_allow_fallbacks: settings.openrouter_allow_fallbacks ?? '',
       });
       notice = $translate('settings.saved');
       await refresh();

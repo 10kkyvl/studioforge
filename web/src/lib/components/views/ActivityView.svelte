@@ -7,6 +7,7 @@
     spendTokens,
     translate,
   } from '$lib/i18n';
+  import { isLegacyProvider } from '$lib/models';
   import type { Run } from '$lib/types';
 
   export let runs: Run[];
@@ -38,12 +39,18 @@
       {#each runs as run}
         {@const spend = spendTokens(run)}
         {@const cache = cacheTokens(run)}
+        {@const legacy = isLegacyProvider(run.provider)}
         <tr>
           <td><span class={`status status-${run.status}`}>{statusLabel(run.status)}</span></td>
           <td>{projectName(run.projectId)}</td><td>{agentName(run.agentId)}</td>
-          <td><code>{run.provider}/{run.modelAlias}</code></td><td
-            ><code>{run.requiredResource || '—'}</code></td
-          >
+          <td
+            ><code>{run.provider}/{run.modelAlias}</code>
+            {#if legacy}
+              <span class="chip" title={$translate('run.legacyProviderHint')}
+                >{$translate('run.legacyProvider')}</span
+              >
+            {/if}</td
+          ><td><code>{run.requiredResource || '—'}</code></td>
           <td>
             {#if spend > 0 || cache > 0}
               <div class="token-cell">
@@ -69,8 +76,10 @@
                   >{$translate('common.cancel')}</button
                 >
               {:else if run.status === 'paused'}
-                <button onclick={() => onRunAction(run, 'resume')}
-                  >{$translate('common.resume')}</button
+                <button
+                  disabled={legacy}
+                  title={legacy ? $translate('run.legacyProviderHint') : undefined}
+                  onclick={() => onRunAction(run, 'resume')}>{$translate('common.resume')}</button
                 >
                 <button class="danger" onclick={() => onRunAction(run, 'cancel')}
                   >{$translate('common.cancel')}</button
@@ -80,8 +89,10 @@
                   >{$translate('common.cancel')}</button
                 >
               {:else if ['interrupted', 'failed', 'cancelled'].includes(run.status)}
-                <button onclick={() => onRunAction(run, 'restart')}
-                  >{$translate('common.restart')}</button
+                <button
+                  disabled={legacy}
+                  title={legacy ? $translate('run.legacyProviderHint') : undefined}
+                  onclick={() => onRunAction(run, 'restart')}>{$translate('common.restart')}</button
                 >
               {/if}
             </div></td

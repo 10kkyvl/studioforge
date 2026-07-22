@@ -19,6 +19,7 @@
     stopSync,
     uploadAttachment,
   } from '$lib/api';
+  import { getOpenRouterCapabilities } from '$lib/openrouter';
   import { parseAttachments } from '$lib/attachments';
   import { endsRun, isRunTerminal, mcpWithheldMessage } from '$lib/runStatus';
   import {
@@ -463,8 +464,44 @@
   $: threadSpendTokens = spendTokens(selectedThread);
   $: threadCacheTokens = cacheTokens(selectedThread);
   $: leadKnown = !!leadAgentId && agents.some((agent) => agent.id === leadAgentId);
+  // The lead agent is who actually answers a send (see submitRun: agentId is
+  // always '', letting the scheduler pick the lead), so its model is the one
+  // an image-vision warning below has to check — not any other enabled agent.
+  $: leadAgent = leadKnown ? agents.find((agent) => agent.id === leadAgentId) : undefined;
   $: attachedTask = attachedTaskId ? tasks.find((task) => task.id === attachedTaskId) : undefined;
   $: uploadingImage = uploadingCount > 0;
+  // Keyed by model id so switching back to a model already checked this
+  // session doesn't re-fire the request. `null` marks "known unknown" (still
+  // loading, or the lookup failed) so it is never mistaken for a confirmed
+  // non-vision model.
+  let visionCapabilityCache: Record<string, boolean | null> = {};
+  async function ensureVisionCapability(modelId: string) {
+    if (!modelId || modelId in visionCapabilityCache) return;
+    visionCapabilityCache = { ...visionCapabilityCache, [modelId]: null };
+    try {
+      const caps = await getOpenRouterCapabilities(modelId);
+      visionCapabilityCache = {
+        ...visionCapabilityCache,
+        [modelId]: caps.known ? caps.vision : null,
+      };
+    } catch {
+      visionCapabilityCache = { ...visionCapabilityCache, [modelId]: null };
+    }
+  }
+  $: if (
+    leadAgent?.provider === 'openrouter' &&
+    leadAgent.modelAlias &&
+    pendingAttachments.length > 0
+  ) {
+    void ensureVisionCapability(leadAgent.modelAlias);
+  }
+  // Non-blocking: this never disables Send, it only surfaces a heads-up next
+  // to the attachment chips (see the composer markup below).
+  $: showVisionWarning =
+    !!leadAgent &&
+    leadAgent.provider === 'openrouter' &&
+    pendingAttachments.length > 0 &&
+    visionCapabilityCache[leadAgent.modelAlias] === false;
   $: activeRunEvents = sentRunId ? liveEvents.filter((event) => event.runId === sentRunId) : [];
   // Only the agent's own text belongs in the chat — drop system/tool/status/
   // stderr events so the conversation is not buried in machine chatter. A
@@ -1206,6 +1243,9 @@
         {/if}
       </div>
     {/if}
+    {#if showVisionWarning}
+      <p class="vision-warning">{$translate('openrouter.visionWarning')}</p>
+    {/if}
     {#if commandInfo}<p class="command-info">{commandInfo}</p>{/if}
     <form
       class="composer"
@@ -1468,6 +1508,12 @@
     padding: 6px 18px;
     color: var(--accent);
     font-size: 0.74rem;
+  }
+  .vision-warning {
+    margin: 8px 18px 0;
+    color: var(--yellow);
+    font-size: 0.72rem;
+    line-height: 1.4;
   }
   .chat-panel {
     position: relative;

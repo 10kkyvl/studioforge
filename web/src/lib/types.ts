@@ -212,7 +212,6 @@ export type AppSettings = {
   default_provider: string;
   default_model: string;
   default_effort: string;
-  codex_path: string;
   claude_path: string;
   rojo_path: string;
   git_path: string;
@@ -220,4 +219,65 @@ export type AppSettings = {
   studio_auto_open: string;
   concurrency: string;
   playtest_window_seconds: string;
+  // OpenRouter routing preferences. Empty string means "provider default" for
+  // every field; require_parameters has no UI toggle and is always on
+  // server-side. Persisted through the same POST /settings payload as every
+  // other field above, not a dedicated endpoint.
+  openrouter_data_collection: string;
+  openrouter_zdr: string;
+  openrouter_allow_fallbacks: string;
+};
+
+// The stored-key lifecycle: no key saved yet, a key was saved but never
+// exercised against the API, a key that answered a real request, or a key
+// the API rejected.
+export type OpenRouterKeyState = 'not_configured' | 'unverified' | 'configured' | 'invalid';
+// Where the active key came from. 'keychain' is the only source the UI can
+// treat as durable — 'session' and 'env' both disappear once the process
+// backing them goes away, which is why `secure` rides alongside separately
+// rather than being inferred from this field alone.
+export type OpenRouterKeySource = 'keychain' | 'session' | 'env' | 'none';
+export type OpenRouterStatus = {
+  state: OpenRouterKeyState;
+  source: OpenRouterKeySource;
+  secure: boolean;
+};
+export type OpenRouterKeyTestResult = OpenRouterStatus & { ok: boolean };
+export type OpenRouterModel = {
+  id: string;
+  name: string;
+  contextLength: number;
+  vision: boolean;
+  tools: boolean;
+  structured: boolean;
+  free: boolean;
+  promptPrice: number;
+  completionPrice: number;
+};
+// A hand-picked subset of `models`, grouped by `category` for the picker.
+// `available` can be false (e.g. a curated pick OpenRouter has since pulled)
+// without the entry disappearing, so the picker can grey it out instead of
+// silently dropping a choice the operator may already have saved.
+export type OpenRouterCurated = {
+  id: string;
+  category: string;
+  recommendation: string;
+  workload: string;
+  free: boolean;
+  vision: boolean;
+  available: boolean;
+};
+export type OpenRouterModelsResponse = {
+  source: 'live' | 'cache' | 'fallback';
+  models: OpenRouterModel[];
+  curated: OpenRouterCurated[];
+  categories: string[];
+};
+export type OpenRouterCapabilities = {
+  known: boolean;
+  vision: boolean;
+  tools: boolean;
+  structured: boolean;
+  contextLength: number;
+  free: boolean;
 };

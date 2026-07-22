@@ -976,6 +976,9 @@ tbody tr:last-child td {
 .settings-fields .wide {
   grid-column: span 2;
 }
+.field-span-2 {
+  grid-column: span 2;
+}
 .path-field {
   display: flex;
   flex-direction: column;
@@ -1044,6 +1047,82 @@ tbody tr:last-child td {
   color: var(--muted);
   font-size: 0.68rem;
   font-style: italic;
+}
+.or-state-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 0;
+}
+.or-state[data-state='not_configured'] {
+  color: var(--muted);
+}
+.or-state[data-state='unverified'] {
+  color: var(--yellow);
+  border-color: color-mix(in srgb, var(--yellow) 40%, var(--line));
+}
+.or-state[data-state='configured'] {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 40%, var(--line));
+}
+.or-state[data-state='invalid'] {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 40%, var(--line));
+}
+.or-source {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+.or-test-result {
+  margin: 6px 0 0;
+  font-size: 0.72rem;
+}
+.or-test-result[data-ok='true'] {
+  color: var(--green);
+}
+.or-test-result[data-ok='false'] {
+  color: var(--red);
+}
+.or-notice {
+  margin: 6px 0 0;
+  color: var(--accent);
+  font-size: 0.72rem;
+}
+.or-key-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+.or-key-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+}
+.advanced-routing summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: 0.78rem;
+  cursor: pointer;
+  list-style: none;
+}
+.advanced-routing summary::-webkit-details-marker {
+  display: none;
+}
+.advanced-routing summary svg {
+  transition: transform 0.15s ease;
+}
+.advanced-routing[open] summary svg {
+  transform: rotate(180deg);
+}
+.advanced-routing .settings-fields {
+  margin-top: 12px;
 }
 .dependency-grid {
   display: grid;
