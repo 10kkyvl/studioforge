@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from 'svelte';
-  import { MessagesSquare, Plus } from '@lucide/svelte';
+  import { Cpu, MessagesSquare, Plus } from '@lucide/svelte';
   import {
     APIError,
     attachmentUrl,
@@ -20,8 +20,12 @@
     uploadAttachment,
   } from '$lib/api';
   import { getOpenRouterCapabilities } from '$lib/openrouter';
+  import { getNVIDIACapabilities } from '$lib/nvidia';
+  import { aggregateOpenRouterMessages } from '$lib/openrouterStream';
   import { parseAttachments } from '$lib/attachments';
-  import { endsRun, isRunTerminal, mcpWithheldMessage } from '$lib/runStatus';
+  import Markdown from '$lib/components/Markdown.svelte';
+  import { foregroundRun, liveThreadRuns, queuedBehindForeground } from '$lib/runQueue';
+  import { endsRun, mcpWithheldMessage } from '$lib/runStatus';
   import {
     extractQuestionFence,
     isStuckEscalation,
@@ -72,6 +76,10 @@
   let threads: ChatThread[] = [];
   let selectedThreadId = '';
   let messages: ChatMessage[] = [];
+  // Runs returned by chat sends are immediately authoritative, while the
+  // parent snapshot may update a moment later. Keeping them locally makes
+  // the real model badge available from the first streamed message.
+  let submittedRuns: Run[] = [];
   let loadingThreads = false;
   let loadingMessages = false;
   let sending = false;
@@ -113,9 +121,35 @@
   let openingStudio = false;
   let syncBusy = false;
   let stopping = false;
+  let cancellingQueuedRunIds = new Set<string>();
   let commandInfo = '';
   let progressInterval: ReturnType<typeof setInterval> | undefined;
   let studioInterval: ReturnType<typeof setInterval> | undefined;
+
+  function providerName(provider: string) {
+    switch (provider.toLowerCase()) {
+      case 'nvidia':
+        return 'NVIDIA NIM';
+      case 'openrouter':
+        return 'OpenRouter';
+      case 'claude':
+        return 'Claude Code';
+      case 'mock':
+        return $translate('common.mock');
+      default:
+        return provider;
+    }
+  }
+
+  function runIdentity(runId: string, provider = '', modelAlias = '') {
+    const run =
+      submittedRuns.find((item) => item.id === runId) ?? runs.find((item) => item.id === runId);
+    const resolvedProvider = provider || run?.provider || '';
+    const resolvedModel = modelAlias || run?.modelAlias || '';
+    return resolvedProvider && resolvedModel
+      ? { provider: providerName(resolvedProvider), model: resolvedModel }
+      : null;
+  }
 
   $: if (projectId && projectId !== loadedProjectId) {
     loadedProjectId = projectId;
@@ -132,6 +166,7 @@
     threads = [];
     selectedThreadId = '';
     messages = [];
+    submittedRuns = [];
     restoreActiveRun('');
     leadAgentId = '';
     typicalSeconds = 0;
@@ -193,6 +228,28 @@
         setError(cause instanceof Error ? cause.message : String(cause));
         stopping = false;
       }
+    }
+  }
+
+  async function cancelQueuedRun(runId: string) {
+    if (!runId || cancellingQueuedRunIds.has(runId)) return;
+    cancellingQueuedRunIds = new Set(cancellingQueuedRunIds).add(runId);
+    try {
+      await post(`/runs/${runId}/cancel`, {});
+    } catch (cause) {
+      if (!(cause instanceof APIError && cause.code === 'run_action_failed')) {
+        setError(
+          cause instanceof APIError && cause.code === 'network'
+            ? $translate('error.network')
+            : cause instanceof Error
+              ? cause.message
+              : String(cause),
+        );
+      }
+    } finally {
+      const next = new Set(cancellingQueuedRunIds);
+      next.delete(runId);
+      cancellingQueuedRunIds = next;
     }
   }
 
@@ -475,44 +532,71 @@
   // loading, or the lookup failed) so it is never mistaken for a confirmed
   // non-vision model.
   let visionCapabilityCache: Record<string, boolean | null> = {};
-  async function ensureVisionCapability(modelId: string) {
-    if (!modelId || modelId in visionCapabilityCache) return;
-    visionCapabilityCache = { ...visionCapabilityCache, [modelId]: null };
+  async function ensureVisionCapability(provider: string, modelId: string) {
+    const cacheKey = `${provider}:${modelId}`;
+    if (!modelId || cacheKey in visionCapabilityCache) return;
+    visionCapabilityCache = { ...visionCapabilityCache, [cacheKey]: null };
     try {
-      const caps = await getOpenRouterCapabilities(modelId);
+      const caps =
+        provider === 'nvidia'
+          ? await getNVIDIACapabilities(modelId)
+          : await getOpenRouterCapabilities(modelId);
       visionCapabilityCache = {
         ...visionCapabilityCache,
-        [modelId]: caps.known ? caps.vision : null,
+        [cacheKey]: caps.known ? caps.vision : null,
       };
     } catch {
-      visionCapabilityCache = { ...visionCapabilityCache, [modelId]: null };
+      visionCapabilityCache = { ...visionCapabilityCache, [cacheKey]: null };
     }
   }
   $: if (
-    leadAgent?.provider === 'openrouter' &&
+    (leadAgent?.provider === 'openrouter' || leadAgent?.provider === 'nvidia') &&
     leadAgent.modelAlias &&
     pendingAttachments.length > 0
   ) {
-    void ensureVisionCapability(leadAgent.modelAlias);
+    void ensureVisionCapability(leadAgent.provider, leadAgent.modelAlias);
   }
   // Non-blocking: this never disables Send, it only surfaces a heads-up next
   // to the attachment chips (see the composer markup below).
   $: showVisionWarning =
     !!leadAgent &&
-    leadAgent.provider === 'openrouter' &&
+    (leadAgent.provider === 'openrouter' || leadAgent.provider === 'nvidia') &&
     pendingAttachments.length > 0 &&
-    visionCapabilityCache[leadAgent.modelAlias] === false;
+    visionCapabilityCache[`${leadAgent.provider}:${leadAgent.modelAlias}`] === false;
+  $: endedRunIds = new Set(
+    liveEvents.filter((event) => endsRun(event, event.runId)).map((event) => event.runId),
+  );
+  $: currentThreadRuns = liveThreadRuns(runs, submittedRuns, selectedThreadId, endedRunIds);
+  $: currentForegroundRun = foregroundRun(currentThreadRuns);
+  $: queuedRuns = queuedBehindForeground(currentThreadRuns, currentForegroundRun);
+  // A follow-up must not steal the live transcript or Stop button from the
+  // run that is actually executing. It becomes foreground only after the
+  // predecessor reaches a terminal state (from snapshot or SSE).
+  $: if ((currentForegroundRun?.id ?? null) !== sentRunId) {
+    sentRunId = currentForegroundRun?.id ?? null;
+    sendStartMs = currentForegroundRun ? Date.parse(currentForegroundRun.createdAt) : 0;
+    stopping = false;
+  }
   $: activeRunEvents = sentRunId ? liveEvents.filter((event) => event.runId === sentRunId) : [];
+  $: liveRunStatus = activeRunEvents.reduce<string>((status, event) => {
+    if (event.type !== 'status' || event.rawType !== 'scheduler.state') return status;
+    const payload = event.payload;
+    if (!payload || typeof payload !== 'object') return status;
+    const next = (payload as Record<string, unknown>).status;
+    return typeof next === 'string' ? next : status;
+  }, '');
   // Only the agent's own text belongs in the chat — drop system/tool/status/
   // stderr events so the conversation is not buried in machine chatter. A
   // "question" event is the one other kind that belongs here: it is how the
   // agent's turn ends when it wants the operator to pick between options
   // instead of just talking.
-  $: activeLiveEvents = activeRunEvents.filter(
-    (event) =>
-      (event.type === 'message' && messageText(event.payload).trim() !== '') ||
-      (event.type === 'question' && normalizeQuestionPayload(event.payload) !== null) ||
-      mcpWithheldMessage(event) !== null,
+  $: activeLiveEvents = aggregateOpenRouterMessages(
+    activeRunEvents.filter(
+      (event) =>
+        (event.type === 'message' && messageText(event.payload).trim() !== '') ||
+        (event.type === 'question' && normalizeQuestionPayload(event.payload) !== null) ||
+        mcpWithheldMessage(event) !== null,
+    ),
   );
 
   // A card only offers live buttons while it is the very last thing in the
@@ -563,31 +647,22 @@
   // reading, so new events only follow the bottom when it is already in view.
   $: if (messages.length || activeLiveEvents.length) followBottom();
 
-  let handledRunId = '';
-  $: if (sentRunId && sentRunId !== handledRunId) {
-    const currentRunId = sentRunId;
-    const terminal = liveEvents.some((event) => endsRun(event, currentRunId));
-    if (terminal) {
-      // Reload history first, then drop the live bubbles, so the just-streamed
-      // reply never blinks out before its persisted copy arrives.
-      handledRunId = currentRunId;
-      stopping = false;
-      const threadAtSend = selectedThreadId;
-      void loadMessages(threadAtSend).then(() => {
-        if (sentRunId === currentRunId) sentRunId = null;
-      });
-      void loadRunDiff(currentRunId);
-    }
-  }
-
-  $: if (selectedThreadId && !sentRunId && runs.length) {
-    const active = runs.find(
-      (run) =>
-        run.threadId === selectedThreadId && !isRunTerminal(run.status) && run.id !== handledRunId,
-    );
-    if (active) {
-      sentRunId = active.id;
-      sendStartMs = Date.parse(active.createdAt);
+  let handledRunIds = new Set<string>();
+  $: {
+    const newlyEnded = [...endedRunIds].filter((id) => !handledRunIds.has(id));
+    if (newlyEnded.length > 0) {
+      handledRunIds = new Set([...handledRunIds, ...newlyEnded]);
+      const knownRuns = [...submittedRuns, ...runs];
+      const selectedEnded = newlyEnded.filter(
+        (id) => knownRuns.find((run) => run.id === id)?.threadId === selectedThreadId,
+      );
+      if (selectedEnded.length > 0) {
+        // Reload history before streamed bubbles disappear; queued messages
+        // are already persisted as run prompts and remain visible throughout.
+        const threadAtSend = selectedThreadId;
+        void loadMessages(threadAtSend);
+        void loadRunDiff(selectedEnded[selectedEnded.length - 1]);
+      }
     }
   }
 
@@ -595,18 +670,9 @@
     runDiff = null;
     loadingDiff = false;
     resetRollbackState();
-    const active = threadId
-      ? runs.find(
-          (run) =>
-            run.threadId === threadId && !isRunTerminal(run.status) && run.id !== handledRunId,
-        )
-      : undefined;
-    if (active) {
-      sentRunId = active.id;
-      sendStartMs = Date.parse(active.createdAt);
-    } else {
-      sentRunId = null;
-    }
+    const active = foregroundRun(liveThreadRuns(runs, submittedRuns, threadId, endedRunIds));
+    sentRunId = active?.id ?? null;
+    sendStartMs = active ? Date.parse(active.createdAt) : 0;
   }
 
   async function loadThreads(id: string) {
@@ -650,14 +716,16 @@
     setError('');
     try {
       const result = await getThreadMessages(id);
-      if (isStaleGeneration(generation, projectGeneration)) return;
+      if (isStaleGeneration(generation, projectGeneration) || selectedThreadId !== id) return;
       messages = result;
     } catch (cause) {
-      if (!isStaleGeneration(generation, projectGeneration)) {
+      if (!isStaleGeneration(generation, projectGeneration) && selectedThreadId === id) {
         setError(cause instanceof Error ? cause.message : String(cause));
       }
     } finally {
-      if (!isStaleGeneration(generation, projectGeneration)) loadingMessages = false;
+      if (!isStaleGeneration(generation, projectGeneration) && selectedThreadId === id) {
+        loadingMessages = false;
+      }
     }
   }
 
@@ -757,6 +825,7 @@
   async function submitRun(prompt: string) {
     if (!projectId || !selectedThreadId || sending) return;
     onEnsureStream();
+    const queueing = currentThreadRuns.length > 0;
     sending = true;
     setError('');
     commandInfo = '';
@@ -766,8 +835,10 @@
     // request is in flight.
     const attachments = pendingAttachments;
     pendingAttachments = [];
-    sendStartMs = Date.now();
-    nowMs = sendStartMs;
+    if (!queueing) {
+      sendStartMs = Date.now();
+      nowMs = sendStartMs;
+    }
     const optimistic: ChatMessage = {
       role: 'user',
       text: prompt,
@@ -793,7 +864,8 @@
       // URLs served their purpose as instant previews and are no longer
       // needed once the real message reloads with server-backed thumbnails.
       for (const attachment of attachments) URL.revokeObjectURL(attachment.previewUrl);
-      sentRunId = run.id;
+      submittedRuns = [...submittedRuns.filter((item) => item.id !== run.id), run];
+      if (queueing) commandInfo = $translate('chat.queuedAdded');
       runDiff = null;
       resetRollbackState();
       onSent(run.id);
@@ -943,6 +1015,7 @@
         </div>
       {:else}
         {#each messages as message, index (message.runId + '-' + message.role + '-' + index)}
+          {@const identity = runIdentity(message.runId, message.provider, message.modelAlias)}
           {@const question = message.role === 'agent' ? extractQuestionFence(message.text) : null}
           {@const parsed = parseAttachments(question ? question.remainder : message.text)}
           {@const questionKey = `msg-${message.runId}-${index}`}
@@ -957,9 +1030,25 @@
               {#if message.role === 'agent' && message.status}
                 <span class={`status status-${message.status}`}>{statusLabel(message.status)}</span>
               {/if}
+              {#if message.role === 'agent' && identity}
+                <span
+                  class="model-identity"
+                  title={`${$translate('chat.actualModel')}: ${identity.provider} · ${identity.model}`}
+                >
+                  <Cpu size={11} aria-hidden="true" />
+                  <span>{identity.provider}</span>
+                  <code>{identity.model}</code>
+                </span>
+              {/if}
               <time>{formatDate(message.at, $locale)}</time>
             </div>
-            {#if parsed.text}<p>{parsed.text}</p>{/if}
+            {#if parsed.text}
+              {#if message.role === 'agent'}
+                <Markdown source={parsed.text} />
+              {:else}
+                <p>{parsed.text}</p>
+              {/if}
+            {/if}
             {#if parsed.images.length > 0 && projectId}
               <div class="message-images">
                 {#each parsed.images as image (image)}
@@ -1015,6 +1104,7 @@
           </div>
         {/each}
         {#each activeLiveEvents as event, eventIndex (event.id)}
+          {@const liveIdentity = runIdentity(event.runId)}
           {@const withheldMessage = mcpWithheldMessage(event)}
           {#if withheldMessage !== null}
             <div class="mcp-withheld-banner" role="status">
@@ -1037,6 +1127,16 @@
                 <span class="bubble-label"
                   >{event.agentId ? agentName(event.agentId) : $translate('chat.agent')}</span
                 >
+                {#if liveIdentity}
+                  <span
+                    class="model-identity"
+                    title={`${$translate('chat.actualModel')}: ${liveIdentity.provider} · ${liveIdentity.model}`}
+                  >
+                    <Cpu size={11} aria-hidden="true" />
+                    <span>{liveIdentity.provider}</span>
+                    <code>{liveIdentity.model}</code>
+                  </span>
+                {/if}
                 <time
                   >{new Intl.DateTimeFormat($locale, { timeStyle: 'medium' }).format(
                     new Date(event.createdAt),
@@ -1044,7 +1144,7 @@
                 >
               </div>
               {#if stuckQuestion}
-                {#if stuckQuestion.remainder}<p>{stuckQuestion.remainder}</p>{/if}
+                {#if stuckQuestion.remainder}<Markdown source={stuckQuestion.remainder} />{/if}
                 <div
                   class="question-card stuck-question-card"
                   class:question-card-static={!isLatestQuestion}
@@ -1099,7 +1199,7 @@
                   </div>
                 </div>
               {:else}
-                <p>{messageText(event.payload)}</p>
+                <Markdown source={messageText(event.payload)} />
               {/if}
             </div>
           {/if}
@@ -1127,7 +1227,11 @@
         <div class="progress-row">
           <div class="progress-text-block">
             <p class="progress-text">
-              {$translate('chat.working')}
+              {(liveRunStatus || currentForegroundRun?.status) === 'running'
+                ? $translate('chat.working')
+                : liveRunStatus || currentForegroundRun
+                  ? statusLabel(liveRunStatus || currentForegroundRun?.status || '')
+                  : $translate('chat.working')}
               {formatElapsed(elapsedSeconds)} · {stepCount}
               {$translate('chat.steps')}{#if liveSpendTokens > 0}
                 · {formatTokens(liveSpendTokens, $locale)}
@@ -1151,6 +1255,36 @@
           >
             {stopping ? $translate('chat.stopping') : $translate('chat.stop')}
           </button>
+        </div>
+      </div>
+    {/if}
+    {#if queuedRuns.length > 0}
+      <div class="queue-panel" aria-live="polite">
+        <div class="queue-heading">
+          <div>
+            <strong>{queuedRuns.length} {$translate('chat.queueCount')}</strong>
+            <span>{$translate('chat.queueHint')}</span>
+          </div>
+        </div>
+        <div class="queue-list">
+          {#each queuedRuns as queued, index (queued.id)}
+            <div class="queue-item">
+              <span class="queue-position" aria-hidden="true">{index + 1}</span>
+              <span class="queue-prompt" title={queued.promptSnapshot ?? ''}
+                >{queued.promptSnapshot || $translate('chat.queuedMessage')}</span
+              >
+              <button
+                type="button"
+                class="queue-cancel"
+                disabled={cancellingQueuedRunIds.has(queued.id)}
+                aria-label={$translate('chat.cancelQueued')}
+                title={$translate('chat.cancelQueued')}
+                onclick={() => cancelQueuedRun(queued.id)}
+              >
+                {cancellingQueuedRunIds.has(queued.id) ? '…' : '×'}
+              </button>
+            </div>
+          {/each}
         </div>
       </div>
     {/if}
@@ -1282,7 +1416,9 @@
       <textarea
         bind:value={draft}
         rows="2"
-        placeholder={$translate('runs.composerPlaceholder')}
+        placeholder={sentRunId
+          ? $translate('chat.followUpPlaceholder')
+          : $translate('runs.composerPlaceholder')}
         title={$translate('chat.pasteImageHint')}
         disabled={!projectId || !selectedThreadId}
         onkeydown={(e) => {
@@ -1297,7 +1433,7 @@
         class="primary"
         type="submit"
         disabled={sending || uploadingImage || !draft.trim() || !projectId || !selectedThreadId}
-        >{$translate('runs.send')}</button
+        >{sentRunId ? $translate('chat.queueSend') : $translate('runs.send')}</button
       >
     </form>
   </article>
@@ -1577,6 +1713,7 @@
   .bubble-meta {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 8px;
     font-size: 0.68rem;
     color: var(--muted);
@@ -1584,6 +1721,30 @@
   .bubble-label {
     font-weight: 700;
     color: var(--text);
+  }
+  .model-identity {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: min(100%, 430px);
+    padding: 3px 7px;
+    border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+    color: var(--text);
+    line-height: 1;
+  }
+  .model-identity :global(svg) {
+    flex: none;
+    color: var(--accent);
+  }
+  .model-identity code {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 0.64rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .bubble-user {
     align-self: flex-end;
@@ -1747,6 +1908,87 @@
     margin: 0;
     font-size: 0.72rem;
     color: var(--muted);
+  }
+  .queue-panel {
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 18px 12px;
+    border-top: 1px solid var(--line);
+    background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+  }
+  .queue-heading > div {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+  }
+  .queue-heading strong {
+    flex: none;
+    color: var(--text);
+    font-size: 0.74rem;
+    font-weight: 650;
+  }
+  .queue-heading span {
+    min-width: 0;
+    color: var(--muted);
+    font-size: 0.68rem;
+  }
+  .queue-list {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .queue-item {
+    display: grid;
+    grid-template-columns: 20px minmax(0, 1fr) 24px;
+    align-items: center;
+    gap: 8px;
+    min-height: 32px;
+    padding: 4px 5px 4px 7px;
+    border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line));
+    border-radius: 8px;
+    background: var(--surface-2);
+  }
+  .queue-position {
+    display: inline-grid;
+    width: 20px;
+    height: 20px;
+    place-items: center;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    color: var(--text);
+    font-size: 0.66rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .queue-prompt {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 0.72rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .queue-cancel {
+    display: inline-grid;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    place-items: center;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .queue-cancel:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--red) 12%, transparent);
+    color: var(--red);
+  }
+  .queue-cancel:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
   /* Cache sits below spend, smaller again — the same "second line, quieter"
      treatment as the chat header's thread total. */
@@ -1976,6 +2218,11 @@
       max-height: 220px;
       border-right: 0;
       border-bottom: 1px solid var(--line);
+    }
+    .queue-heading > div {
+      align-items: flex-start;
+      flex-direction: column;
+      gap: 2px;
     }
   }
 </style>

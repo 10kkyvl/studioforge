@@ -65,6 +65,7 @@ export type Agent = {
   role: string;
   provider: string;
   modelAlias: string;
+  allowUnverifiedModel: boolean;
   effort: string;
   enabled: boolean;
   permission: string;
@@ -99,6 +100,7 @@ export type Run = TokenUsage & {
   phase: string;
   requiredResource?: string;
   error?: string;
+  promptSnapshot?: string;
   cost: number;
   createdAt: string;
   updatedAt: string;
@@ -146,6 +148,8 @@ export type ChatMessage = {
   at: string;
   runId: string;
   status?: string;
+  provider?: string;
+  modelAlias?: string;
   // Survives from the scheduler event's own RawType (e.g. "scheduler.stuck")
   // when this message was scheduler-synthesized rather than the agent's own
   // text, so a stuck-escalation question card can be told apart from the
@@ -253,6 +257,7 @@ export type OpenRouterModel = {
   free: boolean;
   promptPrice: number;
   completionPrice: number;
+  verified: boolean;
 };
 // A hand-picked subset of `models`, grouped by `category` for the picker.
 // `available` can be false (e.g. a curated pick OpenRouter has since pulled)
@@ -265,6 +270,9 @@ export type OpenRouterCurated = {
   workload: string;
   free: boolean;
   vision: boolean;
+  tools: boolean;
+  contextLength: number;
+  verified: boolean;
   available: boolean;
 };
 export type OpenRouterModelsResponse = {
@@ -280,4 +288,5 @@ export type OpenRouterCapabilities = {
   structured: boolean;
   contextLength: number;
   free: boolean;
+  verified: boolean;
 };

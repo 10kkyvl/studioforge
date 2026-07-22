@@ -12,6 +12,16 @@ html {
   background: #090d12;
   color: #e8edf4;
   color-scheme: dark;
+  font-size: 16px;
+}
+html[data-font-size='compact'] {
+  font-size: 15px;
+}
+html[data-font-size='comfortable'] {
+  font-size: 16px;
+}
+html[data-font-size='large'] {
+  font-size: 18px;
 }
 html[data-theme='light'] {
   background: #f4f6f9;
@@ -19,6 +29,8 @@ html[data-theme='light'] {
   color-scheme: light;
 }
 html[data-theme='system'] {
+  background: var(--bg);
+  color: var(--text);
   color-scheme: light dark;
 }
 body {
@@ -41,6 +53,8 @@ body {
   --yellow: #f6c453;
   --red: #ff6b78;
   --shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
+  --shadow-soft: 0 8px 28px rgba(0, 0, 0, 0.16);
+  --focus: color-mix(in srgb, var(--accent) 32%, transparent);
 }
 html[data-theme='light'] {
   --bg: #f4f6f9;
@@ -56,12 +70,38 @@ html[data-theme='light'] {
   --yellow: #a96b00;
   --red: #c83543;
   --shadow: 0 18px 60px rgba(26, 39, 58, 0.13);
+  --shadow-soft: 0 8px 28px rgba(37, 51, 73, 0.09);
+  --focus: color-mix(in srgb, var(--accent) 24%, transparent);
+}
+@media (prefers-color-scheme: light) {
+  html[data-theme='system'] {
+    --bg: #f4f6f9;
+    --surface: #fff;
+    --surface-2: #edf1f6;
+    --surface-3: #e4eaf1;
+    --line: #d5dde8;
+    --text: #172033;
+    --muted: #627086;
+    --accent: #2867ca;
+    --accent-2: #7148bd;
+    --green: #13875a;
+    --yellow: #a96b00;
+    --red: #c83543;
+    --shadow: 0 18px 60px rgba(26, 39, 58, 0.13);
+    --shadow-soft: 0 8px 28px rgba(37, 51, 73, 0.09);
+    --focus: color-mix(in srgb, var(--accent) 24%, transparent);
+  }
 }
 button,
 input,
 select,
 textarea {
   font: inherit;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease,
+    color 140ms ease,
+    box-shadow 140ms ease;
 }
 button {
   color: inherit;
@@ -72,6 +112,7 @@ select:focus-visible,
 textarea:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--focus);
 }
 code {
   font-family: 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
@@ -647,6 +688,7 @@ tbody tr:last-child td {
   border: 1px solid var(--line);
   border-radius: 11px;
   background: var(--surface);
+  box-shadow: var(--shadow-soft);
 }
 .agent-card {
   display: grid;
@@ -913,11 +955,49 @@ tbody tr:last-child td {
 .settings-card header {
   color: var(--accent);
 }
+.settings-card header > svg {
+  flex: none;
+}
+.settings-card header > div {
+  min-width: 0;
+}
+.settings-card header p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+.appearance-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.appearance-card header {
+  margin-bottom: 0;
+}
+.preference-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.7fr) minmax(250px, 1.3fr);
+  align-items: center;
+  gap: 14px;
+}
+.preference-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-size: 0.76rem;
+  font-weight: 650;
+}
+.preference-label svg {
+  color: var(--muted);
+}
 .segmented {
   display: flex;
   padding: 3px;
   border-radius: 8px;
   background: var(--surface-2);
+  border: 1px solid color-mix(in srgb, var(--line) 75%, transparent);
 }
 .segmented button {
   flex: 1;
@@ -927,6 +1007,11 @@ tbody tr:last-child td {
   background: transparent;
   color: var(--muted);
   cursor: pointer;
+  min-height: 34px;
+}
+.segmented button:hover:not(.active) {
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface-3) 70%, transparent);
 }
 .segmented button.active {
   background: var(--surface-3);
@@ -1471,6 +1556,10 @@ tbody tr:last-child td {
   .integration-settings {
     grid-column: auto;
   }
+  .preference-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
   .settings-fields,
   .agent-editor,
   .agent-card .agent-editor {
@@ -1512,5 +1601,15 @@ tbody tr:last-child td {
   }
   .wizard > footer button {
     justify-content: center;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
   }
 }

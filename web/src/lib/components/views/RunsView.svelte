@@ -33,7 +33,7 @@
   // Every decision on the snapshot is already pending — resolved ones drop
   // off it — so the first match for a run is the only one that can exist.
   function decisionFor(runId: string): Decision | undefined {
-    return decisions.find((decision) => decision.runId === runId);
+    return decisions?.find((decision) => decision.runId === runId);
   }
 </script>
 

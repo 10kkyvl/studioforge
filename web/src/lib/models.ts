@@ -23,12 +23,23 @@ const CLAUDE_MODELS: ModelSuggestion[] = [
   { id: 'claude-haiku-4-5', label: 'Haiku 4.5 — fastest' },
 ];
 
+const NVIDIA_MODELS: ModelSuggestion[] = [
+  { id: 'z-ai/glm-5.2', label: 'GLM-5.2 — agentic coding' },
+  {
+    id: 'nvidia/nemotron-3-ultra-550b-a55b',
+    label: 'Nemotron 3 Ultra — planning and tools',
+  },
+  { id: 'moonshotai/kimi-k2.6', label: 'Kimi K2.6 — multimodal coding' },
+  { id: 'deepseek-ai/deepseek-v4-pro', label: 'DeepSeek V4 Pro — coding and reasoning' },
+];
+
 export function modelsFor(provider: string): ModelSuggestion[] {
   if (provider === 'claude') return CLAUDE_MODELS;
+  if (provider === 'nvidia') return NVIDIA_MODELS;
   return [];
 }
 
-export const ACTIVE_PROVIDERS = ['claude', 'openrouter', 'mock'];
+export const ACTIVE_PROVIDERS = ['claude', 'openrouter', 'nvidia', 'mock'];
 
 export function isLegacyProvider(provider: string): boolean {
   return !ACTIVE_PROVIDERS.includes(provider);

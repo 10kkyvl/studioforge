@@ -43,6 +43,7 @@
     role: 'Roblox Engineer',
     provider: 'claude',
     modelAlias: 'default',
+    allowUnverifiedModel: false,
     effort: 'medium',
     permission: 'workspace-write',
     concurrency: 1,
@@ -82,13 +83,14 @@
     <label
       >{$translate('team.provider')}<select bind:value={draft.provider}
         ><option value="claude">Claude Code</option><option value="openrouter">OpenRouter</option
-        ><option value="mock">Mock</option></select
+        ><option value="nvidia">NVIDIA NIM</option><option value="mock">Mock</option></select
       ></label
     >
     {#if draft.provider === 'openrouter'}
       <label class="field-span-2"
         >{$translate('common.model')}<OpenRouterModelPicker
           bind:value={draft.modelAlias}
+          bind:allowUnverified={draft.allowUnverifiedModel}
           models={orModels?.models ?? []}
           curated={orModels?.curated ?? []}
           categories={orModels?.categories ?? []}
@@ -175,13 +177,14 @@
           >{$translate('team.provider')}<select bind:value={agent.provider}
             ><option value="claude">Claude Code</option><option value="openrouter"
               >OpenRouter</option
-            ><option value="mock">Mock</option></select
+            ><option value="nvidia">NVIDIA NIM</option><option value="mock">Mock</option></select
           ></label
         >
         {#if agent.provider === 'openrouter'}
           <label class="field-span-2"
             >{$translate('common.model')}<OpenRouterModelPicker
               bind:value={agent.modelAlias}
+              bind:allowUnverified={agent.allowUnverifiedModel}
               models={orModels?.models ?? []}
               curated={orModels?.curated ?? []}
               categories={orModels?.categories ?? []}
@@ -269,7 +272,7 @@
      row. They stay <datalist> rather than <select> because the value is passed
      to the CLI verbatim: a model released after this build must still be
      typeable without waiting for StudioForge to ship an updated list. -->
-{#each ['claude'] as provider (provider)}
+{#each ['claude', 'nvidia'] as provider (provider)}
   {#if modelsFor(provider).length > 0}
     <datalist id={`models-${provider}`}>
       {#each modelsFor(provider) as model (model.id)}

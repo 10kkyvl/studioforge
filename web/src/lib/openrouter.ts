@@ -1,4 +1,4 @@
-import { post, request } from './api';
+import { APIError, post, request } from './api';
 import type {
   OpenRouterCapabilities,
   OpenRouterCurated,
@@ -19,6 +19,15 @@ export const removeOpenRouterKey = (): Promise<void> =>
   request('/openrouter/key', { method: 'DELETE' }).then(() => undefined);
 
 export const testOpenRouterKey = () => post<OpenRouterKeyTestResult>('/openrouter/key/test', {});
+
+export function isRetryableOpenRouterTestError(error: unknown): boolean {
+  return (
+    error instanceof APIError &&
+    ['openrouter_test_network', 'openrouter_test_timeout', 'openrouter_test_upstream'].includes(
+      error.code,
+    )
+  );
+}
 
 export const getOpenRouterModels = (refresh = false) =>
   request<OpenRouterModelsResponse>(
@@ -76,4 +85,30 @@ export function groupCuratedByCategory(
 
 export function findModel(models: OpenRouterModel[], id: string): OpenRouterModel | undefined {
   return models.find((model) => model.id === id);
+}
+
+export type OpenRouterCompatibility = {
+  known: boolean;
+  verified: boolean;
+  tools: boolean;
+  vision: boolean;
+  contextLength: number;
+  free: boolean;
+};
+
+export function openRouterCompatibility(
+  models: OpenRouterModel[],
+  curated: OpenRouterCurated[],
+  id: string | undefined,
+): OpenRouterCompatibility {
+  const model = id ? models.find((item) => item.id === id) : undefined;
+  const pick = id ? curated.find((item) => item.id === id) : undefined;
+  return {
+    known: !!model,
+    verified: model?.verified ?? pick?.verified ?? false,
+    tools: model?.tools ?? pick?.tools ?? false,
+    vision: model?.vision ?? pick?.vision ?? false,
+    contextLength: model?.contextLength ?? pick?.contextLength ?? 0,
+    free: isFreeModel(model) || !!pick?.free || id === 'openrouter/free',
+  };
 }

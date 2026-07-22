@@ -7,10 +7,13 @@ import {
   getOpenRouterStatus,
   groupCuratedByCategory,
   isFreeModel,
+  isRetryableOpenRouterTestError,
+  openRouterCompatibility,
   removeOpenRouterKey,
   setOpenRouterKey,
   testOpenRouterKey,
 } from './openrouter';
+import { APIError } from './api';
 import type { OpenRouterCurated, OpenRouterModel } from './types';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -63,6 +66,9 @@ describe('groupCuratedByCategory', () => {
       workload: 'w',
       free: false,
       vision: false,
+      tools: true,
+      contextLength: 32_000,
+      verified: true,
       available: true,
     },
     {
@@ -72,6 +78,9 @@ describe('groupCuratedByCategory', () => {
       workload: 'w',
       free: true,
       vision: true,
+      tools: true,
+      contextLength: 64_000,
+      verified: true,
       available: true,
     },
     {
@@ -81,6 +90,9 @@ describe('groupCuratedByCategory', () => {
       workload: 'w',
       free: false,
       vision: false,
+      tools: false,
+      contextLength: 0,
+      verified: false,
       available: false,
     },
   ];
@@ -114,6 +126,7 @@ describe('findModel', () => {
       free: false,
       promptPrice: 2.5,
       completionPrice: 10,
+      verified: true,
     },
   ];
   it('finds a model by id', () => {
@@ -121,6 +134,76 @@ describe('findModel', () => {
   });
   it('returns undefined for an id not in the list', () => {
     expect(findModel(models, 'nope')).toBeUndefined();
+  });
+});
+
+describe('openRouterCompatibility', () => {
+  const toolModel: OpenRouterModel = {
+    id: 'vendor/tools',
+    name: 'Tools',
+    contextLength: 128_000,
+    vision: true,
+    tools: true,
+    structured: false,
+    free: false,
+    promptPrice: 1,
+    completionPrice: 2,
+    verified: true,
+  };
+  const chatModel: OpenRouterModel = {
+    ...toolModel,
+    id: 'vendor/chat',
+    name: 'Chat',
+    tools: false,
+    vision: false,
+  };
+
+  it('reports tool, vision, context and verified capability', () => {
+    expect(openRouterCompatibility([toolModel], [], toolModel.id)).toEqual({
+      known: true,
+      verified: true,
+      tools: true,
+      vision: true,
+      contextLength: 128_000,
+      free: false,
+    });
+  });
+
+  it('reports a known non-tool model as incompatible', () => {
+    expect(openRouterCompatibility([chatModel], [], chatModel.id).tools).toBe(false);
+  });
+
+  it('reports unknown and stale models as unverified', () => {
+    expect(openRouterCompatibility([], [], 'vendor/missing').verified).toBe(false);
+    expect(
+      openRouterCompatibility([{ ...toolModel, verified: false }], [], toolModel.id).verified,
+    ).toBe(false);
+  });
+
+  it('never invents capabilities for openrouter/free', () => {
+    expect(openRouterCompatibility([], [], 'openrouter/free')).toEqual({
+      known: false,
+      verified: false,
+      tools: false,
+      vision: false,
+      contextLength: 0,
+      free: true,
+    });
+  });
+});
+
+describe('isRetryableOpenRouterTestError', () => {
+  it('allows retry for transient test failures', () => {
+    expect(isRetryableOpenRouterTestError(new APIError('offline', 'openrouter_test_network'))).toBe(
+      true,
+    );
+    expect(isRetryableOpenRouterTestError(new APIError('timeout', 'openrouter_test_timeout'))).toBe(
+      true,
+    );
+  });
+
+  it('does not suggest retry for an invalid key', () => {
+    expect(isRetryableOpenRouterTestError(new APIError('invalid', 'invalid_key'))).toBe(false);
   });
 });
 
@@ -220,6 +303,7 @@ describe('OpenRouter API client', () => {
           structured: true,
           contextLength: 32_000,
           free: false,
+          verified: true,
         }),
         { status: 200 },
       ),

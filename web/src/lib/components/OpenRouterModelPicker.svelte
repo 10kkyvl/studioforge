@@ -1,5 +1,9 @@
 <script lang="ts">
-  import { formatContextLength, groupCuratedByCategory, isFreeModel } from '$lib/openrouter';
+  import {
+    formatContextLength,
+    groupCuratedByCategory,
+    openRouterCompatibility,
+  } from '$lib/openrouter';
   import { translate } from '$lib/i18n';
   import type { OpenRouterCurated, OpenRouterModel } from '$lib/types';
 
@@ -8,6 +12,7 @@
   // through to the API, never a StudioForge-side tier. Optional because the
   // agent-create draft (Partial<Agent>) may not have picked a model yet.
   export let value: string | undefined;
+  export let allowUnverified = false;
   export let models: OpenRouterModel[] = [];
   export let curated: OpenRouterCurated[] = [];
   export let categories: string[] = [];
@@ -20,9 +25,7 @@
   $: grouped = groupCuratedByCategory(curated, categories);
   $: modelById = new Map(models.map((model) => [model.id, model]));
   $: curatedById = new Map(curated.map((item) => [item.id, item]));
-  $: selectedModel = value ? modelById.get(value) : undefined;
-  $: selectedCurated = value ? curatedById.get(value) : undefined;
-  $: selectedIsFree = isFreeModel(selectedModel) || !!selectedCurated?.free;
+  $: compatibility = openRouterCompatibility(models, curated, value);
   // The <select> only reflects a curated pick; typing a custom id (or
   // picking one not in the curated set) falls back to its blank option so
   // the two controls never fight over which one is "selected".
@@ -33,7 +36,16 @@
   }
 
   function onCuratedChange(event: Event & { currentTarget: HTMLSelectElement }) {
-    if (event.currentTarget.value) value = event.currentTarget.value;
+    if (event.currentTarget.value && event.currentTarget.value !== value) {
+      allowUnverified = false;
+      value = event.currentTarget.value;
+    }
+  }
+
+  function onModelInput(event: Event & { currentTarget: HTMLInputElement }) {
+    const next = event.currentTarget.value;
+    if (next !== value) allowUnverified = false;
+    value = next;
   }
 </script>
 
@@ -48,7 +60,7 @@
       {#each grouped as group (group.category)}
         <optgroup label={group.category}>
           {#each group.items as item (item.id)}
-            <option value={item.id} disabled={!item.available}>
+            <option value={item.id} disabled={!item.available && item.verified}>
               {displayName(item.id)} — {item.recommendation}{item.free
                 ? ` · ${$translate('openrouter.freeTag')}`
                 : ''}{!item.available ? ` (${$translate('openrouter.unavailable')})` : ''}
@@ -59,19 +71,31 @@
     </select>
   {/if}
   <input
-    bind:value
+    value={value ?? ''}
+    oninput={onModelInput}
     list={datalistId}
     placeholder={$translate('openrouter.picker.customPlaceholder')}
   />
-  {#if selectedModel}
+  {#if value}
     <p class="capability-hint">
-      {#if selectedModel.contextLength}{formatContextLength(selectedModel.contextLength)}
+      {#if compatibility.contextLength}{formatContextLength(compatibility.contextLength)}
         {$translate('openrouter.capability.context')}{/if}
-      {#if selectedModel.vision}· 🖼 {$translate('openrouter.capability.vision')}{/if}
-      {#if selectedModel.tools}· 🛠 {$translate('openrouter.capability.tools')}{/if}
+      · {compatibility.vision ? '✓' : '✕'}
+      {$translate('openrouter.capability.vision')}
+      · {compatibility.tools ? '✓' : '✕'}
+      {$translate('openrouter.capability.tools')}
     </p>
   {/if}
-  {#if value && selectedIsFree}
+  {#if value && !compatibility.verified && (!compatibility.known || compatibility.tools)}
+    <label class="compatibility-warning">
+      <input type="checkbox" bind:checked={allowUnverified} />
+      <span>{$translate('openrouter.compatibilityWarning')}</span>
+    </label>
+  {/if}
+  {#if value && compatibility.known && !compatibility.tools}
+    <p class="incompatible-warning">{$translate('openrouter.incompatibleModel')}</p>
+  {/if}
+  {#if value && compatibility.free}
     <p class="free-warning">{$translate('openrouter.freeWarning')}</p>
   {/if}
 </div>
@@ -100,6 +124,19 @@
   .free-warning {
     margin: 0;
     color: var(--yellow);
+    font-size: 0.7rem;
+    line-height: 1.4;
+  }
+  .compatibility-warning {
+    display: flex;
+    gap: 7px;
+    color: var(--yellow);
+    font-size: 0.7rem;
+    line-height: 1.4;
+  }
+  .incompatible-warning {
+    margin: 0;
+    color: var(--danger, #d9534f);
     font-size: 0.7rem;
     line-height: 1.4;
   }

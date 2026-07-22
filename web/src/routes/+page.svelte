@@ -73,6 +73,7 @@
   let events: RunEvent[] = [];
   let streamOnline = false;
   let theme = 'dark';
+  let fontSize = 'comfortable';
   let notice = '';
   // True until a refresh reports otherwise, so a daemon that has never run a
   // real discovery pass (e.g. --mock, or before the operator's first click)
@@ -138,6 +139,8 @@
   onMount(() => {
     const storedTheme = localStorage.getItem('studioforge-theme') ?? 'dark';
     setTheme(storedTheme);
+    const storedFontSize = localStorage.getItem('studioforge-font-size') ?? 'comfortable';
+    setFontSize(storedFontSize);
     const storedView = loadView(nav.map((item) => item.id));
     if (storedView) view = storedView as View;
     // Only now may the reactive writers below run. They are gated on this flag
@@ -236,7 +239,7 @@
     streaming = true;
     disconnect = connectEvents(
       (event) => {
-        lastEventId = event.id;
+        if (event.id > 0) lastEventId = event.id;
         events = [...events.slice(-999), event];
         if (event.type === 'status') scheduleStatusRefresh();
       },
@@ -338,6 +341,11 @@
     theme = value;
     localStorage.setItem('studioforge-theme', value);
     document.documentElement.dataset.theme = value;
+  }
+  function setFontSize(value: string) {
+    fontSize = ['compact', 'comfortable', 'large'].includes(value) ? value : 'comfortable';
+    localStorage.setItem('studioforge-font-size', fontSize);
+    document.documentElement.dataset.fontSize = fontSize;
   }
   async function createProject() {
     await action('project', async () => {
@@ -706,9 +714,11 @@
             diagnostics={snapshot.diagnostics}
             settings={snapshot.settings}
             {theme}
+            {fontSize}
             {busy}
             onLocale={changeLocale}
             onTheme={setTheme}
+            onFontSize={setFontSize}
             onRefresh={() => refresh(true)}
             onBackup={createBackup}
             onSave={saveSettings}
