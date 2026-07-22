@@ -76,6 +76,10 @@ func (s *Supervisor) Start(parent context.Context, spec Spec) (*Process, error) 
 		cmd.Env = append([]string(nil), spec.Environment...)
 	}
 	configureProcessTree(cmd)
+	if spec.MaxRuntime > 0 {
+		cmd.Cancel = func() error { return forceKillTree(cmd) }
+		cmd.WaitDelay = 5 * time.Second
+	}
 	p := &Process{spec: spec, cmd: cmd, lines: make(chan Line, 256), done: make(chan struct{}), cancel: cancel, result: Result{ExitCode: -1}}
 
 	s.mu.Lock()
@@ -274,7 +278,7 @@ func MinimalEnvironment(extra []string) []string {
 		"PATH": true, "PATHEXT": true, "HOME": true, "USERPROFILE": true,
 		"LOCALAPPDATA": true, "APPDATA": true, "TMPDIR": true, "TMP": true,
 		"TEMP": true, "SYSTEMROOT": true, "WINDIR": true, "COMSPEC": true,
-		"CODEX_HOME": true, "HTTP_PROXY": true, "HTTPS_PROXY": true,
+		"HTTP_PROXY": true, "HTTPS_PROXY": true,
 		"NO_PROXY": true, "SSL_CERT_FILE": true, "SSL_CERT_DIR": true,
 	}
 	out := []string{}

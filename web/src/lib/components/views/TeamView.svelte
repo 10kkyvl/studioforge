@@ -1,8 +1,11 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { Bot, Play, Plus, Save } from '@lucide/svelte';
   import { formatMoney, locale, translate } from '$lib/i18n';
-  import { modelsFor } from '$lib/models';
-  import type { Agent, Project } from '$lib/types';
+  import { isLegacyProvider, modelsFor } from '$lib/models';
+  import { getOpenRouterModels } from '$lib/openrouter';
+  import OpenRouterModelPicker from '$lib/components/OpenRouterModelPicker.svelte';
+  import type { Agent, OpenRouterModelsResponse, Project } from '$lib/types';
 
   export let agents: Agent[];
   export let project: Project | undefined;
@@ -11,12 +14,36 @@
   export let onUpdate: (agent: Agent) => void;
   export let onRun: (agent: Agent) => void;
 
+  // Fetched once and shared by every openrouter model picker instance
+  // (the create form and every agent row), rather than each one issuing its
+  // own /openrouter/models request.
+  let orModels: OpenRouterModelsResponse | null = null;
+  let orLoading = false;
+  let orError = '';
+
+  async function loadOpenRouterModels() {
+    orLoading = true;
+    orError = '';
+    try {
+      orModels = await getOpenRouterModels();
+    } catch (cause) {
+      orError = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      orLoading = false;
+    }
+  }
+
+  onMount(() => {
+    void loadOpenRouterModels();
+  });
+
   let showCreate = false;
   const blankDraft: Partial<Agent> = {
     name: '',
     role: 'Roblox Engineer',
-    provider: 'codex',
+    provider: 'claude',
     modelAlias: 'default',
+    allowUnverifiedModel: false,
     effort: 'medium',
     permission: 'workspace-write',
     concurrency: 1,
@@ -55,18 +82,32 @@
     <label>{$translate('team.role')}<input bind:value={draft.role} required /></label>
     <label
       >{$translate('team.provider')}<select bind:value={draft.provider}
-        ><option value="codex">Codex</option><option value="claude">Claude Code</option><option
-          value="mock">Mock</option
-        ></select
+        ><option value="claude">Claude Code</option><option value="openrouter">OpenRouter</option
+        ><option value="nvidia">NVIDIA NIM</option><option value="mock">Mock</option></select
       ></label
     >
-    <label
-      >{$translate('common.model')}<input
-        bind:value={draft.modelAlias}
-        list={`models-${draft.provider}`}
-        placeholder={$translate('team.cliDefault')}
-      /></label
-    >
+    {#if draft.provider === 'openrouter'}
+      <label class="field-span-2"
+        >{$translate('common.model')}<OpenRouterModelPicker
+          bind:value={draft.modelAlias}
+          bind:allowUnverified={draft.allowUnverifiedModel}
+          models={orModels?.models ?? []}
+          curated={orModels?.curated ?? []}
+          categories={orModels?.categories ?? []}
+          loading={orLoading}
+          error={orError}
+          datalistId="models-openrouter"
+        /></label
+      >
+    {:else}
+      <label
+        >{$translate('common.model')}<input
+          bind:value={draft.modelAlias}
+          list={`models-${draft.provider}`}
+          placeholder={$translate('team.cliDefault')}
+        /></label
+      >
+    {/if}
     <label
       >{$translate('team.effort')}<select bind:value={draft.effort}
         ><option value="low">low</option><option value="medium">medium</option><option value="high"
@@ -119,6 +160,11 @@
       <div>
         <h2>{agent.name}</h2>
         <p>{agent.role}</p>
+        {#if isLegacyProvider(agent.provider)}
+          <span class="chip" title={$translate('run.legacyProviderHint')}
+            >{$translate('run.legacyProvider')}</span
+          >
+        {/if}
       </div>
       <form
         class="agent-editor"
@@ -129,18 +175,33 @@
       >
         <label
           >{$translate('team.provider')}<select bind:value={agent.provider}
-            ><option value="codex">Codex</option><option value="claude">Claude Code</option><option
-              value="mock">Mock</option
-            ></select
+            ><option value="claude">Claude Code</option><option value="openrouter"
+              >OpenRouter</option
+            ><option value="nvidia">NVIDIA NIM</option><option value="mock">Mock</option></select
           ></label
         >
-        <label
-          >{$translate('common.model')}<input
-            bind:value={agent.modelAlias}
-            list={`models-${agent.provider}`}
-            placeholder={$translate('team.cliDefault')}
-          /></label
-        >
+        {#if agent.provider === 'openrouter'}
+          <label class="field-span-2"
+            >{$translate('common.model')}<OpenRouterModelPicker
+              bind:value={agent.modelAlias}
+              bind:allowUnverified={agent.allowUnverifiedModel}
+              models={orModels?.models ?? []}
+              curated={orModels?.curated ?? []}
+              categories={orModels?.categories ?? []}
+              loading={orLoading}
+              error={orError}
+              datalistId="models-openrouter"
+            /></label
+          >
+        {:else}
+          <label
+            >{$translate('common.model')}<input
+              bind:value={agent.modelAlias}
+              list={`models-${agent.provider}`}
+              placeholder={$translate('team.cliDefault')}
+            /></label
+          >
+        {/if}
         <label
           >{$translate('team.effort')}<select bind:value={agent.effort}
             ><option value="low">low</option><option value="medium">medium</option><option
@@ -211,7 +272,7 @@
      row. They stay <datalist> rather than <select> because the value is passed
      to the CLI verbatim: a model released after this build must still be
      typeable without waiting for StudioForge to ship an updated list. -->
-{#each ['claude', 'codex'] as provider (provider)}
+{#each ['claude', 'nvidia'] as provider (provider)}
   {#if modelsFor(provider).length > 0}
     <datalist id={`models-${provider}`}>
       {#each modelsFor(provider) as model (model.id)}
@@ -220,3 +281,11 @@
     </datalist>
   {/if}
 {/each}
+<!-- Shared by every OpenRouterModelPicker instance above (see datalistId
+     prop) so its free-text fallback can still reach any model id, not just
+     the curated shortlist. -->
+<datalist id="models-openrouter">
+  {#each orModels?.models ?? [] as model (model.id)}
+    <option value={model.id}>{model.name}</option>
+  {/each}
+</datalist>

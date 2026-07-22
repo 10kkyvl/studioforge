@@ -22,20 +22,32 @@ From source, install Go 1.25+, Node.js 22+, npm, and Git, then run `./scripts/de
 
 ## First run
 
-The wizard checks the data directory, database, Git, Codex CLI/authentication, Claude Code/authentication, Rojo, and the official Studio MCP launcher. Each item shows the detected version/path and remediation. **Open dashboard** records completion; Doctor remains available in Settings.
+The wizard checks the data directory, database, Git, Claude Code/authentication, an OpenRouter API key's verification state, Rojo, and the official Studio MCP launcher. Each item shows the detected version/path (or, for OpenRouter, key state and catalog reachability) and remediation. **Open dashboard** records completion; Doctor remains available in Settings.
 
 `--safe-mode` disables provider workers, MCP, and Rojo. Data, backups, exports, and diagnostics remain available. `--mock` seeds three isolated demo workspaces and exercises the production domain/API.
 
-## Codex CLI
+## OpenRouter
 
-Install the current Codex CLI and authenticate it. StudioForge uses the stable non-interactive JSONL interface and reuses Codex CLI's saved authentication:
+OpenRouter is a fundamentally different provider from Claude Code: it is an HTTP API, not a local CLI, and StudioForge drives it with its own in-process bounded tool loop rather than execing a subprocess. It needs an API key — **required even for free models** — set either as the `OPENROUTER_API_KEY` environment variable or saved in **Settings → Agents and integrations → OpenRouter**:
 
 ```powershell
-codex --version
-codex login status
+$env:OPENROUTER_API_KEY = "sk-or-..."
 ```
 
-Runs use `codex exec --json`, an explicit workspace sandbox, no interactive approval prompts, the registered project as the working directory, and the agent's optional model/reasoning settings. StudioForge does not read or store Codex tokens. If Windows PATH resolves an inaccessible app-bundled executable, configure a separately installed Codex CLI executable under **Settings → Agents and integrations**.
+However you set it, the key is written to the OS secure credential store (Windows Credential Manager / macOS Keychain), with an environment-variable and session-only fallback when that store is unavailable. It is never written to SQLite, run events, application logs, or the diagnostic bundle. `studioforge doctor` and the Settings card report only the key's verification state (`not_configured`/`unverified`/`configured`/`invalid`) and source — never the key itself.
+
+The model picker is backed by OpenRouter's public Models API, cached for 6 hours with a manual refresh, a last-good-cache fallback, and a bundled dated snapshot as a last resort. It shows tool, vision, context, free, and verification capabilities. Known non-tool models are rejected; unknown, stale, and dynamically routed IDs such as `openrouter/free` require an explicit per-model compatibility confirmation, and the backend refreshes the catalog again before execution. A curated shortlist (Free automatic, Free recommended, Best coding, Balanced, Fast and cheap, Strong reasoning, Large context) sits above the full catalog. **Free models are less stable** — more variable quality/latency, lower rate limits, availability that can change — and suit small tasks better than long unattended runs; StudioForge never silently falls back to a paid model from free mode. Runs execute local workspace tools (list/read/search/grep/create/edit/patch/mkdir/git/run_command, gated by the agent's permission profile) and Roblox Studio MCP tools through a live per-run client, persist only completed assistant turns per chat thread while streaming one live bubble, and enforce a conservative budget gate before every model request.
+
+## NVIDIA NIM
+
+Add an NVIDIA API key in **Settings → Agents and integrations**, then choose an NVIDIA model for an
+agent. Temporary network failures, timeouts, rate limits, and interrupted streams are retried
+automatically. Vision-capable models such as Kimi K2.6 receive pasted images and the latest image
+returned by Studio's `screen_capture`; text-only models receive no hidden screenshot payload.
+
+Messages sent while an agent is running wait in the same chat queue and continue that conversation
+in order. Opening Studio preserves an existing saved `.rbxl`; Rojo is used only to create a missing
+place file, never to silently replace saved Studio work.
 
 ## Claude Code
 
@@ -55,7 +67,7 @@ Update Roblox Studio, open **Assistant → … → Manage MCP Servers**, and ena
 - Windows: `cmd.exe /c %LOCALAPPDATA%\Roblox\mcp.bat`
 - macOS: `/Applications/RobloxStudio.app/Contents/MacOS/StudioMCP`
 
-StudioForge discovers actual MCP tools and fails clearly when a required capability is absent. Studio access is fail-closed: a run is granted Studio access only when exactly one Studio instance is open. Claude Code runs its own MCP client, so StudioForge cannot pin an instance on the agent's connection from outside, and the official launcher accepts no instance-selection argument — with several Studios open, access is refused rather than guessed, and the run continues without Studio. The **Studio sessions** view and its bind action exist in the UI, but in this alpha real open Studio instances are not discovered into that view; its rows are demo data only. One instance is an exclusive resource for modifying/playtest operations.
+StudioForge discovers actual MCP tools and fails clearly when a required capability is absent. Studio access is fail-closed: a run is granted Studio access only when exactly one Studio instance is open — for both Claude and OpenRouter runs, through two different mechanisms (a generated `--mcp-config` for Claude, a live per-run MCP client for OpenRouter's in-process loop) sharing the same fail-closed decision and tool allowlist. Claude Code and OpenRouter's own loop each run their own MCP client, so StudioForge cannot pin an instance on the agent's connection from outside, and the official launcher accepts no instance-selection argument — with several Studios open, access is refused rather than guessed, and the run continues without Studio. The **Studio sessions** view and its bind action exist in the UI, but in this alpha real open Studio instances are not discovered into that view; its rows are demo data only. One instance is an exclusive resource for modifying/playtest operations.
 
 **Not implemented in this alpha** (see [Known Limitations](../KNOWN_LIMITATIONS.md)): the intended design is a playtest contract of select instance → read state → start → simulate input → collect console/screenshots → stop → structured result → bug tasks. StudioForge does not automate playtesting or capture screenshots on its own today.
 
@@ -71,11 +83,11 @@ Each project selects a `*.project.json`. StudioForge invokes Rojo to build a pla
 
 ## Projects and agent teams
 
-Register an existing directory or create a new one. StudioForge stores its canonical path/fingerprint; it does not copy source into application data. Every project receives a default agent, including older registered projects that had none. The **Team builder** can create, edit, enable/disable, and launch agents with Codex, Claude Code, or mock providers. A version-controlled `.agent/` folder may contain a `constitution.yaml` and a `requirements.md`; StudioForge reads exactly these two files verbatim and prepends them to every run's system prompt. Nothing else under `.agent/` (architecture notes, prompts, skills, or memory) is read in this alpha. Runtime transcripts and usage remain in SQLite.
+Register an existing directory or create a new one. StudioForge stores its canonical path/fingerprint; it does not copy source into application data. Every project receives a default agent, including older registered projects that had none. The **Team builder** can create, edit, enable/disable, and launch agents with Claude Code, OpenRouter, or mock providers. A version-controlled `.agent/` folder may contain a `constitution.yaml` and a `requirements.md`; StudioForge reads exactly these two files verbatim and prepends them to every run's system prompt. Nothing else under `.agent/` (architecture notes, prompts, skills, or memory) is read in this alpha. Runtime transcripts and usage remain in SQLite.
 
 Demo projects have separate orchestrator, builder, and verifier agents. Provider/model aliases (`fast`, `balanced`, `reasoning`, `premium`) are domain values; adapters map them. Permission profiles, concurrency, runtime, turns, and budget are per agent.
 
-**Settings → Agents and integrations** controls the default provider/model/effort, global concurrency, and executable overrides for Codex, Claude Code, Rojo, Git, and Roblox Studio MCP. Empty executable fields use PATH or platform discovery. Changes apply immediately and the integration cards show the effective path, version, authentication state, and remediation.
+**Settings → Agents and integrations** controls the default provider/model/effort, global concurrency, and executable overrides for Claude Code, Rojo, Git, and Roblox Studio MCP, plus the OpenRouter API key (no executable path — it's an HTTP API). Empty executable fields use PATH or platform discovery. Changes apply immediately and the integration cards show the effective path/version (or key state, for OpenRouter), authentication state, and remediation.
 
 ## Multi-project concurrency
 
@@ -108,7 +120,8 @@ Portable export contains project metadata, agents, and tasks—not source. Task 
 - **Blank UI:** ensure release assets were built before Go; official builds embed them. Check browser console and `/api/v1/health`.
 - **401 after copying URL:** bootstrap tokens are one-use. Start the daemon again or use the browser session originally opened.
 - **Claude missing/auth warning:** run `claude --version` and `claude auth status`; update/re-authenticate through Claude Code.
-- **Codex missing/auth warning:** run `codex --version` and `codex login status`; install/authenticate the CLI or set its executable path in Settings.
+- **OpenRouter key not configured/invalid:** add a key in **Settings → Agents and integrations → OpenRouter** (or set `OPENROUTER_API_KEY`) and click **Test connection**; an `invalid` state means OpenRouter rejected the stored key, so generate a new one.
+- **Restart/Resume fails on an old run:** a run saved with `provider="codex"` from before the Codex CLI provider was removed stays readable as history (shown with a **Legacy provider** badge) but cannot be restarted or resumed.
 - **Studio ambiguous:** Studio access is granted only when exactly one instance is open; close the extra Studio windows, leave a single instance open, and retry. (The Studio sessions bind action does not affect real instances in this alpha — it operates on demo data only.)
 - **Rojo unavailable:** install CLI, confirm `rojo --version`, select a `.project.json`, and verify the port is not blocked.
 - **Database:** run `studioforge doctor --bundle diagnostics.zip`; restore only from a known-good backup while the daemon is stopped.
@@ -131,11 +144,11 @@ See [Known Limitations](../KNOWN_LIMITATIONS.md) for the verification-specific p
 
 Для разработки требуются Go 1.25+, Node.js 22+, npm и Git. Выполните `./scripts/dev.ps1 --no-open` в Windows либо `./scripts/dev.sh --no-open` в macOS/Linux. Для готового Windows archive распакуйте zip и запустите `studioforge.exe --mock`; в macOS распакуйте arm64 archive и откройте `StudioForge.app`.
 
-Wizard проверяет каталог данных, SQLite, Git, Codex CLI/auth, Claude Code/auth, Rojo и официальный Studio MCP launcher. `--safe-mode` отключает workers и внешние инструменты, а `--mock` создаёт три независимых demo workspace. Runtime не требует Node.js.
+Wizard проверяет каталог данных, SQLite, Git, Claude Code/auth, OpenRouter (наличие ключа и каталог моделей), Rojo и официальный Studio MCP launcher. `--safe-mode` отключает workers и внешние инструменты, а `--mock` создаёт три независимых demo workspace. Runtime не требует Node.js.
 
-## Codex, Claude, Studio MCP и Rojo
+## OpenRouter, Claude, Studio MCP и Rojo
 
-StudioForge запускает Codex через `codex exec --json` с workspace sandbox и сохранённой CLI-авторизацией. StudioForge читает `claude --help` и добавляет только доступные flags. Токены провайдеров не сохраняются. Пути к Codex, Claude, Rojo, Git и Studio MCP задаются в **Настройки → Агенты и интеграции** и применяются сразу. Для Studio MCP включите **Studio as MCP server** в Roblox Studio: доступ выдаётся run'у только когда открыт ровно один экземпляр Studio (StudioForge не может закрепить instance на чужом MCP-соединении), а при нескольких открытых Studio доступ просто не выдаётся. Экран **Studio sessions** существует, но в этой альфа-версии реальные instances в него не попадают — там только demo-данные. Сборка (build) Rojo доступна из приложения; отдельная live-sync сессия `rojo serve <file> --port <unique-port>` реализована в коде, но пока не подключена ни к одному endpoint — см. [Known Limitations](../KNOWN_LIMITATIONS.md).
+StudioForge работает с OpenRouter через HTTP API с собственным встроенным agent-циклом; ключ OpenRouter хранится в системном хранилище учётных данных ОС (Windows Credential Manager / macOS Keychain), а не в SQLite, и задаётся в Настройках. StudioForge читает `claude --help` и добавляет только доступные flags. Токены Claude не сохраняются. Пути к Claude, Rojo, Git и Studio MCP задаются в **Настройки → Агенты и интеграции** и применяются сразу. Для Studio MCP включите **Studio as MCP server** в Roblox Studio: доступ выдаётся run'у только когда открыт ровно один экземпляр Studio (StudioForge не может закрепить instance на чужом MCP-соединении), а при нескольких открытых Studio доступ просто не выдаётся. Экран **Studio sessions** существует, но в этой альфа-версии реальные instances в него не попадают — там только demo-данные. Сборка (build) Rojo доступна из приложения; отдельная live-sync сессия `rojo serve <file> --port <unique-port>` реализована в коде, но пока не подключена ни к одному endpoint — см. [Known Limitations](../KNOWN_LIMITATIONS.md).
 
 ## Эксплуатация
 

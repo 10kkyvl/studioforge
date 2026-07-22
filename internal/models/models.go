@@ -46,18 +46,19 @@ type SyncStatus struct {
 }
 
 type Agent struct {
-	ID           string  `json:"id"`
-	ProjectID    string  `json:"projectId"`
-	Name         string  `json:"name"`
-	Role         string  `json:"role"`
-	Provider     string  `json:"provider"`
-	ModelAlias   string  `json:"modelAlias"`
-	Effort       string  `json:"effort"`
-	Enabled      bool    `json:"enabled"`
-	Permission   string  `json:"permission"`
-	Concurrency  int     `json:"concurrency"`
-	Budget       float64 `json:"budget"`
-	SystemPrompt string  `json:"systemPrompt"`
+	ID                   string  `json:"id"`
+	ProjectID            string  `json:"projectId"`
+	Name                 string  `json:"name"`
+	Role                 string  `json:"role"`
+	Provider             string  `json:"provider"`
+	ModelAlias           string  `json:"modelAlias"`
+	AllowUnverifiedModel bool    `json:"allowUnverifiedModel"`
+	Effort               string  `json:"effort"`
+	Enabled              bool    `json:"enabled"`
+	Permission           string  `json:"permission"`
+	Concurrency          int     `json:"concurrency"`
+	Budget               float64 `json:"budget"`
+	SystemPrompt         string  `json:"systemPrompt"`
 	// ValidateAfterRun opts this agent into the post-run Studio playtest
 	// validation loop (Claude runs only, workspace-write permission or
 	// above, and only when a run actually received a Studio MCP grant).
@@ -152,12 +153,28 @@ type ChatThread struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
+type ConversationMessage struct {
+	ID            int64
+	ThreadID      string
+	RunID         string
+	Role          string
+	Content       string
+	ToolCallsJSON string
+	ToolCallID    string
+	Attachments   []string
+	Model         string
+	Usage         TokenUsage
+	CreatedAt     time.Time
+}
+
 type ChatMessage struct {
-	Role   string    `json:"role"`
-	Text   string    `json:"text"`
-	At     time.Time `json:"at"`
-	RunID  string    `json:"runId"`
-	Status string    `json:"status,omitempty"`
+	Role       string    `json:"role"`
+	Text       string    `json:"text"`
+	At         time.Time `json:"at"`
+	RunID      string    `json:"runId"`
+	Status     string    `json:"status,omitempty"`
+	Provider   string    `json:"provider,omitempty"`
+	ModelAlias string    `json:"modelAlias,omitempty"`
 	// RawType carries the scheduler's own event RawType through to a
 	// persisted, reloaded message when this message came from a
 	// scheduler-synthesized event (e.g. "scheduler.stuck") rather than the

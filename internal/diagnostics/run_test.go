@@ -101,7 +101,7 @@ func TestRunSkipsOptionalProvidersWhenNil(t *testing.T) {
 	d := &Doctor{DataDir: t.TempDir()}
 	report := d.Run(context.Background())
 
-	for _, key := range []string{"codex", "claude", "rojo"} {
+	for _, key := range []string{"claude", "rojo"} {
 		if _, ok := report.Dependencies[key]; ok {
 			t.Errorf("dependency %q must be absent when its provider is nil", key)
 		}

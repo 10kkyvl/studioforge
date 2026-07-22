@@ -62,8 +62,8 @@ consume real, sustained usage rather than occasional code generation:
   requires running actual sessions, not just unit tests against a fake CLI.
 - Implementing and verifying the Roblox Studio MCP integration: launcher discovery, per-run MCP
   config generation, and the tool allowlist enforced per agent permission profile.
-- Work on provider adapters (Claude Code and Codex) as both evolve their CLI flags and event
-  formats.
+- Work on provider adapters: Claude Code's CLI flags and event formats as it evolves, and the
+  OpenRouter in-process agent loop's tool-calling, model catalog, and cost-tracking behavior.
 - Analyzing multi-file changes and testing context retention across long-running sessions, which is
   central to a project-level workflow tool and cannot be validated with short prompts.
 - Building and extending automated validation (the doctor diagnostics, integrity checks, redaction).
@@ -100,9 +100,10 @@ reimplements what Studio's MCP server itself does.
 
 The core project will remain open source under the MIT license.
 
-The architecture is deliberately built to be extensible: provider adapters (Claude Code, Codex, and
-a mock provider) are kept separate from the domain packages that model projects, tasks, agents, and
-runs, and Studio tool access is scoped by an explicit permission-profile allowlist rather than
+The architecture is deliberately built to be extensible: provider adapters (Claude Code as a local
+CLI, OpenRouter as an HTTP API with its own in-process agent loop, and a mock provider) are kept
+separate from the domain packages that model projects, tasks, agents, and runs, and Studio tool
+access is scoped by an explicit permission-profile allowlist rather than
 hard-coded per feature. This separation is meant to make it realistic to add another provider
 adapter or another Studio capability without reworking the domain layer.
 

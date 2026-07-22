@@ -26,22 +26,33 @@ func (h *Hub) Publish(ctx context.Context, input ...models.RunEvent) ([]models.R
 	if err != nil {
 		return nil, err
 	}
+	h.broadcast(persisted)
+	return persisted, nil
+}
+
+func (h *Hub) PublishTransient(input ...models.RunEvent) {
+	h.broadcast(input)
+}
+
+func (h *Hub) broadcast(events []models.RunEvent) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.closed {
-		return persisted, nil
+		return
 	}
-	for _, event := range persisted {
+	for _, event := range events {
 		for id, ch := range h.subs {
 			select {
 			case ch <- event:
 			default:
+				if event.ID == 0 {
+					continue
+				}
 				close(ch)
 				delete(h.subs, id)
 			}
 		}
 	}
-	return persisted, nil
 }
 
 func (h *Hub) Subscribe(buffer int) (<-chan models.RunEvent, func()) {

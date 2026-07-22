@@ -6,9 +6,9 @@ import (
 )
 
 func TestRedactKnownSecrets(t *testing.T) {
-	input := "api_key=abc123 token: xyz987 Authorization: Bearer very-secret sk-ant-abcdefghijklmnopqrstuvwxyz"
+	input := "api_key=abc123 token: xyz987 Authorization: Bearer very-secret sk-ant-abcdefghijklmnopqrstuvwxyz nvapi-abcdefghijklmnopqrstuvwxyz_123456"
 	got := Redact(input)
-	for _, secret := range []string{"abc123", "xyz987", "very-secret", "sk-ant-abcdefghijklmnopqrstuvwxyz"} {
+	for _, secret := range []string{"abc123", "xyz987", "very-secret", "sk-ant-abcdefghijklmnopqrstuvwxyz", "nvapi-abcdefghijklmnopqrstuvwxyz_123456"} {
 		if strings.Contains(got, secret) {
 			t.Errorf("secret remains: %s", got)
 		}

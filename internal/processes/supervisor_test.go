@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +19,22 @@ func TestHelperProcess(t *testing.T) {
 	}
 	fmt.Println("helper stdout")
 	fmt.Fprintln(os.Stderr, "helper stderr")
+	if marker := os.Getenv("STUDIOFORGE_HELPER_CHILD_MARKER"); marker != "" {
+		for i := 0; ; i++ {
+			_ = os.WriteFile(marker, []byte(strconv.Itoa(i)), 0o644)
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	if marker := os.Getenv("STUDIOFORGE_HELPER_SPAWN_CHILD"); marker != "" {
+		child := exec.Command(os.Args[0], "-test.run=TestHelperProcess")
+		child.Env = append(os.Environ(), "STUDIOFORGE_HELPER=1", "STUDIOFORGE_HELPER_CHILD_MARKER="+marker)
+		if err := child.Start(); err != nil {
+			os.Exit(9)
+		}
+		for {
+			time.Sleep(time.Second)
+		}
+	}
 	if os.Getenv("STUDIOFORGE_HELPER_HANG") == "1" {
 		for {
 			time.Sleep(time.Second)
@@ -140,5 +159,78 @@ func TestSupervisorTerminatesProcessTree(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("process was not terminated")
+	}
+}
+func TestStartSetsWaitDelayOnlyForMaxRuntime(t *testing.T) {
+	supervisor := NewSupervisor()
+	defer supervisor.Close(context.Background())
+
+	withTimeout, err := supervisor.Start(context.Background(), Spec{ID: "wire-timeout", Kind: "test", Executable: os.Args[0], Args: []string{"-test.run=TestHelperProcess"}, Environment: append(MinimalEnvironment(nil), "STUDIOFORGE_HELPER=1", "STUDIOFORGE_HELPER_HANG=1"), MaxRuntime: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = withTimeout.Terminate(50 * time.Millisecond) }()
+	if withTimeout.cmd.WaitDelay == 0 {
+		t.Fatal("expected cmd.WaitDelay to be set when MaxRuntime > 0")
+	}
+
+	noTimeout, err := supervisor.Start(context.Background(), Spec{ID: "wire-no-timeout", Kind: "test", Executable: os.Args[0], Args: []string{"-test.run=TestHelperProcess"}, Environment: append(MinimalEnvironment(nil), "STUDIOFORGE_HELPER=1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = noTimeout.Wait()
+	if noTimeout.cmd.WaitDelay != 0 {
+		t.Fatal("expected cmd.WaitDelay to remain unset when MaxRuntime is unset")
+	}
+}
+func TestSupervisorMaxRuntimeKillsProcessTree(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "grandchild-alive.txt")
+	supervisor := NewSupervisor()
+	defer supervisor.Close(context.Background())
+
+	process, err := supervisor.Start(context.Background(), Spec{
+		ID:          "maxruntime-tree",
+		Kind:        "test",
+		Executable:  os.Args[0],
+		Args:        []string{"-test.run=TestHelperProcess"},
+		Environment: append(MinimalEnvironment(nil), "STUDIOFORGE_HELPER=1", "STUDIOFORGE_HELPER_SPAWN_CHILD="+marker),
+		MaxRuntime:  500 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, statErr := os.Stat(marker); statErr == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Skip("grandchild never started writing its marker file; skipping tree-kill assertion")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	done := make(chan struct{})
+	go func() { _ = process.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("MaxRuntime timeout did not terminate the process")
+	}
+
+	read := func() string {
+		b, statErr := os.ReadFile(marker)
+		if statErr != nil {
+			return ""
+		}
+		return string(b)
+	}
+	time.Sleep(150 * time.Millisecond)
+	first := read()
+	time.Sleep(400 * time.Millisecond)
+	second := read()
+	if first != second {
+		t.Fatalf("grandchild kept writing its marker after MaxRuntime should have killed the process tree: %q -> %q", first, second)
 	}
 }

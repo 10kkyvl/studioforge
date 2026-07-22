@@ -67,11 +67,10 @@ func newHarness(t *testing.T) (*Manager, *recordingProvider, *database.Store, co
 	inner := mock.New()
 	inner.StepDelay = time.Millisecond
 	provider := &recordingProvider{inner: inner}
-	// Registered under "claude" too: validation-loop tests gate on
-	// Job.Provider == "claude" and need a real adapter behind that name, and
-	// reusing the same deterministic mock keeps those tests fast and
-	// dependency-free like every other scheduler test.
-	manager := New(ctx, store, hub, leases, map[string]providers.Provider{"mock": provider, "claude": provider})
+	// Registered under "claude" and "openrouter" too: validation-loop tests
+	// gate on Job.Provider, and reusing the same deterministic mock keeps
+	// those tests fast and dependency-free like every other scheduler test.
+	manager := New(ctx, store, hub, leases, map[string]providers.Provider{"mock": provider, "claude": provider, "openrouter": provider})
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	return manager, provider, store, ctx
 }
@@ -157,6 +156,41 @@ func TestSchedulerResumesWhenSessionProvided(t *testing.T) {
 	}
 	if len(provider.requests()) != 0 {
 		t.Errorf("a resume job must not also Start: %v", provider.requests())
+	}
+}
+
+// A follow-up submitted while its predecessor is still running cannot know
+// that predecessor's session yet. It must resolve the session after waiting
+// for the project lock, otherwise it silently starts a disconnected chat.
+func TestSchedulerQueuedFollowUpResumesPredecessorAtStart(t *testing.T) {
+	manager, provider, store, ctx := newHarness(t)
+	provider.inner.(*mock.Provider).StepDelay = 20 * time.Millisecond
+	thread, err := store.CreateThread(ctx, "demo-obby", "Queued continuation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _, err := manager.Submit(ctx, Job{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", Model: "balanced", ThreadID: thread.ID, ResumeThread: true, WorkingDirectory: t.TempDir(), Prompt: "first", MaxBudget: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, store, first.ID, "running", 5*time.Second)
+	second, _, err := manager.Submit(ctx, Job{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", Model: "balanced", ThreadID: thread.ID, ResumeThread: true, WorkingDirectory: t.TempDir(), Prompt: "follow-up", MaxBudget: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, store, first.ID, "completed", 5*time.Second)
+	waitStatus(t, store, second.ID, "completed", 5*time.Second)
+	provider.mu.Lock()
+	resumes := append([]providers.ResumeRequest(nil), provider.resumes...)
+	provider.mu.Unlock()
+	if len(resumes) != 1 {
+		t.Fatalf("resume calls=%d, want exactly one for the queued follow-up", len(resumes))
+	}
+	if got, want := resumes[0].SessionID, "mock-session-"+first.ID; got != want {
+		t.Fatalf("queued follow-up resumed session %q, want %q", got, want)
+	}
+	if resumes[0].Prompt != "follow-up" {
+		t.Fatalf("queued follow-up prompt=%q", resumes[0].Prompt)
 	}
 }
 

@@ -18,9 +18,6 @@ adding new surface area:
 
 ## Near-term
 
-- Codex access to Roblox Studio MCP, if and when a configuration mechanism appears for it. The Codex
-  CLI has no `--mcp-config`-equivalent today, so this is blocked on upstream Codex, not on
-  StudioForge's own code.
 - Project context beyond the two static files read verbatim today
   (`.agent/constitution.yaml`, `.agent/requirements.md`). Any richer context mechanism needs its own
   design before it is added.
@@ -38,8 +35,8 @@ description if it ever does.
 - A richer project memory than the minimal version now live: today a run writes its own prompt text
   and the next run's system prompt gets a handful of relevant past prompts back, with no summarization
   of what actually happened and no UI to browse or curate what's stored.
-- Visual feedback and screenshot-driven iteration beyond the validation loop's single screenshot per
-  playtest pass.
+- Richer visual iteration than the current pasted-image and `screen_capture` handoff, such as
+  automatic comparison of several playtest views.
 - Multi-agent orchestration beyond the current orchestrator-to-`--agents` delegation that Claude Code
   already provides natively.
 - Autonomous, long-running agent loops beyond the bounded correction-run chain the validation loop

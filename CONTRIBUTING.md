@@ -16,7 +16,7 @@ cd studioforge
 ./scripts/dev.sh --mock --no-open      # or ./scripts/dev.ps1 on Windows
 ```
 
-You need Go 1.25.12+, Node.js 22+, npm, and Git. Claude Code, Codex CLI, Roblox Studio, and Rojo are optional — the `--mock` demo and the test suite run without any of them.
+You need Go 1.25.12+, Node.js 22+, npm, and Git. Claude Code, an OpenRouter API key, Roblox Studio, and Rojo are optional — the `--mock` demo and the test suite run without any of them.
 
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full command reference and directory layout.
 
@@ -34,12 +34,12 @@ That runs `npm ci`, `npm run check`, `npm run lint`, `npm test`, `npm run build`
 Two notes:
 
 - `go test -race ./...` requires CGO and will not run on a Windows box with `CGO_ENABLED=0`. CI runs it on Linux.
-- The opt-in smoke tests behind `STUDIOFORGE_REAL_CLAUDE=1` and `STUDIOFORGE_REAL_STUDIO=1` need a real, billable Claude account and an open Roblox Studio. They do not run in CI. If your change touches the Claude, Codex, Studio MCP, or Rojo adapters, run them locally and say so in the pull request.
+- The opt-in smoke tests behind `STUDIOFORGE_REAL_CLAUDE=1` and `STUDIOFORGE_REAL_STUDIO=1` need a real, billable Claude account and an open Roblox Studio. They do not run in CI. If your change touches the Claude, OpenRouter, Studio MCP, or Rojo adapters, run them locally and say so in the pull request.
 
 ## Coding style
 
 - Go code is formatted with `gofmt` and must pass `go vet`. Frontend code is formatted with Prettier (`npm run format`) and type-checked with `svelte-check`.
-- Keep domain packages independent of adapters. Business logic should not import HTTP, SQLite, Claude, Codex, Roblox, or Rojo specifics — those live behind interfaces at the edges.
+- Keep domain packages independent of adapters. Business logic should not import HTTP, SQLite, Claude, OpenRouter, Roblox, or Rojo specifics — those live behind interfaces at the edges.
 - Add project-isolation and failure-path tests for every stateful feature. "It works when everything succeeds" is not enough; the interesting cases here are interrupted runs, lost leases, and refused Studio access.
 - Update English and Russian user-facing strings together and run the i18n parity test.
 
@@ -61,7 +61,12 @@ StudioForge does not implement Studio tools — it allowlists tools exposed by R
 
 ## Adding a provider adapter
 
-Follow the shape of `internal/providers/claudecode` and `internal/providers/codex`: discover capabilities at runtime rather than assuming flags exist, stream and classify events, support cancellation, and never widen permissions to make something work. Add a fake CLI under `testdata/fakes/` and test the stream, malformed-output, auth-failure, rate-limit, budget, crash, and resume paths against it.
+There are two provider shapes in this codebase, and a new adapter should follow whichever one fits its runtime:
+
+- **Local CLI subprocess**, like `internal/providers/claudecode`: discover capabilities at runtime rather than assuming flags exist, stream and classify events, support cancellation, and never widen permissions to make something work. Add a fake CLI under `testdata/fakes/` and test the stream, malformed-output, auth-failure, rate-limit, budget, crash, and resume paths against it.
+- **HTTP API with an in-process agent loop**, like `internal/providers/openrouter`: no subprocess is spawned. Follow its split of concerns — a bounded tool loop (`agentloop.go`), local workspace tools gated by the shared permission profiles (`agenttools`), a credential seam for secrets that never touch SQLite (`credential`), and a conversation-persistence seam (`conversation.go`) — and give it the same failure-path coverage as a CLI adapter: malformed/streamed errors, auth failure, rate limits, budget ceilings, and resume.
+
+Either way: never widen a permission profile to make something work, and never let a provider secret reach SQLite, run events, logs, or the diagnostic bundle.
 
 ## Commits and pull requests
 

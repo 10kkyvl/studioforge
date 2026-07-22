@@ -14,15 +14,20 @@ type Diagnostics struct {
 	Message       string          `json:"message"`
 }
 type RunRequest struct {
-	RunID, ProjectID, AgentID, WorkingDirectory, Prompt, SystemPrompt, Mode, Model, Effort, PermissionProfile string
-	MaxTurns                                                                                                  int
-	MaxBudget                                                                                                 float64
-	MCPConfigPath                                                                                             string
+	RunID, ProjectID, AgentID, ThreadID, WorkingDirectory, Prompt, SystemPrompt, Mode, Model, Effort, PermissionProfile string
+	MaxTurns                                                                                                            int
+	MaxBudget                                                                                                           float64
+	AllowUnverifiedModel                                                                                                bool
+	MCPConfigPath                                                                                                       string
 	// AllowedTools names the tools the run may call without an interactive
 	// approval, which non-interactive runs cannot answer.
 	AllowedTools []string
-	Environment  []string
-	Scenario     string
+	// Attachments are project-relative paths to images the user attached to
+	// this turn's prompt, handed to vision-capable providers as data alongside
+	// the text prompt.
+	Attachments []string
+	Environment []string
+	Scenario    string
 	// Subagents are the project's other enabled agents, handed to an
 	// orchestrator lead so it can delegate via the provider's native
 	// subagent mechanism (e.g. Claude's --agents).

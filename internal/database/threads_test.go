@@ -213,6 +213,53 @@ func TestLatestThreadSessionEmptyWhenNoRuns(t *testing.T) {
 	}
 }
 
+func TestThreadSessionBeforeChainsQueuedFollowUpsInInsertionOrder(t *testing.T) {
+	store, ctx := newThreadStore(t)
+	thread, err := store.CreateThread(ctx, "demo-obby", "Queued follow-ups")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", ModelAlias: "balanced", ThreadID: thread.ID}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", ModelAlias: "balanced", ThreadID: thread.ID}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	third, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", ModelAlias: "balanced", ThreadID: thread.ID}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.ThreadSessionBefore(ctx, thread.ID, first.ID); err != nil || got != "" {
+		t.Fatalf("first run: session=%q err=%v, want empty", got, err)
+	}
+	if err := store.SetRunUsage(ctx, first.ID, "session-first", 0, models.TokenUsage{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateRun(ctx, first.ID, "completed", "verified", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.ThreadSessionBefore(ctx, thread.ID, second.ID); err != nil || got != "session-first" {
+		t.Fatalf("second run: session=%q err=%v, want session-first", got, err)
+	}
+	// The third turn must wait for the immediately preceding second turn. It
+	// must not skip backward to the first completed session while second is
+	// still queued.
+	if got, err := store.ThreadSessionBefore(ctx, thread.ID, third.ID); err != nil || got != "" {
+		t.Fatalf("third run before second completes: session=%q err=%v, want empty", got, err)
+	}
+	if err := store.SetRunUsage(ctx, second.ID, "session-second", 0, models.TokenUsage{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateRun(ctx, second.ID, "completed", "verified", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.ThreadSessionBefore(ctx, thread.ID, third.ID); err != nil || got != "session-second" {
+		t.Fatalf("third run: session=%q err=%v, want session-second", got, err)
+	}
+}
+
 func TestCreateAndListThreads(t *testing.T) {
 	store, ctx := newThreadStore(t)
 	if _, err := store.EnsureDefaultThread(ctx, "demo-obby"); err != nil {
@@ -377,6 +424,9 @@ func TestThreadMessagesAssemblesTranscript(t *testing.T) {
 	if messages[agentIndex].Text != "agent reply" {
 		t.Errorf("agent message text=%q want %q", messages[agentIndex].Text, "agent reply")
 	}
+	if messages[agentIndex].Provider != "mock" || messages[agentIndex].ModelAlias != "balanced" {
+		t.Errorf("agent identity=%q/%q want mock/balanced", messages[agentIndex].Provider, messages[agentIndex].ModelAlias)
+	}
 	if agentIndex <= 0 {
 		t.Errorf("agent message must appear after its user message, got index %d", agentIndex)
 	}
@@ -530,5 +580,40 @@ func TestAgentEventText(t *testing.T) {
 		if got := agentEventText(c.payload); got != c.want {
 			t.Errorf("agentEventText(%s) = %q, want %q", c.payload, got, c.want)
 		}
+	}
+}
+
+func TestThreadMessagesIgnoresLegacyOpenRouterPartials(t *testing.T) {
+	store, ctx := newThreadStore(t)
+	thread, err := store.CreateThread(ctx, "demo-obby", "OpenRouter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "openrouter", ModelAlias: "model", ThreadID: thread.ID}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.AppendEvents(ctx, []models.RunEvent{
+		{ProjectID: run.ProjectID, RunID: run.ID, Type: "message", RawType: "openrouter.message.partial", Payload: map[string]any{"text": "Hel"}},
+		{ProjectID: run.ProjectID, RunID: run.ID, Type: "message", RawType: "openrouter.message.partial", Payload: map[string]any{"text": "lo"}},
+		{ProjectID: run.ProjectID, RunID: run.ID, Type: "message", RawType: "nvidia.message.partial", Payload: map[string]any{"text": "transient"}},
+		{ProjectID: run.ProjectID, RunID: run.ID, Type: "message", RawType: "openrouter.message", Payload: map[string]any{"text": "Hello"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	messages, err := store.ThreadMessages(ctx, thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var agentMessages []models.ChatMessage
+	for _, message := range messages {
+		if message.Role == "agent" {
+			agentMessages = append(agentMessages, message)
+		}
+	}
+	if len(agentMessages) != 1 || agentMessages[0].Text != "Hello" {
+		t.Fatalf("agent messages = %+v", agentMessages)
 	}
 }

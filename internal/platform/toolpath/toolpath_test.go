@@ -62,7 +62,7 @@ func TestDetectReportsNothingWhenAbsent(t *testing.T) {
 	t.Setenv("USERPROFILE", t.TempDir())
 	// git_path also probes absolute system locations, so use a tool whose known
 	// locations are all under the redirected home.
-	if found := Detect(context.Background(), "codex_path"); len(found) != 0 {
+	if found := Detect(context.Background(), "claude_path"); len(found) != 0 {
 		t.Errorf("expected no candidates, got %+v", found)
 	}
 }
@@ -73,28 +73,28 @@ func TestDetectDeduplicatesTheSameBinary(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	// Keep the machine's real Codex out of this probe.
+	// Keep the machine's real Claude out of this probe.
 	t.Setenv("LOCALAPPDATA", t.TempDir())
 	t.Setenv("APPDATA", t.TempDir())
 
 	// Write it at the exact path the known-location list expects, then put that
 	// same directory on PATH so both discovery routes reach it.
 	local := filepath.Join(home, ".local", "bin")
-	name := "codex"
+	name := "claude"
 	if runtime.GOOS == "windows" {
-		name = "codex.exe"
+		name = "claude.exe"
 		t.Setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
 	}
 	if err := os.MkdirAll(local, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(local, name)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\necho codex 1.2.3\n"), 0o755); err != nil {
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho claude 1.2.3\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", local)
 
-	found := Detect(context.Background(), "codex_path")
+	found := Detect(context.Background(), "claude_path")
 	if len(found) != 1 {
 		t.Fatalf("the same binary must be reported once, got %+v", found)
 	}

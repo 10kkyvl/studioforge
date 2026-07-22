@@ -21,7 +21,6 @@ import (
 	"github.com/10kkyvl/studioforge/internal/portable"
 	"github.com/10kkyvl/studioforge/internal/processes"
 	"github.com/10kkyvl/studioforge/internal/providers/claudecode"
-	"github.com/10kkyvl/studioforge/internal/providers/codex"
 	"github.com/10kkyvl/studioforge/internal/roblox/mcp"
 	"github.com/10kkyvl/studioforge/internal/rojo"
 )
@@ -125,7 +124,7 @@ func doctorCommand(args []string) error {
 		value, _, _ := store.Setting(ctx, key)
 		return value
 	}
-	doc := &diagnostics.Doctor{DB: db, DataDir: dataDir, MockMode: *mockMode, SafeMode: *safeMode, Claude: claudecode.New(setting("claude_path")), Codex: codex.New(setting("codex_path")), Rojo: rojo.New(supervisor, setting("rojo_path")), GitOverride: setting("git_path"), MCPOverride: setting("studio_mcp_path")}
+	doc := &diagnostics.Doctor{DB: db, DataDir: dataDir, MockMode: *mockMode, SafeMode: *safeMode, Claude: claudecode.New(setting("claude_path")), Rojo: rojo.New(supervisor, setting("rojo_path")), GitOverride: setting("git_path"), MCPOverride: setting("studio_mcp_path")}
 	report := doc.Run(ctx)
 	body, _ := json.MarshalIndent(report, "", "  ")
 	fmt.Println(string(body))

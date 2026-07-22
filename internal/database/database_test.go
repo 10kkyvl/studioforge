@@ -231,6 +231,70 @@ func TestCreateAgentDefaultsValidationOptOutWithAUsableCorrectionLimit(t *testin
 	}
 }
 
+func TestSetAgentsModelByProvider(t *testing.T) {
+	_, store := testDB(t)
+	ctx := context.Background()
+	projectA, err := store.CreateProject(ctx, models.Project{Name: "Model A", Path: filepath.Join(t.TempDir(), "model-a"), Fingerprint: "model-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectB, err := store.CreateProject(ctx, models.Project{Name: "Model B", Path: filepath.Join(t.TempDir(), "model-b"), Fingerprint: "model-b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateAgent(ctx, models.Agent{ProjectID: projectA.ID, Provider: "claude", ModelAlias: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateAgent(ctx, models.Agent{ProjectID: projectB.ID, Provider: "claude", ModelAlias: "opus"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateAgent(ctx, models.Agent{ProjectID: projectB.ID, Name: "OpenRouter", Provider: "openrouter", ModelAlias: "vendor/tool-model", AllowUnverifiedModel: true}); err != nil {
+		t.Fatal(err)
+	}
+	n, err := store.SetAgentsModelByProvider(ctx, "claude", "sonnet")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("rows affected=%d, want 2", n)
+	}
+	agents, err := store.ListAgents(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range agents {
+		if a.Provider == "claude" && a.ModelAlias != "sonnet" {
+			t.Errorf("agent %s model=%q, want sonnet", a.ID, a.ModelAlias)
+		}
+		if a.Provider == "openrouter" && (a.ModelAlias != "vendor/tool-model" || !a.AllowUnverifiedModel) {
+			t.Errorf("OpenRouter agent changed by Claude default: %+v", a)
+		}
+	}
+	again, err := store.SetAgentsModelByProvider(ctx, "claude", "sonnet")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != 0 {
+		t.Fatalf("re-applying the same model affected %d rows, want 0", again)
+	}
+	n, err = store.SetAgentsModelByProvider(ctx, "openrouter", "vendor/new-tool-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("OpenRouter rows affected=%d, want 1", n)
+	}
+	agents, err = store.ListAgents(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range agents {
+		if a.Provider == "openrouter" && (a.ModelAlias != "vendor/new-tool-model" || a.AllowUnverifiedModel) {
+			t.Errorf("OpenRouter agent was not repointed safely: %+v", a)
+		}
+	}
+}
+
 func TestUpdateAgentPersistsValidationSettings(t *testing.T) {
 	_, store := testDB(t)
 	ctx := context.Background()

@@ -51,23 +51,51 @@ load within that window.
 
 ---
 
-## `claude` or `codex` not found
+## `claude` not found
 
-**Cause:** StudioForge resolves these executables from PATH by default, or from a path you configured.
-`studioforge doctor` reports `missing` when the executable cannot be located at all, `error` when it
-was found but failed to run, and `warning` when it runs but is not authenticated.
+**Cause:** StudioForge resolves the `claude` executable from PATH by default, or from a path you
+configured. `studioforge doctor` reports `missing` when the executable cannot be located at all,
+`error` when it was found but failed to run, and `warning` when it runs but is not authenticated.
 
 **Fix:**
-- Run `studioforge doctor` to see the exact status, detected path, and version for each provider.
-- Set an explicit executable path in **Settings -> Agents and integrations** (`codex_path` /
-  `claude_path`) if PATH resolution picks the wrong binary or none at all. This applies immediately,
-  no restart needed.
-- **Windows Store Codex caveat:** if Codex was installed through the Windows Store, its bundled
-  executable may not be launchable by another process (a sandboxing restriction of Store app
-  packaging). If `codex` shows as found-but-erroring in doctor and you installed via the Store, install
-  a separate, non-Store Codex CLI and point `codex_path` at it instead.
-- Verify independently outside StudioForge: `claude --version` / `claude auth status`, and
-  `codex --version` / `codex login status`.
+- Run `studioforge doctor` to see the exact status, detected path, and version.
+- Set an explicit executable path in **Settings -> Agents and integrations** (`claude_path`) if PATH
+  resolution picks the wrong binary or none at all. This applies immediately, no restart needed.
+- Verify independently outside StudioForge: `claude --version` / `claude auth status`.
+
+---
+
+## OpenRouter key or model problems
+
+**Cause:** OpenRouter is an HTTP API, not a CLI, so `studioforge doctor` and the Settings integration
+card report on the API key's state and the model catalog's reachability instead of an executable path
+and version.
+
+**Fix:**
+- **`not_configured`:** no key has been saved and `OPENROUTER_API_KEY` is not set. Add a key in
+  **Settings -> Agents and integrations -> OpenRouter**, or set the environment variable and restart
+  the daemon. An API key is required to use OpenRouter at all, even for free models.
+- **`unverified`:** a key is present but has not been checked (or the last check couldn't reach
+  OpenRouter). Click **Test connection** in Settings, or check your network connectivity to
+  `openrouter.ai`.
+- **`invalid`:** OpenRouter's own `/key` endpoint returned 401 for the stored key. Generate a new key
+  on OpenRouter's dashboard and save it again.
+- **A run fails immediately with a model/parameter error:** not every OpenRouter model supports tool
+  calling, and StudioForge's agent loop is built around tools. The picker shows the catalog's tool,
+  vision, context, free, and verification facts; known non-tool models are rejected, while unknown or
+  stale IDs require an explicit compatibility confirmation. The backend refreshes the catalog again
+  before a run, so a model removed after selection is also rejected. `openrouter/free` remains
+  unverified because its eventual model is selected dynamically.
+- **A run fails with `openrouter.image_unsupported`:** the attached image was sent to a model that
+  either doesn't support vision or whose capabilities aren't known to the catalog. Switch to a
+  vision-capable model, or remove the attachment.
+- **Free models feel unreliable:** that's expected, not a bug — free models on OpenRouter have more
+  variable quality, latency, and rate limits, and availability can change. They suit small tasks better
+  than long unattended runs. StudioForge never silently falls back to a paid model when a free-mode run
+  hits trouble; it fails the run instead so cost never changes without your say-so.
+- **Restart/Resume fails on an old run with a removed-provider error:** that run was saved with
+  `provider="codex"` before the Codex CLI provider was removed. It stays fully readable as history (see
+  its **Legacy provider** badge) but cannot be restarted or resumed — start a new run instead.
 
 ---
 
@@ -93,8 +121,9 @@ accepts no instance-selection argument — not an arbitrary limitation.
   The withheld notice in that case names what is actually open next to what StudioForge expected, so a
   project's original/source `.rbxl` opened by hand instead of its built `.studioforge/<name>.rbxl` place
   is easy to recognize.
-- **Codex agents can never reach Studio**, regardless of how many instances are open — the Codex
-  adapter has no `--mcp-config` equivalent. This is not a bug to work around.
+- **Both Claude and OpenRouter runs are subject to the same fail-closed rule** — neither provider gets
+  a wider grant than the other. If a run proceeded without Studio, check the reasons above rather than
+  the provider.
 
 ---
 
@@ -269,9 +298,10 @@ studioforge doctor --bundle diagnostics.zip
 ```
 
 This writes a zip containing the same JSON report `studioforge doctor` prints (version, OS/arch, data
-path, database/WAL/FTS5 status, safe/mock mode, and a per-dependency check for git/codex/claude/
-rojo/studioMcp) plus a note confirming secrets, environment variables, prompts, and project source are
-not included.
+path, database/WAL/FTS5 status, safe/mock mode, and a per-dependency check for git/claude/rojo/
+studioMcp/openrouter) plus a note confirming secrets, environment variables, prompts, and project
+source are not included. The OpenRouter check reports only the API key's verification state and
+source, never the key itself.
 
 **Redaction is pattern-based, not a guarantee.** The bundle content passes through a redaction filter
 that matches known secret shapes — `key=value`/`key: value` pairs named like `api_key`, `token`,

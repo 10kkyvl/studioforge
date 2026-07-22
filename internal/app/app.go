@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -26,8 +27,11 @@ import (
 	"github.com/10kkyvl/studioforge/internal/projects"
 	"github.com/10kkyvl/studioforge/internal/providers"
 	"github.com/10kkyvl/studioforge/internal/providers/claudecode"
-	"github.com/10kkyvl/studioforge/internal/providers/codex"
 	"github.com/10kkyvl/studioforge/internal/providers/mock"
+	"github.com/10kkyvl/studioforge/internal/providers/nvidia"
+	"github.com/10kkyvl/studioforge/internal/providers/openrouter"
+	"github.com/10kkyvl/studioforge/internal/providers/openrouter/catalog"
+	"github.com/10kkyvl/studioforge/internal/providers/openrouter/credential"
 	"github.com/10kkyvl/studioforge/internal/resources"
 	"github.com/10kkyvl/studioforge/internal/roblox/mcp"
 	"github.com/10kkyvl/studioforge/internal/roblox/studio"
@@ -39,6 +43,17 @@ type Runtime struct {
 	Options        config.Options
 	DataDir, URL   string
 	BootstrapToken string
+}
+
+func openRouterPrice(raw string, required bool) (float64, bool) {
+	if raw == "" {
+		return 0, !required
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil || value < 0 || math.IsInf(value, 0) || math.IsNaN(value) {
+		return 0, false
+	}
+	return value, true
 }
 
 func Run(ctx context.Context, opts config.Options) error {
@@ -85,7 +100,7 @@ func Run(ctx context.Context, opts config.Options) error {
 	if err != nil {
 		return err
 	}
-	defaultProvider := setting("default_provider", "codex")
+	defaultProvider := setting("default_provider", "claude")
 	if opts.MockMode {
 		if _, configured, _ := store.Setting(ctx, "default_provider"); !configured {
 			defaultProvider = "mock"
@@ -110,8 +125,43 @@ func Run(ctx context.Context, opts config.Options) error {
 	supervisor := processes.NewSupervisor()
 	mockProvider := mock.New()
 	claudeProvider := claudecode.New(setting("claude_path", ""))
-	codexProvider := codex.New(setting("codex_path", ""))
-	adapters := map[string]providers.Provider{"mock": mockProvider, "claude": claudeProvider, "codex": codexProvider}
+	openrouterProvider := openrouter.New(supervisor)
+	nvidiaHTTPClient := nvidia.NewHTTPClient()
+	nvidiaProvider := nvidia.NewWithHTTPClient(supervisor, nvidiaHTTPClient)
+	secureStore, _ := platform.OpenSystemSecretStore("StudioForge")
+	credManager := credential.NewManager(credential.Config{
+		Service: "StudioForge",
+		Account: "openrouter",
+		EnvVar:  "OPENROUTER_API_KEY",
+		Secure:  secureStore,
+		GetState: func(ctx context.Context) (string, error) {
+			v, _, _ := store.Setting(ctx, "openrouter_key_state")
+			return v, nil
+		},
+		SetState: func(ctx context.Context, s string) error {
+			return store.SetSetting(ctx, "openrouter_key_state", s)
+		},
+	})
+	openrouterProvider.SetKeySource(credManager.Key)
+	nvidiaCredManager := credential.NewManager(credential.Config{
+		Service:      "StudioForge",
+		Account:      "nvidia",
+		EnvVar:       "NVIDIA_API_KEY",
+		Secure:       secureStore,
+		BaseURL:      nvidia.BaseURL,
+		ProviderName: "NVIDIA",
+		TestPath:     "/models",
+		HTTPClient:   nvidiaHTTPClient,
+		GetState: func(ctx context.Context) (string, error) {
+			v, _, _ := store.Setting(ctx, "nvidia_key_state")
+			return v, nil
+		},
+		SetState: func(ctx context.Context, s string) error {
+			return store.SetSetting(ctx, "nvidia_key_state", s)
+		},
+	})
+	nvidiaProvider.SetKeySource(nvidiaCredManager.Key)
+	adapters := map[string]providers.Provider{"mock": mockProvider, "claude": claudeProvider, "openrouter": openrouterProvider, "nvidia": nvidiaProvider}
 	schedulerManager := scheduler.New(ctx, store, hub, leases, adapters)
 	schedulerManager.SetMemory(memoryStore)
 	if count, err := strconv.Atoi(setting("concurrency", "6")); err == nil {
@@ -121,7 +171,8 @@ func Run(ctx context.Context, opts config.Options) error {
 		schedulerManager.SetLimits(1, 1, 1, 1)
 	}
 	rojoManager := rojo.New(supervisor, setting("rojo_path", ""))
-	doctor := &diagnostics.Doctor{DB: db, DataDir: dataDir, SafeMode: opts.SafeMode, MockMode: opts.MockMode, Claude: claudeProvider, Codex: codexProvider, Rojo: rojoManager, MCPOverride: setting("studio_mcp_path", ""), GitOverride: setting("git_path", "")}
+	doctor := &diagnostics.Doctor{DB: db, DataDir: dataDir, SafeMode: opts.SafeMode, MockMode: opts.MockMode, Claude: claudeProvider, Rojo: rojoManager, MCPOverride: setting("studio_mcp_path", ""), GitOverride: setting("git_path", "")}
+	doctor.OpenRouterKeyState = func(ctx context.Context) string { return string(credManager.Status(ctx).State) }
 	// rojoManager.Start puts its process on the same supervisor every other
 	// child process runs under, so the shutdown sequence below
 	// (supervisor.Close) already stops a live sync session and frees its port
@@ -129,9 +180,8 @@ func Run(ctx context.Context, opts config.Options) error {
 	syncer := &syncAdapter{manager: rojoManager}
 	gitOps := &gitAdapter{client: gitops.New()}
 
-	// Grant Claude runs access to Roblox Studio. Only Claude: the Codex adapter
-	// has no --mcp-config equivalent, so a grant there would spawn the launcher
-	// to no effect.
+	// Grant Claude runs access to Roblox Studio. Other providers are wired to the
+	// Studio MCP grant in a later phase.
 	var studioMCPOverride atomic.Value
 	studioMCPOverride.Store(setting("studio_mcp_path", ""))
 	var studioAutoOpen atomic.Value
@@ -239,6 +289,58 @@ func Run(ctx context.Context, opts config.Options) error {
 		grant := studioProvisioner.Provision(ctx, j.RunID, j.PermissionProfile, studioTarget(ctx, j.ProjectID))
 		return scheduler.MCPGrant{ConfigPath: grant.ConfigPath, AllowedTools: grant.AllowedTools, Notice: grant.Notice, Context: grant.Context, Release: grant.Release}
 	})
+	openrouterProvider.SetMCPConnector(func(ctx context.Context, projectID, runID, permissionProfile string) openrouter.MCPGrant {
+		g := studioProvisioner.ProvisionLive(ctx, permissionProfile, studioTarget(ctx, projectID))
+		return openrouter.MCPGrant{Client: g.Client, AllowedTools: g.AllowedTools, Context: g.Context, Notice: g.Notice, Release: g.Release}
+	})
+	openrouterProvider.SetConversationStore(&conversationAdapter{store: store})
+	nvidiaProvider.SetMCPConnector(func(ctx context.Context, projectID, runID, permissionProfile string) openrouter.MCPGrant {
+		g := studioProvisioner.ProvisionLive(ctx, permissionProfile, studioTarget(ctx, projectID))
+		return openrouter.MCPGrant{Client: g.Client, AllowedTools: g.AllowedTools, Context: g.Context, Notice: g.Notice, Release: g.Release}
+	})
+	nvidiaProvider.SetConversationStore(&conversationAdapter{store: store})
+	// catalogService is constructed eagerly but never fetched from until a run
+	// actually needs a model's info: Models() only hits the network on first
+	// use, and falls back to the DB cache or the embedded snapshot when that
+	// fails, so nothing here blocks startup on network access.
+	catalogService := catalog.NewService(catalog.Config{HTTPClient: &http.Client{Timeout: 10 * time.Second}, Cache: store, TTL: 6 * time.Hour})
+	doctor.OpenRouterCatalog = catalogService
+	openrouterProvider.SetModelInfo(func(id string) (openrouter.ModelInfo, bool) {
+		if id == "openrouter/free" {
+			return openrouter.ModelInfo{PriceKnown: true}, true
+		}
+		models, source, _ := catalogService.Models(context.Background())
+		m, ok := catalog.FindByID(models, id)
+		if !ok {
+			return openrouter.ModelInfo{}, false
+		}
+		promptPrice, promptKnown := openRouterPrice(m.Pricing.Prompt, true)
+		completionPrice, completionKnown := openRouterPrice(m.Pricing.Completion, true)
+		requestPrice, requestKnown := openRouterPrice(m.Pricing.Request, false)
+		imagePrice, imageKnown := openRouterPrice(m.Pricing.Image, false)
+		cacheReadPrice, cacheKnown := openRouterPrice(m.Pricing.InputCacheRead, false)
+		cacheWritePrice, cacheWriteKnown := openRouterPrice(m.Pricing.InputCacheWrite, false)
+		reasoningPrice, reasoningKnown := openRouterPrice(m.Pricing.InternalReasoning, false)
+		ctxLen := m.ContextLength
+		if m.TopProvider.ContextLength > 0 && m.TopProvider.ContextLength < ctxLen {
+			ctxLen = m.TopProvider.ContextLength
+		}
+		priceKnown := promptKnown && completionKnown && requestKnown && imageKnown && cacheKnown && cacheWriteKnown && reasoningKnown
+		return openrouter.ModelInfo{Vision: m.SupportsVision(), Tools: m.SupportsTools(), Verified: source == catalog.SourceLive, CapabilitiesKnown: true, PriceKnown: priceKnown, PromptPrice: promptPrice, CompletionPrice: completionPrice, RequestPrice: requestPrice, ImagePrice: imagePrice, CacheReadPrice: cacheReadPrice, CacheWritePrice: cacheWritePrice, ReasoningPrice: reasoningPrice, ContextLength: ctxLen, MaxOutputTokens: m.TopProvider.MaxCompletionTokens}, true
+	})
+	applyOpenRouterRouting := func() {
+		allowFallbacks := (*bool)(nil)
+		if raw := setting("openrouter_allow_fallbacks", ""); raw != "" {
+			v := raw == "true"
+			allowFallbacks = &v
+		}
+		openrouterProvider.SetRouting(openrouter.RoutingOptions{
+			AllowFallbacks: allowFallbacks,
+			DataCollection: setting("openrouter_data_collection", ""),
+			ZDR:            setting("openrouter_zdr", "") == "true",
+		})
+	}
+	applyOpenRouterRouting()
 	// The validation loop opens its own Studio MCP connection independent of
 	// the run's own (already-exited, by this point) agent connection — the
 	// same pattern studioProvisioner.Provision/Status already use to probe
@@ -261,8 +363,6 @@ func Run(ctx context.Context, opts config.Options) error {
 
 	applySetting := func(key, value string) error {
 		switch key {
-		case "codex_path":
-			codexProvider.SetExecutable(value)
 		case "claude_path":
 			claudeProvider.SetExecutable(value)
 		case "rojo_path":
@@ -303,6 +403,8 @@ func Run(ctx context.Context, opts config.Options) error {
 				return err
 			}
 			schedulerManager.SetLimits(count, 0, 0, 0)
+		case "openrouter_data_collection", "openrouter_zdr", "openrouter_allow_fallbacks":
+			applyOpenRouterRouting()
 		}
 		return nil
 	}
@@ -316,7 +418,7 @@ func Run(ctx context.Context, opts config.Options) error {
 	}
 	defer listener.Close()
 	baseURL := url.URL{Scheme: "http", Host: listener.Addr().String()}
-	apiServer, err := api.New(api.Dependencies{Store: store, DB: db, Scheduler: schedulerManager, Hub: hub, Doctor: doctor, Sessions: sessions, Guard: guard, SafeMode: opts.SafeMode, AllowedHost: listener.Addr().String(), DataDir: dataDir, Logger: slog.Default(), ApplySetting: applySetting, Studio: studioOpener, StudioOpenCheck: studioOpenCheck, StudioStatus: studioStatus, RefreshStudioSessions: refreshStudioSessions, Sync: syncer, Git: gitOps, Leases: leases, Memory: memoryStore, StuckSettings: stuckSettings})
+	apiServer, err := api.New(api.Dependencies{Store: store, DB: db, Scheduler: schedulerManager, Hub: hub, Doctor: doctor, Sessions: sessions, Guard: guard, SafeMode: opts.SafeMode, AllowedHost: listener.Addr().String(), DataDir: dataDir, Logger: slog.Default(), ApplySetting: applySetting, Studio: studioOpener, StudioOpenCheck: studioOpenCheck, StudioStatus: studioStatus, RefreshStudioSessions: refreshStudioSessions, Sync: syncer, Git: gitOps, Leases: leases, Memory: memoryStore, StuckSettings: stuckSettings, OpenRouterCreds: credManager, OpenRouterCatalog: catalogService, NVIDIACreds: nvidiaCredManager})
 	if err != nil {
 		return err
 	}

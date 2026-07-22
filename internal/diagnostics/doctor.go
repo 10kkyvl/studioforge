@@ -18,7 +18,7 @@ import (
 	"github.com/10kkyvl/studioforge/internal/database"
 	"github.com/10kkyvl/studioforge/internal/models"
 	"github.com/10kkyvl/studioforge/internal/providers/claudecode"
-	"github.com/10kkyvl/studioforge/internal/providers/codex"
+	"github.com/10kkyvl/studioforge/internal/providers/openrouter/catalog"
 	"github.com/10kkyvl/studioforge/internal/roblox/mcp"
 	"github.com/10kkyvl/studioforge/internal/rojo"
 	"github.com/10kkyvl/studioforge/internal/security"
@@ -29,11 +29,14 @@ type Doctor struct {
 	DataDir            string
 	SafeMode, MockMode bool
 	Claude             *claudecode.Provider
-	Codex              *codex.Provider
 	Rojo               *rojo.Manager
 	MCPOverride        string
 	GitOverride        string
-	mu                 sync.RWMutex
+	OpenRouterKeyState func(context.Context) string
+	OpenRouterCatalog  interface {
+		Models(context.Context) ([]catalog.Model, catalog.Source, error)
+	}
+	mu sync.RWMutex
 }
 
 func (d *Doctor) SetMCPOverride(path string) {
@@ -67,20 +70,6 @@ func (d *Doctor) Run(ctx context.Context) models.Diagnostics {
 		gitExecutable = "git"
 	}
 	report.Dependencies["git"] = executableCheck(ctx, gitExecutable, []string{"--version"}, "Install Git or configure its executable path in Settings.")
-	if d.Codex != nil {
-		v := d.Codex.Diagnose(ctx)
-		status := "missing"
-		if v.Path != "" && !v.Available {
-			status = "error"
-		}
-		if v.Available {
-			status = "ok"
-		}
-		if v.Available && !v.Authenticated {
-			status = "warning"
-		}
-		report.Dependencies["codex"] = models.Check{Name: "Codex CLI", Status: status, Version: v.Version, Path: v.Path, Message: v.Message, Help: "Run `codex login`, or configure the Codex executable path in Settings."}
-	}
 	if d.Claude != nil {
 		v := d.Claude.Diagnose(ctx)
 		status := "missing"
@@ -109,6 +98,9 @@ func (d *Doctor) Run(ctx context.Context) models.Diagnostics {
 	} else {
 		report.Dependencies["studioMcp"] = models.Check{Name: "Roblox Studio MCP", Status: "ok", Path: launch.Command, Message: "Official Studio MCP launcher detected"}
 	}
+	if d.OpenRouterKeyState != nil {
+		report.Dependencies["openrouter"] = d.openrouterCheck(ctx)
+	}
 	testPath := filepath.Join(d.DataDir, "runtime", "doctor-write-test")
 	writeErr := os.MkdirAll(filepath.Dir(testPath), 0o700)
 	if writeErr == nil {
@@ -122,6 +114,41 @@ func (d *Doctor) Run(ctx context.Context) models.Diagnostics {
 	}
 	return report
 }
+
+func (d *Doctor) openrouterCheck(ctx context.Context) models.Check {
+	keyState := d.OpenRouterKeyState(ctx)
+	status := "missing"
+	switch keyState {
+	case "configured":
+		status = "ok"
+	case "unverified":
+		status = "warning"
+	case "invalid":
+		status = "error"
+	}
+	var message strings.Builder
+	message.WriteString("API key: " + keyState)
+	if d.OpenRouterCatalog != nil {
+		models, source, err := d.OpenRouterCatalog.Models(ctx)
+		switch {
+		case err != nil:
+			message.WriteString("; Models API unreachable: " + err.Error())
+		case source == catalog.SourceLive:
+			message.WriteString("; Models API reachable (live)")
+		case source == catalog.SourceCache:
+			message.WriteString("; Models API unreachable, using cached model list")
+		default:
+			message.WriteString("; Models API unreachable, using the bundled fallback model list")
+		}
+		if err == nil {
+			toolCapable := len(catalog.AgentModels(models))
+			free := len(catalog.FreeModels(models))
+			message.WriteString(fmt.Sprintf("; %d tool-capable model(s), %d free-compatible model(s)", toolCapable, free))
+		}
+	}
+	return models.Check{Name: "OpenRouter", Status: status, Message: message.String(), Help: "Add your OpenRouter API key in Settings and click Test connection."}
+}
+
 func executableCheck(ctx context.Context, name string, args []string, help string) models.Check {
 	path, err := exec.LookPath(name)
 	if err != nil {

@@ -55,7 +55,7 @@ body:
       options:
         - Mock mode (--mock)
         - Real project with Claude Code
-        - Real project with Codex CLI
+        - Real project with OpenRouter
         - Real project with Roblox Studio access
         - Real project with Rojo
         - Other

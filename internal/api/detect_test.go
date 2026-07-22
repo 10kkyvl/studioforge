@@ -36,7 +36,7 @@ func TestDetectPathsReportsEveryTool(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	for _, tool := range []string{"claude_path", "codex_path", "rojo_path", "git_path", "studio_mcp_path"} {
+	for _, tool := range []string{"claude_path", "rojo_path", "git_path", "studio_mcp_path"} {
 		if _, ok := body.Tools[tool]; !ok {
 			t.Errorf("response omitted %q", tool)
 		}

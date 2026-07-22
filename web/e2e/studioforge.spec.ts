@@ -143,7 +143,6 @@ test('first run, locale, projects, live run, and core navigation', async ({ page
   await page.getByLabel('Global agent concurrency').fill('5');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByText('Settings saved', { exact: true })).toBeVisible();
-  await expect(page.getByText('Codex CLI', { exact: true })).toBeVisible();
   // The chat page must scroll in regions, not as a document. It used to be a
   // fixed-height transcript inside a page taller than the viewport, so reaching
   // the composer of a long thread meant scrolling the window.

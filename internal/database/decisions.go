@@ -50,7 +50,7 @@ func (s *Store) ListDecisions(ctx context.Context, status string) ([]models.Deci
 		return nil, err
 	}
 	defer rows.Close()
-	var out []models.Decision
+	out := make([]models.Decision, 0)
 	for rows.Next() {
 		var d models.Decision
 		var created string
