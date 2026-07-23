@@ -308,6 +308,7 @@ type Manager struct {
 	wake                                                          chan struct{}
 	done                                                          chan struct{}
 	closed                                                        bool
+	wg                                                            sync.WaitGroup
 	// tick overrides the run loop's heartbeat/idle-check ticker interval;
 	// zero means the 5-second default. Only tests shrink it.
 	tick time.Duration
@@ -421,7 +422,10 @@ func (m *Manager) admit(j *Job, run models.Run) error {
 }
 
 func (m *Manager) loop() {
-	defer close(m.done)
+	defer func() {
+		m.wg.Wait()
+		close(m.done)
+	}()
 	for {
 		select {
 		case <-m.ctx.Done():
@@ -442,7 +446,11 @@ func (m *Manager) loop() {
 			m.providerActive[job.Provider]++
 			m.modelActive[job.Provider+":"+job.Model]++
 			m.mu.Unlock()
-			go m.run(ctx, exec)
+			m.wg.Add(1)
+			go func() {
+				defer m.wg.Done()
+				m.run(ctx, exec)
+			}()
 		}
 	}
 }

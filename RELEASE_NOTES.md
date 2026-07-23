@@ -22,6 +22,9 @@ event streaming are fixed.
   surfaces as a raw error mid-stream; the client reconnects automatically.
 - **Correct task status.** A task linked to a run no longer shows as "running" when the run itself
   failed to start.
+- **Safer shutdown.** Stopping the app while a run is still wrapping up no longer risks a stray
+  "database is closed" error; shutdown now waits for every in-flight run to finish before the database
+  closes.
 
 ### Before installing
 
@@ -54,6 +57,9 @@ event streaming are fixed.
   сырая ошибка посреди потока; клиент переподключается автоматически.
 - **Верный статус задачи.** Задача, привязанная к запуску, больше не показывается как "running", если
   сам запуск не удалось создать.
+- **Более безопасное завершение работы.** Остановка приложения, пока запуск ещё дозавершается, больше не
+  может привести к случайной ошибке "database is closed"; завершение работы теперь дожидается окончания
+  всех выполняющихся запусков перед закрытием базы данных.
 
 ### Перед установкой
 

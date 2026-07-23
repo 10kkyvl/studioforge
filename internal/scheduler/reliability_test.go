@@ -10,6 +10,7 @@ import (
 
 	"github.com/10kkyvl/studioforge/internal/database"
 	"github.com/10kkyvl/studioforge/internal/events"
+	"github.com/10kkyvl/studioforge/internal/models"
 	"github.com/10kkyvl/studioforge/internal/providers"
 	"github.com/10kkyvl/studioforge/internal/providers/mock"
 	"github.com/10kkyvl/studioforge/internal/resources"
@@ -363,5 +364,82 @@ func TestValidationLeaseLossAbortsAsInconclusiveWithoutCorrection(t *testing.T) 
 		if owner == run.ID {
 			t.Errorf("lease %s is still owned by run %s after its lease was lost", key, run.ID)
 		}
+	}
+}
+
+type closeTrackingStore struct {
+	*database.Store
+	mu               sync.Mutex
+	closed           bool
+	writesAfterClose int
+}
+
+func (s *closeTrackingStore) markClosed() {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+}
+
+func (s *closeTrackingStore) writeCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.writesAfterClose
+}
+
+func (s *closeTrackingStore) countIfClosed() {
+	s.mu.Lock()
+	if s.closed {
+		s.writesAfterClose++
+	}
+	s.mu.Unlock()
+}
+
+func (s *closeTrackingStore) UpdateRun(ctx context.Context, id, status, phase, resource, errText string) error {
+	s.countIfClosed()
+	return s.Store.UpdateRun(ctx, id, status, phase, resource, errText)
+}
+
+func (s *closeTrackingStore) SetRunUsage(ctx context.Context, id, sessionID string, cost float64, usage models.TokenUsage) error {
+	s.countIfClosed()
+	return s.Store.SetRunUsage(ctx, id, sessionID, cost, usage)
+}
+
+func TestCloseWaitsForInFlightRunBeforeReturning(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "closewait.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	base := database.NewStore(db)
+	if err := base.SeedDemo(ctx, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	store := &closeTrackingStore{Store: base}
+	hub := events.NewHub(store)
+	t.Cleanup(hub.Close)
+	leases := resources.NewManager(time.Second)
+	t.Cleanup(leases.Close)
+	manager := New(ctx, store, hub, leases, map[string]providers.Provider{"mock": mock.New()})
+	run, _, err := manager.Submit(ctx, Job{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", Model: "balanced", Scenario: "hang", WorkingDirectory: t.TempDir(), MaxBudget: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, store.Store, run.ID, "running", 5*time.Second)
+	if err := manager.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	store.markClosed()
+	time.Sleep(200 * time.Millisecond)
+	if n := store.writeCount(); n != 0 {
+		t.Errorf("%d store write(s) landed after Close returned; Close must wait for the in-flight run's shutdown writes", n)
+	}
+	got, err := store.Run(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "cancelled" {
+		t.Errorf("run status=%q after Close returned, want cancelled: the in-flight run must finish its shutdown transition before Close returns", got.Status)
 	}
 }

@@ -39,6 +39,10 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 - A task attached to a run (`POST /api/v1/runs` with `taskId`) no longer gets stuck in `running` when the
   run fails to submit: the task's status is now set to `running` only after the run is created
   successfully, and a failure to persist that status transition is logged instead of failing the run.
+- Shutting down the scheduler (`internal/scheduler.Manager.Close`) no longer returns while an in-flight
+  run goroutine is still writing its final status to the store: `Close` now waits for every spawned run
+  to finish before returning, closing a shutdown-ordering hole where a run could still call
+  `store.UpdateRun` after the caller had already closed the database.
 
 ## [0.5.0-alpha.1] - 2026-07-22
 
