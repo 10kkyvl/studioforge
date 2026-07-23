@@ -1,4 +1,6 @@
-# StudioForge v0.5.0-beta.1
+# StudioForge v0.5.0-beta.2
+
+_v0.5.0-beta.2 follows v0.5.0-beta.1 by a few hours and adds the safer-shutdown fix; everything else below shipped in beta.1. / v0.5.0-beta.2 вышла через несколько часов после v0.5.0-beta.1 и добавляет фикс безопасного завершения; остальное ниже вошло в beta.1._
 
 ## English
 
