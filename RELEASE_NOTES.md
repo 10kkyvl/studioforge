@@ -1,26 +1,31 @@
-# StudioForge v0.5.0-alpha.1
+# StudioForge v0.5.0-beta.1
 
 ## English
 
-This alpha makes long Roblox Studio sessions safer and adds more model choices.
+This beta is a visual and reliability pass: the light theme is fully themed and accessible, the
+interface no longer flashes the wrong theme on load, and two backend edge cases around task status and
+event streaming are fixed.
 
 ### What changed
 
-- **NVIDIA NIM provider.** Add an NVIDIA API key in Settings and run supported coding models directly.
-- **Vision for Studio.** Vision-capable OpenRouter and NVIDIA models can inspect pasted images and
-  screenshots returned by Roblox Studio.
-- **Reliable API runs.** Temporary network errors, timeouts, interrupted streams, rate limits, and
-  temporary upstream failures are retried automatically.
-- **Queued follow-ups.** Send another message while an agent is working. It waits in the same chat,
-  keeps the conversation context, and can be removed without stopping the active run.
-- **Saved place protection.** Opening Studio no longer rebuilds an existing `.rbxl`. Rojo creates the
-  place only when it is missing, so saved Studio work is not silently replaced.
-- **Cleaner chat.** Streaming uses one live response bubble, Markdown is rendered safely, and model
-  or connection failures are easier to understand.
+- **Light theme fixes.** Border and status colors (success/warning/danger) are now correctly defined in
+  the light theme, fixing invisible borders and off-palette colors in the Runs view, chat, and the
+  OpenRouter model picker. Primary button text now meets contrast guidelines.
+- **No more theme flash.** The saved theme is applied before the page renders, and the browser's own
+  theme color follows whichever theme is active.
+- **System theme by default.** New installs now follow the OS light/dark preference instead of always
+  starting in Dark. Switching themes now transitions smoothly.
+- **Localized chat commands.** Slash-command confirmations (`/task`, `/plan`, `/do`, `/open`) now reply
+  in the interface's selected language instead of always in English.
+- **Cleaner run lists.** Long run and thread titles are now truncated instead of overflowing.
+- **More reliable event streaming.** A transient replay failure on the live events endpoint no longer
+  surfaces as a raw error mid-stream; the client reconnects automatically.
+- **Correct task status.** A task linked to a run no longer shows as "running" when the run itself
+  failed to start.
 
 ### Before installing
 
-- This is an alpha release. Back up important Roblox projects.
+- This is a beta release, following several alpha pre-releases. Back up important Roblox projects.
 - NVIDIA and OpenRouter require their own API keys. Model availability and limits belong to the
   selected provider.
 - Screenshot understanding works only with a model marked as vision-capable.
@@ -28,26 +33,32 @@ This alpha makes long Roblox Studio sessions safer and adds more model choices.
 
 ## Русский
 
-Эта альфа делает долгую работу с Roblox Studio безопаснее и добавляет больше моделей.
+Эта бета — проход по внешнему виду и надёжности: светлая тема полностью оформлена и доступна, интерфейс
+больше не мигает не той темой при загрузке, а два пограничных случая в бэкенде — со статусом задачи и
+стримингом событий — исправлены.
 
 ### Что изменилось
 
-- **Провайдер NVIDIA NIM.** Добавьте API-ключ NVIDIA в настройках и запускайте поддерживаемые модели
-  напрямую.
-- **Зрение для Studio.** Vision-модели OpenRouter и NVIDIA видят вставленные картинки и скриншоты,
-  полученные из Roblox Studio.
-- **Надёжные API-запуски.** Временные ошибки сети, таймауты, оборванные ответы, rate limit и временные
-  сбои провайдера повторяются автоматически.
-- **Очередь сообщений.** Новое сообщение можно отправить, пока агент занят. Оно продолжит тот же чат
-  и может быть удалено из очереди без остановки активного запуска.
-- **Защита сохранённого place.** При открытии Studio существующий `.rbxl` больше не пересобирается.
-  Rojo создаёт place только при отсутствии файла, поэтому сохранённая работа не пропадает.
-- **Чище чат.** Стриминг обновляет один live-ответ, Markdown отображается безопасно, а ошибки модели
-  и соединения стали понятнее.
+- **Исправления светлой темы.** Цвета границ и статусов (success/warning/danger) теперь корректно
+  определены в светлой теме — это чинит невидимые границы и цвета не в палитре в разделе Runs, в чате и в
+  выборе модели OpenRouter. Текст на основной кнопке теперь соответствует требованиям контрастности.
+- **Без мигания темой.** Сохранённая тема применяется до рендера страницы, а цвет темы браузера
+  соответствует активной теме.
+- **Тема System по умолчанию.** Новые установки теперь следуют настройке ОС (светлая/тёмная), а не
+  всегда открываются в тёмной теме. Переключение темы теперь происходит плавно.
+- **Локализованные команды чата.** Подтверждения slash-команд (`/task`, `/plan`, `/do`, `/open`) теперь
+  отвечают на выбранном языке интерфейса, а не всегда на английском.
+- **Чище список запусков.** Длинные названия запусков и чатов теперь обрезаются, а не переполняют
+  строку.
+- **Надёжнее стриминг событий.** Временный сбой воспроизведения событий больше не показывается как
+  сырая ошибка посреди потока; клиент переподключается автоматически.
+- **Верный статус задачи.** Задача, привязанная к запуску, больше не показывается как "running", если
+  сам запуск не удалось создать.
 
 ### Перед установкой
 
-- Это alpha-релиз. Делайте резервные копии важных Roblox-проектов.
+- Это beta-релиз, следующий за несколькими alpha-версиями. Делайте резервные копии важных
+  Roblox-проектов.
 - Для NVIDIA и OpenRouter нужны отдельные API-ключи. Доступность моделей и лимиты задаёт провайдер.
 - Скриншоты понимают только модели с поддержкой vision.
 - Сборки Windows и macOS пока не подписаны.

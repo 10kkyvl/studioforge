@@ -31,12 +31,12 @@
   import {
     detectLocale,
     formatDate,
-    formatMoney,
     locale,
     translate,
     type Locale,
     type TranslationKey,
   } from '$lib/i18n';
+  import { normalizeFontSize, setThemeColorMeta, themeColorFor } from '$lib/theme';
   import type { Agent, AppSettings, Check, Project, Run, RunEvent, Snapshot } from '$lib/types';
   import FirstRunWizard from '$lib/components/FirstRunWizard.svelte';
   import NewProjectDialog from '$lib/components/NewProjectDialog.svelte';
@@ -72,7 +72,7 @@
   let selectedRunId = '';
   let events: RunEvent[] = [];
   let streamOnline = false;
-  let theme = 'dark';
+  let theme = 'system';
   let fontSize = 'comfortable';
   let notice = '';
   // True until a refresh reports otherwise, so a daemon that has never run a
@@ -122,6 +122,7 @@
 
   $: if (restored) saveView(view);
   $: if (restored) saveProject(selectedProjectId);
+  $: document.documentElement.lang = $locale;
 
   $: projects = snapshot?.projects ?? [];
   $: activeProjects = projects.filter((project) => !project.archived);
@@ -137,8 +138,8 @@
   $: selectedEvents = events.filter((event) => event.runId === selectedRunId).slice(-250);
 
   onMount(() => {
-    const storedTheme = localStorage.getItem('studioforge-theme') ?? 'dark';
-    setTheme(storedTheme);
+    const storedTheme = localStorage.getItem('studioforge-theme') ?? 'system';
+    setTheme(storedTheme, false);
     const storedFontSize = localStorage.getItem('studioforge-font-size') ?? 'comfortable';
     setFontSize(storedFontSize);
     const storedView = loadView(nav.map((item) => item.id));
@@ -337,13 +338,18 @@
     locale.set(value);
     await action('locale', () => post('/settings', { locale: value }));
   }
-  function setTheme(value: string) {
+  function setTheme(value: string, animate = true) {
     theme = value;
     localStorage.setItem('studioforge-theme', value);
+    if (animate) {
+      document.documentElement.classList.add('theme-transition');
+      window.setTimeout(() => document.documentElement.classList.remove('theme-transition'), 260);
+    }
     document.documentElement.dataset.theme = value;
+    setThemeColorMeta(themeColorFor(value));
   }
   function setFontSize(value: string) {
-    fontSize = ['compact', 'comfortable', 'large'].includes(value) ? value : 'comfortable';
+    fontSize = normalizeFontSize(value);
     localStorage.setItem('studioforge-font-size', fontSize);
     document.documentElement.dataset.fontSize = fontSize;
   }
@@ -503,9 +509,7 @@
   }
   function statusLabel(status: string): string {
     const key = `status.${status}` as TranslationKey;
-    return key in ({} as Record<TranslationKey, string>)
-      ? $translate(key)
-      : $translate(key) || status;
+    return $translate(key) || status;
   }
   function validationLabel(validation: string): string {
     const key = `validation.${validation}` as TranslationKey;

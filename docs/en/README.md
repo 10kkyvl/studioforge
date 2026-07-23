@@ -1,6 +1,6 @@
 # StudioForge guide (English)
 
-> **Public alpha.** This is a newly released alpha with no prior public release. Some features described below are implemented in code but not yet reachable from the running app; each such case is marked explicitly. See [Known Limitations](../KNOWN_LIMITATIONS.md) for the full verification matrix.
+> **Public beta.** This is a pre-release build (v0.5.0-beta.1). Some features described below are implemented in code but not yet reachable from the running app; each such case is marked explicitly. See [Known Limitations](../KNOWN_LIMITATIONS.md) for the full verification matrix.
 
 ## Installation
 
@@ -69,7 +69,7 @@ Update Roblox Studio, open **Assistant → … → Manage MCP Servers**, and ena
 
 StudioForge discovers actual MCP tools and fails clearly when a required capability is absent. Studio access is fail-closed: a run is granted Studio access only when exactly one Studio instance is open — for both Claude and OpenRouter runs, through two different mechanisms (a generated `--mcp-config` for Claude, a live per-run MCP client for OpenRouter's in-process loop) sharing the same fail-closed decision and tool allowlist. Claude Code and OpenRouter's own loop each run their own MCP client, so StudioForge cannot pin an instance on the agent's connection from outside, and the official launcher accepts no instance-selection argument — with several Studios open, access is refused rather than guessed, and the run continues without Studio. The **Studio sessions** view and its bind action exist in the UI, but in this alpha real open Studio instances are not discovered into that view; its rows are demo data only. One instance is an exclusive resource for modifying/playtest operations.
 
-**Not implemented in this alpha** (see [Known Limitations](../KNOWN_LIMITATIONS.md)): the intended design is a playtest contract of select instance → read state → start → simulate input → collect console/screenshots → stop → structured result → bug tasks. StudioForge does not automate playtesting or capture screenshots on its own today.
+**Not implemented in this beta** (see [Known Limitations](../KNOWN_LIMITATIONS.md)): the intended design is a playtest contract of select instance → read state → start → simulate input → collect console/screenshots → stop → structured result → bug tasks. StudioForge does not automate playtesting or capture screenshots on its own today.
 
 ## Rojo
 
@@ -79,7 +79,7 @@ Install Rojo 7 CLI and the Studio plugin from official Rojo documentation. Verif
 rojo --version
 ```
 
-Each project selects a `*.project.json`. StudioForge invokes Rojo to build a place file and open it in Studio. **Not implemented in this alpha** (see [Known Limitations](../KNOWN_LIMITATIONS.md)): a live-sync `rojo serve <file> --port <unique-port>` session, supervised as a subprocess with streamed stdout/stderr, duplicate-session refusal, and stop/restart, is implemented and unit-tested in `internal/rojo`, but no HTTP endpoint starts, stops, or queries it — only the Rojo build is reachable. A VS Code extension does not replace the CLI.
+Each project selects a `*.project.json`. StudioForge invokes Rojo to build a place file and open it in Studio. **Not implemented in this beta** (see [Known Limitations](../KNOWN_LIMITATIONS.md)): a live-sync `rojo serve <file> --port <unique-port>` session, supervised as a subprocess with streamed stdout/stderr, duplicate-session refusal, and stop/restart, is implemented and unit-tested in `internal/rojo`, but no HTTP endpoint starts, stops, or queries it — only the Rojo build is reachable. A VS Code extension does not replace the CLI.
 
 ## Projects and agent teams
 
@@ -122,7 +122,7 @@ Portable export contains project metadata, agents, and tasks—not source. Task 
 - **Claude missing/auth warning:** run `claude --version` and `claude auth status`; update/re-authenticate through Claude Code.
 - **OpenRouter key not configured/invalid:** add a key in **Settings → Agents and integrations → OpenRouter** (or set `OPENROUTER_API_KEY`) and click **Test connection**; an `invalid` state means OpenRouter rejected the stored key, so generate a new one.
 - **Restart/Resume fails on an old run:** a run saved with `provider="codex"` from before the Codex CLI provider was removed stays readable as history (shown with a **Legacy provider** badge) but cannot be restarted or resumed.
-- **Studio ambiguous:** Studio access is granted only when exactly one instance is open; close the extra Studio windows, leave a single instance open, and retry. (The Studio sessions bind action does not affect real instances in this alpha — it operates on demo data only.)
+- **Studio ambiguous:** Studio access is granted only when exactly one instance is open; close the extra Studio windows, leave a single instance open, and retry. (The Studio sessions bind action does not affect real instances in this beta — it operates on demo data only.)
 - **Rojo unavailable:** install CLI, confirm `rojo --version`, select a `.project.json`, and verify the port is not blocked.
 - **Database:** run `studioforge doctor --bundle diagnostics.zip`; restore only from a known-good backup while the daemon is stopped.
 

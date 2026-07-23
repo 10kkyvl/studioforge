@@ -136,7 +136,7 @@
   }
   .incompatible-warning {
     margin: 0;
-    color: var(--danger, #d9534f);
+    color: var(--danger);
     font-size: 0.7rem;
     line-height: 1.4;
   }
