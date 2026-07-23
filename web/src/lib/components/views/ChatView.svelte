@@ -400,16 +400,16 @@
     try {
       if (name === 'task' && arg && projectId) {
         await createTask(projectId, { title: arg });
-        commandInfo = `✓ task: ${arg}`;
+        commandInfo = `${$translate('chat.cmdTaskDone')}: ${arg}`;
       } else if (name === 'plan') {
         mode = 'plan';
-        commandInfo = '✓ mode: plan';
+        commandInfo = $translate('chat.cmdModePlan');
       } else if (name === 'do') {
         mode = 'do';
-        commandInfo = '✓ mode: do';
+        commandInfo = $translate('chat.cmdModeDo');
       } else if (name === 'open' && projectId) {
         await openStudio();
-        commandInfo = '✓ opening Studio…';
+        commandInfo = $translate('chat.cmdOpeningStudio');
       } else if (name === 'build' && arg) {
         await submitRun(
           `As the project orchestrator, plan and build this, delegating to the engineer and QA sub-agents where useful, then hand off a short summary of what changed and what was verified: ${arg}`,
@@ -419,7 +419,7 @@
           `Build the change, then in Roblox Studio start Play mode, read the console with get_console_output, fix any errors, stop Play, and report the result: ${arg}`,
         );
       } else {
-        commandInfo = 'commands: /task <title>, /build <desc>, /playtest <desc>, /plan, /do, /open';
+        commandInfo = $translate('chat.cmdHelp');
       }
     } catch (cause) {
       commandInfo = '';
@@ -1500,7 +1500,12 @@
     background: var(--surface-2);
   }
   .thread-items strong {
+    align-self: stretch;
+    min-width: 0;
+    overflow: hidden;
     font-size: 0.82rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .thread-items time {
     color: var(--muted);
@@ -1616,7 +1621,7 @@
     color: var(--text);
   }
   .studio-badge.online .dot {
-    background: #39d98a;
+    background: var(--green);
   }
   .studio-badge.warn {
     color: var(--yellow);
@@ -1669,7 +1674,7 @@
     color: var(--text);
     font-size: 1.05rem;
     cursor: pointer;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+    box-shadow: var(--shadow-soft);
   }
   .scroll-down:hover {
     background: color-mix(in srgb, var(--accent) 25%, var(--surface-2));
@@ -1862,8 +1867,8 @@
     cursor: pointer;
   }
   .stop-button:hover:not(:disabled) {
-    border-color: var(--danger, #d9534f);
-    color: var(--danger, #d9534f);
+    border-color: var(--danger);
+    color: var(--danger);
   }
   .stop-button:disabled {
     opacity: 0.6;
@@ -2040,13 +2045,13 @@
     cursor: pointer;
   }
   .rollback-button:hover {
-    border-color: var(--danger, #d9534f);
-    color: var(--danger, #d9534f);
+    border-color: var(--danger);
+    color: var(--danger);
   }
   .rollback-confirm {
     max-width: 480px;
     padding: 10px 12px;
-    border: 1px solid var(--danger, #d9534f);
+    border: 1px solid var(--danger);
     border-radius: 8px;
     background: var(--surface-2);
   }
@@ -2065,7 +2070,7 @@
   }
   .rollback-error {
     margin: 6px 0 0;
-    color: var(--danger, #d9534f);
+    color: var(--danger);
     font-size: 0.72rem;
   }
   .rollback-success {
@@ -2079,8 +2084,8 @@
     margin-top: 10px;
   }
   .rollback-confirm-button {
-    border-color: var(--danger, #d9534f);
-    color: var(--danger, #d9534f);
+    border-color: var(--danger);
+    color: var(--danger);
   }
   .attached-task-chip {
     display: inline-flex;

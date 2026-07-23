@@ -13,6 +13,15 @@ html {
   color: #e8edf4;
   color-scheme: dark;
   font-size: 16px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+@media (prefers-color-scheme: light) {
+  html {
+    background: #f4f6f9;
+    color: #172033;
+    color-scheme: light;
+  }
 }
 html[data-font-size='compact'] {
   font-size: 15px;
@@ -27,6 +36,11 @@ html[data-theme='light'] {
   background: #f4f6f9;
   color: #172033;
   color-scheme: light;
+}
+html[data-theme='dark'] {
+  background: #090d12;
+  color: #e8edf4;
+  color-scheme: dark;
 }
 html[data-theme='system'] {
   background: var(--bg);
@@ -52,6 +66,12 @@ body {
   --green: #42d392;
   --yellow: #f6c453;
   --red: #ff6b78;
+  --border: var(--line);
+  --success: var(--green);
+  --warning: var(--yellow);
+  --danger: var(--red);
+  --accent-contrast: #08111f;
+  --overlay-fade: rgba(0, 0, 0, 0.08);
   --shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
   --shadow-soft: 0 8px 28px rgba(0, 0, 0, 0.16);
   --focus: color-mix(in srgb, var(--accent) 32%, transparent);
@@ -69,6 +89,12 @@ html[data-theme='light'] {
   --green: #13875a;
   --yellow: #a96b00;
   --red: #c83543;
+  --border: var(--line);
+  --success: var(--green);
+  --warning: var(--yellow);
+  --danger: var(--red);
+  --accent-contrast: #ffffff;
+  --overlay-fade: rgba(23, 32, 51, 0.05);
   --shadow: 0 18px 60px rgba(26, 39, 58, 0.13);
   --shadow-soft: 0 8px 28px rgba(37, 51, 73, 0.09);
   --focus: color-mix(in srgb, var(--accent) 24%, transparent);
@@ -87,6 +113,12 @@ html[data-theme='light'] {
     --green: #13875a;
     --yellow: #a96b00;
     --red: #c83543;
+    --border: var(--line);
+    --success: var(--green);
+    --warning: var(--yellow);
+    --danger: var(--red);
+    --accent-contrast: #ffffff;
+    --overlay-fade: rgba(23, 32, 51, 0.05);
     --shadow: 0 18px 60px rgba(26, 39, 58, 0.13);
     --shadow-soft: 0 8px 28px rgba(37, 51, 73, 0.09);
     --focus: color-mix(in srgb, var(--accent) 24%, transparent);
@@ -109,10 +141,35 @@ button {
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
-textarea:focus-visible {
+textarea:focus-visible,
+[role='button']:focus-visible,
+[tabindex]:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
   box-shadow: 0 0 0 4px var(--focus);
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-color: var(--line);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--muted);
+}
+.theme-transition,
+.theme-transition * {
+  transition:
+    background-color 220ms ease,
+    border-color 220ms ease,
+    color 220ms ease;
 }
 code {
   font-family: 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
@@ -350,7 +407,7 @@ code {
   border: 1px solid color-mix(in srgb, var(--accent) 70%, var(--line));
   border-radius: 8px;
   background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 85%, white), var(--accent));
-  color: #08111f;
+  color: var(--accent-contrast);
   padding: 9px 14px;
   font-weight: 750;
   cursor: pointer;
@@ -832,10 +889,16 @@ tbody tr:last-child td {
 .run-list .run-row.active {
   background: var(--surface-2);
 }
+.run-list .run-row > div {
+  min-width: 0;
+}
 .run-list strong,
 .run-list small {
   display: block;
+  overflow: hidden;
   font-size: 0.73rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .run-list small {
   margin-top: 3px;
@@ -886,7 +949,7 @@ tbody tr:last-child td {
   height: 520px;
   overflow: auto;
   padding: 12px 16px;
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0.08), transparent);
+  background: linear-gradient(180deg, var(--overlay-fade), transparent);
 }
 .event {
   display: grid;
@@ -1113,7 +1176,7 @@ tbody tr:last-child td {
 }
 .path-status[data-status='error'] .chip,
 .path-status[data-status='missing'] .chip {
-  background: color-mix(in srgb, var(--danger, #d9534f) 18%, transparent);
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
 }
 .path-status.alternative {
   opacity: 0.75;

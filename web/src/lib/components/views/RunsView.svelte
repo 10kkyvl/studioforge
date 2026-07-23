@@ -190,7 +190,7 @@
     gap: 0.5rem;
     align-items: flex-end;
     padding: 0.75rem;
-    border-top: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+    border-top: 1px solid var(--border);
   }
   .composer textarea {
     flex: 1;
@@ -199,7 +199,7 @@
     font: inherit;
     padding: 0.5rem 0.65rem;
     border-radius: 0.5rem;
-    border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+    border: 1px solid var(--border);
     background: var(--surface-2, rgba(255, 255, 255, 0.04));
     color: inherit;
   }
@@ -215,11 +215,11 @@
     background: var(--surface-2, rgba(255, 255, 255, 0.08));
   }
   .validation-passed {
-    color: var(--success, #2f9e5b);
+    color: var(--success);
   }
   .validation-failed,
   .validation-correction_failed {
-    color: var(--danger, #d64545);
+    color: var(--danger);
   }
   .validation-inconclusive {
     color: var(--muted, #9a9a9a);
@@ -242,14 +242,14 @@
     font: inherit;
   }
   .decision-badge {
-    color: var(--warning, #d69e2e);
+    color: var(--warning);
   }
   .decision-banner {
     margin: 0.5rem 0.75rem 0;
     padding: 0.75rem;
     border-radius: 0.5rem;
-    border: 1px solid var(--warning, #d69e2e);
-    background: color-mix(in srgb, var(--warning, #d69e2e) 12%, transparent);
+    border: 1px solid var(--warning);
+    background: color-mix(in srgb, var(--warning) 12%, transparent);
   }
   .decision-banner p {
     margin: 0 0 0.5rem;
