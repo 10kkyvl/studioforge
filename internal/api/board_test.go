@@ -142,6 +142,29 @@ func TestCreateRunAttachesTaskAndSetsRunning(t *testing.T) {
 	}
 }
 
+func TestCreateRunLeavesTaskStatusUntouchedWhenSubmitFails(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	before, err := a.store.Task(context.Background(), "demo-obby-task-design")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.scheduler.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rec := createRunJSON(t, a, cookie, map[string]any{"projectId": "demo-obby", "prompt": "Do the thing", "taskId": "demo-obby-task-design"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	after, err := a.store.Task(context.Background(), "demo-obby-task-design")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != before.Status {
+		t.Errorf("task status changed to %q despite the run failing to submit, want unchanged %q", after.Status, before.Status)
+	}
+}
+
 func TestCreateRunRejectsTaskFromAnotherProject(t *testing.T) {
 	a := newTestAPI(t)
 	cookie := bootstrapCookie(t, a)

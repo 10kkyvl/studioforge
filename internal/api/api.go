@@ -887,6 +887,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, 404, "not_found", "Project not found", err)
 		return
 	}
+	var taskID string
 	if strings.TrimSpace(body.TaskID) != "" {
 		task, err := s.store.Task(r.Context(), body.TaskID)
 		if err != nil {
@@ -897,10 +898,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, 400, "task_not_in_project", "Task does not belong to project", nil)
 			return
 		}
-		if err := s.store.SetTaskStatus(r.Context(), task.ID, "running"); err != nil {
-			writeError(w, r, 500, "database_error", "Unable to update task status", err)
-			return
-		}
+		taskID = task.ID
 		body.Prompt = buildTaskPrompt(task, body.Prompt)
 	}
 	if len(body.Attachments) > 0 {
@@ -1043,6 +1041,11 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, 400, "run_error", err.Error(), nil)
 		return
 	}
+	if taskID != "" {
+		if err := s.store.SetTaskStatus(r.Context(), taskID, "running"); err != nil {
+			s.logger.Warn("set task status failed", "task_id", taskID, "run_id", run.ID, "error", err)
+		}
+	}
 	if created && checkpointHash != "" {
 		checkpoint := models.Checkpoint{RunID: run.ID, ProjectID: project.ID, CommitHash: checkpointHash, Branch: checkpointBranch, Label: checkpointLabel, CreatedAt: time.Now().UTC()}
 		if err := s.store.CreateCheckpoint(r.Context(), checkpoint); err != nil {
@@ -1077,7 +1080,9 @@ func memoryBlock(entries []memory.Entry) string {
 		if summary == "" {
 			continue
 		}
-		b.WriteString("- " + summary + "\n")
+		b.WriteString("- ")
+		b.WriteString(summary)
+		b.WriteString("\n")
 		found = true
 	}
 	if !found {
@@ -1391,9 +1396,14 @@ func (s *Server) sse(w http.ResponseWriter, r *http.Request) {
 		}
 		return err
 	}
+	var streaming bool
 	for {
 		replay, err := s.store.EventsAfter(r.Context(), after, r.URL.Query().Get("projectId"), r.URL.Query().Get("runId"), 1000)
 		if err != nil {
+			if streaming {
+				s.logger.Error("sse replay failed", "after", after, "error", err)
+				return
+			}
 			writeError(w, r, 500, "replay_failed", "Unable to replay events", err)
 			return
 		}
@@ -1401,6 +1411,7 @@ func (s *Server) sse(w http.ResponseWriter, r *http.Request) {
 			if err := send(event); err != nil {
 				return
 			}
+			streaming = true
 			if event.ID > after {
 				after = event.ID
 			}
