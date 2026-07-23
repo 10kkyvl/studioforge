@@ -1,13 +1,13 @@
 # StudioForge
 
-[![Status: alpha](https://img.shields.io/badge/status-alpha-orange)](#project-status)
+[![Status: beta](https://img.shields.io/badge/status-beta-yellow)](#project-status)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Go 1.25.12+](https://img.shields.io/badge/go-1.25.12%2B-00ADD8)](go.mod)
 
 **An open-source development workflow that helps Claude Code build, understand, test, and maintain Roblox projects.**
 
 > [!WARNING]
-> This project is in active alpha development. APIs, configuration formats, installation steps, and internal architecture may change between releases.
+> This project is in active beta development. APIs, configuration formats, installation steps, and internal architecture may change between releases.
 
 [Русская версия](README.ru.md)
 
@@ -50,7 +50,7 @@ The value StudioForge aims to add is in context, orchestration, validation, repe
 
 ## Feature status
 
-The project is an alpha as a whole. The table below describes individual capabilities.
+The project is a beta as a whole. The table below describes individual capabilities.
 
 The Codex CLI provider has been removed: it no longer runs, is not discovered, and is not selectable for new runs. Runs saved earlier with `provider="codex"` stay readable in history only, shown with a **Legacy provider** badge; Restart and Resume return a controlled error for them instead of re-running. They are never migrated, rewritten, or deleted.
 
@@ -296,4 +296,4 @@ MIT — see [LICENSE](LICENSE).
 
 ## Project status
 
-Newly released public alpha. There is no prior public release and no stable interface. Expect breaking changes between alpha versions, and read [Known limitations](#known-limitations) before relying on any part of it.
+Public beta. Prior alpha pre-releases (v0.1.0 through v0.5.0-alpha.1) established the feature set described above; this build is the first beta. There is still no stable interface — expect breaking changes between pre-release versions — and read [Known limitations](#known-limitations) before relying on any part of it.

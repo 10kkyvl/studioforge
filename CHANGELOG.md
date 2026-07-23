@@ -4,9 +4,41 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use the
-`vMAJOR.MINOR.PATCH-alpha.N` naming scheme.
+`vMAJOR.MINOR.PATCH-alpha.N` naming scheme (later `-beta.N`, `-rc.N` as needed).
 
 ## [Unreleased]
+
+## [0.5.0-beta.1] - 2026-07-23
+
+### Changed
+
+- Default theme is now **System** (follows the OS light/dark preference); it was previously always
+  Dark. Switching themes now transitions smoothly, scrollbars are themed to match either palette, and
+  focus-visible outlines are consistent across interactive elements (`web/src/app.css`).
+
+### Fixed
+
+- Light theme: the `--border`, `--success`, `--warning`, and `--danger` CSS custom properties were
+  referenced throughout `app.css` and several view components but never defined for the light palette,
+  producing invisible borders and off-palette status colors in the Runs view, chat, and the OpenRouter
+  model picker. All four are now defined per theme.
+- Theme flash on load: the stored theme is now applied before the app mounts (new `web/src/lib/theme.ts`,
+  wired through the new `web/src/hooks.client.ts`), the `theme-color` meta tag now follows the active
+  theme instead of always reporting dark, and choosing Dark explicitly keeps `color-scheme: dark` even on
+  a light-OS machine.
+- Primary button text no longer fails WCAG contrast in the light theme (new `--accent-contrast` token).
+- `<html lang>` now follows the selected UI language instead of staying fixed, so hyphenation and
+  assistive technology get the correct language.
+- Slash-command feedback in chat (`/task`, `/plan`, `/do`, `/open`, and the command-list help text) is
+  now localized in English and Russian instead of hardcoded English.
+- Long run and thread titles now ellipsize instead of overflowing their row.
+- `GET /api/v1/events` no longer injects an HTTP 500 JSON body mid-stream when event replay fails after
+  streaming has already begun (`internal/api/api.go`); the stream now ends cleanly and the client's
+  existing `Last-Event-ID` reconnect logic picks it back up. A replay failure before any events have
+  streamed still returns the original 500.
+- A task attached to a run (`POST /api/v1/runs` with `taskId`) no longer gets stuck in `running` when the
+  run fails to submit: the task's status is now set to `running` only after the run is created
+  successfully, and a failure to persist that status transition is logged instead of failing the run.
 
 ## [0.5.0-alpha.1] - 2026-07-22
 
