@@ -167,6 +167,330 @@ func TestRunIdempotencyAndActions(t *testing.T) {
 	}
 }
 
+// postRun submits POST /api/v1/runs with the given task id (empty for none)
+// and returns the recorder, so readiness tests can assert on both status and
+// the error envelope's details payload.
+func postRun(t *testing.T, a *testAPI, cookie *http.Cookie, taskID string) *httptest.ResponseRecorder {
+	t.Helper()
+	payload := map[string]any{
+		"projectId": "demo-obby", "agentId": "demo-obby-orch", "maxBudget": 1,
+		"prompt": "Build the first milestone",
+	}
+	if taskID != "" {
+		payload["taskId"] = taskID
+	}
+	body, _ := json.Marshal(payload)
+	request := httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/runs", bytes.NewReader(body))
+	request.Header.Set("Origin", "http://127.0.0.1:1234")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "run-"+taskID+"-"+t.Name())
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	a.handler.ServeHTTP(recorder, request)
+	return recorder
+}
+
+// insertDanglingTaskDependency records a task_dependencies row whose
+// depends_on_task_id does not exist in the tasks table, simulating a
+// dependency left over after its target was deleted in some way the app
+// itself never allows (the FK is ON DELETE CASCADE, so a normal delete
+// through the API removes the tracking row too). It pins one physical
+// connection with sql.Conn (rather than sql.Tx, since SQLite refuses to
+// toggle the foreign_keys pragma inside a transaction) so the pragma and the
+// insert land on the same connection.
+func insertDanglingTaskDependency(t *testing.T, a *testAPI, projectID, taskID, missingDepID string) {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := a.db.SQL.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(ctx, "INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id) VALUES(?,?,?)", projectID, taskID, missingDepID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCreateRunWithoutTaskIsUnaffected(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	recorder := postRun(t, a, cookie, "")
+	if recorder.Code != 201 {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestCreateRunTaskWithNoDependenciesIsReady(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	recorder := postRun(t, a, cookie, "demo-obby-task-design")
+	if recorder.Code != 201 {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestCreateRunTaskWithCompletedDependencyIsReady(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	// demo-obby-task-build depends only on demo-obby-task-design, seeded completed.
+	recorder := postRun(t, a, cookie, "demo-obby-task-build")
+	if recorder.Code != 201 {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestCreateRunTaskWithIncompleteDependencyIsRejected(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	before, err := a.store.ListRuns(context.Background(), "demo-obby", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// demo-obby-task-review depends on demo-obby-task-build, seeded "running".
+	recorder := postRun(t, a, cookie, "demo-obby-task-review")
+	if recorder.Code != 409 {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var envelope struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			Details struct {
+				Blockers []struct {
+					TaskID string `json:"taskId"`
+					Title  string `json:"title"`
+					Status string `json:"status"`
+				} `json:"blockers"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Error.Code != "task_dependencies_incomplete" {
+		t.Fatalf("code=%q body=%s", envelope.Error.Code, recorder.Body.String())
+	}
+	if len(envelope.Error.Details.Blockers) != 1 || envelope.Error.Details.Blockers[0].TaskID != "demo-obby-task-build" || envelope.Error.Details.Blockers[0].Status != "running" {
+		t.Fatalf("blockers=%+v", envelope.Error.Details.Blockers)
+	}
+	after, err := a.store.ListRuns(context.Background(), "demo-obby", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("rejected run still queued a job: before=%d after=%d", len(before), len(after))
+	}
+}
+
+func TestCreateRunTaskWithTransitiveIncompleteDependencyIsRejected(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	// A new task depending on demo-obby-task-review, which depends on
+	// demo-obby-task-build ("running"), which depends on demo-obby-task-design
+	// ("completed"): the walk must surface the incomplete ancestors, not just
+	// the direct dependency.
+	created, err := a.store.CreateTask(context.Background(), models.Task{ProjectID: "demo-obby", Title: "Ship it", Status: "backlog"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.store.AddTaskDependency(context.Background(), "demo-obby", created.ID, "demo-obby-task-review"); err != nil {
+		t.Fatal(err)
+	}
+	recorder := postRun(t, a, cookie, created.ID)
+	if recorder.Code != 409 {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var envelope struct {
+		Error struct {
+			Details struct {
+				Blockers []struct{ TaskID, Status string } `json:"blockers"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]string{}
+	for _, b := range envelope.Error.Details.Blockers {
+		ids[b.TaskID] = b.Status
+	}
+	if ids["demo-obby-task-review"] != "blocked" || ids["demo-obby-task-build"] != "running" {
+		t.Fatalf("blockers=%+v", envelope.Error.Details.Blockers)
+	}
+}
+
+func TestCreateRunTaskWithMissingDependencyIsRejected(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	insertDanglingTaskDependency(t, a, "demo-obby", "demo-obby-task-design", "deleted-task-id")
+	recorder := postRun(t, a, cookie, "demo-obby-task-design")
+	if recorder.Code != 409 {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var envelope struct {
+		Error struct {
+			Code    string `json:"code"`
+			Details struct {
+				Blockers []struct{ TaskID, Status string } `json:"blockers"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Error.Code != "task_dependencies_incomplete" {
+		t.Fatalf("code=%q", envelope.Error.Code)
+	}
+	if len(envelope.Error.Details.Blockers) != 1 || envelope.Error.Details.Blockers[0].TaskID != "deleted-task-id" || envelope.Error.Details.Blockers[0].Status != "missing" {
+		t.Fatalf("blockers=%+v", envelope.Error.Details.Blockers)
+	}
+}
+
+func TestCreateRunTaskWithCrossProjectDependencyIsRejected(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	if err := a.store.AddTaskDependency(context.Background(), "demo-obby", "demo-obby-task-design", "demo-tycoon-task-design"); err != nil {
+		t.Fatal(err)
+	}
+	recorder := postRun(t, a, cookie, "demo-obby-task-design")
+	if recorder.Code != 409 {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var envelope struct {
+		Error struct {
+			Details struct {
+				Blockers []struct{ TaskID, Title, Status string } `json:"blockers"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.Error.Details.Blockers) != 1 || envelope.Error.Details.Blockers[0].TaskID != "demo-tycoon-task-design" || envelope.Error.Details.Blockers[0].Status != "missing" {
+		t.Fatalf("blockers=%+v", envelope.Error.Details.Blockers)
+	}
+	if envelope.Error.Details.Blockers[0].Title != "" {
+		t.Fatalf("cross-project task title leaked into response: %+v", envelope.Error.Details.Blockers[0])
+	}
+}
+
+func TestCreateRunRecheckCatchesDependencyStatusChangedAfterInitialCheck(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	t.Cleanup(func() { testHookAfterInitialTaskReadinessCheck = nil })
+	testHookAfterInitialTaskReadinessCheck = func() {
+		if _, err := a.db.SQL.Exec("UPDATE tasks SET status='running' WHERE id='demo-obby-task-design'"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := a.store.ListRuns(context.Background(), "demo-obby", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// demo-obby-task-build's only dependency (demo-obby-task-design) passes the
+	// initial check as "completed", then the hook above flips it to "running"
+	// before the recheck immediately before scheduler submission runs.
+	recorder := postRun(t, a, cookie, "demo-obby-task-build")
+	if recorder.Code != 409 {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "task_dependencies_incomplete") {
+		t.Fatalf("body=%s", recorder.Body.String())
+	}
+	after, err := a.store.ListRuns(context.Background(), "demo-obby", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("race-losing request still queued a job: before=%d after=%d", len(before), len(after))
+	}
+}
+
+func TestRunRestartRechecksTaskReadiness(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	submitted := postRun(t, a, cookie, "demo-obby-task-build")
+	if submitted.Code != 201 {
+		t.Fatalf("submit status=%d body=%s", submitted.Code, submitted.Body.String())
+	}
+	var run models.Run
+	if err := json.Unmarshal(submitted.Body.Bytes(), &run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.SQL.Exec("UPDATE runs SET status='interrupted' WHERE id=?", run.ID); err != nil {
+		t.Fatal(err)
+	}
+	// The dependency was completed at submit time; make it incomplete again
+	// before the restart.
+	if _, err := a.db.SQL.Exec("UPDATE tasks SET status='running' WHERE id='demo-obby-task-design'"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := a.store.ListRuns(context.Background(), "demo-obby", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/runs/"+run.ID+"/restart", strings.NewReader(`{}`))
+	request.Header.Set("Origin", "http://127.0.0.1:1234")
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	a.handler.ServeHTTP(recorder, request)
+	if recorder.Code != 409 || !strings.Contains(recorder.Body.String(), "task_dependencies_incomplete") {
+		t.Fatalf("restart status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	after, err := a.store.ListRuns(context.Background(), "demo-obby", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("blocked restart still queued a job: before=%d after=%d", len(before), len(after))
+	}
+}
+
+func TestRunResumeDoesNotRecheckTaskReadiness(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	submitted := postRun(t, a, cookie, "demo-obby-task-build")
+	if submitted.Code != 201 {
+		t.Fatalf("submit status=%d body=%s", submitted.Code, submitted.Body.String())
+	}
+	var run models.Run
+	if err := json.Unmarshal(submitted.Body.Bytes(), &run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.SQL.Exec("UPDATE runs SET status='paused' WHERE id=?", run.ID); err != nil {
+		t.Fatal(err)
+	}
+	// The dependency that was fine at submit time is no longer complete: a
+	// resume must still be allowed to continue this already-started run.
+	if _, err := a.db.SQL.Exec("UPDATE tasks SET status='running' WHERE id='demo-obby-task-design'"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := a.store.ListRuns(context.Background(), "demo-obby", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/runs/"+run.ID+"/resume", strings.NewReader(`{}`))
+	request.Header.Set("Origin", "http://127.0.0.1:1234")
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	a.handler.ServeHTTP(recorder, request)
+	if recorder.Code != 200 {
+		t.Fatalf("resume status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	after, err := a.store.ListRuns(context.Background(), "demo-obby", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before)+1 {
+		t.Fatalf("resume did not continue the lineage: before=%d after=%d", len(before), len(after))
+	}
+}
+
 func waitRunStatus(t *testing.T, store *database.Store, id, status string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from 'svelte';
-  import { Cpu, MessagesSquare, Plus } from '@lucide/svelte';
+  import { Cpu, Lock, MessagesSquare, Plus } from '@lucide/svelte';
   import {
     APIError,
     attachmentUrl,
@@ -17,8 +17,10 @@
     setLead,
     startSync,
     stopSync,
+    taskDependencyBlockers,
     uploadAttachment,
   } from '$lib/api';
+  import { isTaskBlocked, taskReadiness } from '$lib/tasksReadiness';
   import { getOpenRouterCapabilities } from '$lib/openrouter';
   import { getNVIDIACapabilities } from '$lib/nvidia';
   import { aggregateOpenRouterMessages } from '$lib/openrouterStream';
@@ -149,6 +151,11 @@
       default:
         return provider;
     }
+  }
+
+  function taskStatusLabel(status: string): string {
+    const key = `tasks.status.${status}` as TranslationKey;
+    return $translate(key) || status;
   }
 
   function displayThreadTitle(title: string): string {
@@ -566,6 +573,15 @@
   // an image-vision warning below has to check — not any other enabled agent.
   $: leadAgent = leadKnown ? agents.find((agent) => agent.id === leadAgentId) : undefined;
   $: attachedTask = attachedTaskId ? tasks.find((task) => task.id === attachedTaskId) : undefined;
+  // Display-only, mirroring the backend's authoritative internal/tasks.TaskReadiness:
+  // the server still rejects the send with task_dependencies_incomplete if this
+  // ever falls out of sync with it (e.g. a dependency finished between loading
+  // the snapshot and sending).
+  $: attachedTaskBlockers = attachedTaskId ? taskReadiness(tasks, attachedTaskId).blockers : [];
+  $: attachedTaskBlocked = attachedTaskBlockers.length > 0;
+  $: attachedTaskBlockersSummary = attachedTaskBlockers
+    .map((blocker) => `${blocker.title || blocker.taskId} (${taskStatusLabel(blocker.status)})`)
+    .join(', ');
   $: uploadingImage = uploadingCount > 0;
   // Keyed by model id so switching back to a model already checked this
   // session doesn't re-fire the request. `null` marks "known unknown" (still
@@ -941,10 +957,27 @@
       messages = messages.filter((m) => m !== optimistic);
       draft = prompt;
       pendingAttachments = attachments;
-      setError(cause instanceof Error ? cause.message : String(cause));
+      if (cause instanceof APIError && cause.code === 'task_dependencies_incomplete') {
+        setError(taskDependenciesIncompleteMessage(cause));
+      } else {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
     } finally {
       sending = false;
     }
+  }
+
+  // The backend is authoritative on task_dependencies_incomplete; this only
+  // localizes its blocker list for display, the same shape the inline
+  // composer hint below already renders from the local snapshot.
+  function taskDependenciesIncompleteMessage(err: APIError): string {
+    const blockers = taskDependencyBlockers(err);
+    const summary = blockers
+      .map((blocker) => `${blocker.title || blocker.taskId} (${taskStatusLabel(blocker.status)})`)
+      .join(', ');
+    return summary
+      ? `${$translate('chat.taskBlockedHint')} ${summary}`
+      : $translate('chat.taskBlockedHint');
   }
 
   async function send() {
@@ -1426,7 +1459,8 @@
       {/if}
     {/if}
     {#if attachedTask}
-      <div class="attached-task-chip">
+      <div class="attached-task-chip" class:blocked={attachedTaskBlocked}>
+        {#if attachedTaskBlocked}<Lock size={12} />{/if}
         <span>{attachedTask.title}</span>
         <button
           type="button"
@@ -1435,6 +1469,13 @@
           aria-label={$translate('chat.noTask')}>×</button
         >
       </div>
+    {/if}
+    {#if attachedTaskBlocked}
+      <p class="task-blocked-hint">
+        <Lock size={13} />
+        {$translate('chat.taskBlockedHint')}
+        {attachedTaskBlockersSummary}
+      </p>
     {/if}
     {#if pendingAttachments.length > 0 || uploadingImage}
       <div class="attachment-row">
@@ -1502,7 +1543,13 @@
           <select bind:value={attachedTaskId}>
             <option value="">{$translate('chat.noTask')}</option>
             {#each tasks as task (task.id)}
-              <option value={task.id}>{task.title}</option>
+              {@const blocked = isTaskBlocked(tasks, task.id)}
+              <option
+                value={task.id}
+                disabled={blocked}
+                title={blocked ? $translate('chat.taskBlockedOptionHint') : undefined}
+                >{blocked ? '🔒 ' : ''}{task.title}</option
+              >
             {/each}
           </select>
         </label>
@@ -1532,7 +1579,12 @@
       <button
         class="primary"
         type="submit"
-        disabled={sending || uploadingImage || !draft.trim() || !projectId || !selectedThreadId}
+        disabled={sending ||
+          uploadingImage ||
+          !draft.trim() ||
+          !projectId ||
+          !selectedThreadId ||
+          attachedTaskBlocked}
         >{sentRunId ? $translate('chat.queueSend') : $translate('runs.send')}</button
       >
     </form>
@@ -2213,6 +2265,24 @@
     background: color-mix(in srgb, var(--accent) 16%, var(--surface-2));
     color: var(--text);
     font-size: var(--fs-xs);
+  }
+  .attached-task-chip.blocked {
+    border-color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 16%, var(--surface-2));
+    color: var(--warning);
+  }
+  .task-blocked-hint {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 8px 18px 0;
+    padding: 8px 12px;
+    border: 1px solid var(--warning);
+    border-radius: var(--r-md);
+    background: color-mix(in srgb, var(--warning) 12%, transparent);
+    color: var(--warning);
+    font-size: var(--fs-xs);
+    line-height: 1.45;
   }
   .chip-clear {
     display: inline-flex;

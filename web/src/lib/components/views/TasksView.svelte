@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { Plus, X } from '@lucide/svelte';
+  import { Lock, Plus, X } from '@lucide/svelte';
   import { translate, type TranslationKey } from '$lib/i18n';
+  import { isTaskBlocked } from '$lib/tasksReadiness';
   import type { Project, Task } from '$lib/types';
 
   export let tasks: Task[] = [];
@@ -72,6 +73,27 @@
     if (id) onUpdateStatus(id, status);
     draggedTaskId = null;
   }
+
+  // Dependency titles and statuses are resolved against the full tasks list,
+  // not visibleTasks, since a project filter must not hide the fact that a
+  // dependency exists — only cross-project *resolution* is refused, matching
+  // the backend's TaskReadiness (a dependency belonging to a different
+  // project is reported as missing, its details withheld).
+  function dependencyChip(
+    taskProjectId: string,
+    dependsOnId: string,
+  ): { label: string; status: string } {
+    const dep = tasks.find((task) => task.id === dependsOnId);
+    if (!dep || dep.projectId !== taskProjectId) {
+      return { label: '', status: 'missing' };
+    }
+    return { label: dep.title, status: dep.status };
+  }
+
+  function taskStatusLabel(status: string): string {
+    const key = `tasks.status.${status}` as TranslationKey;
+    return $translate(key) || status;
+  }
 </script>
 
 <section class="page-heading" data-testid="tasks-view">
@@ -137,9 +159,11 @@
           <span>{(grouped[column.key] ?? []).length}</span>
         </header>
         {#each grouped[column.key] ?? [] as task (task.id)}
+          {@const depsBlocked = isTaskBlocked(tasks, task.id)}
           <article
             class="board-card"
             class:is-blocked={task.status === 'blocked'}
+            class:is-deps-blocked={depsBlocked}
             role="listitem"
             draggable="true"
             ondragstart={(event) => handleDragStart(event, task.id)}
@@ -154,8 +178,26 @@
                 onclick={() => onDeleteTask(task.id)}><X size={13} /></button
               >
             </div>
-            <h3>{task.title}</h3>
+            <h3>
+              {#if depsBlocked}
+                <Lock size={12} aria-label={$translate('tasks.depsBlockedHint')} />
+              {/if}
+              {task.title}
+            </h3>
             {#if task.description}<p>{task.description}</p>{/if}
+            {#if task.dependencies.length > 0}
+              <div class="dependency-list">
+                <span class="dependency-label">{$translate('tasks.dependencies')}</span>
+                {#each task.dependencies as dependsOnId (dependsOnId)}
+                  {@const chip = dependencyChip(task.projectId, dependsOnId)}
+                  <span class="dependency-chip status-{chip.status}"
+                    >{#if chip.status === 'missing'}{$translate(
+                        'tasks.status.missing',
+                      )}{:else}{chip.label} · {taskStatusLabel(chip.status)}{/if}</span
+                  >
+                {/each}
+              </div>
+            {/if}
             {#if task.blockedReason}<code>{task.blockedReason}</code>{/if}
           </article>
         {/each}
@@ -256,6 +298,9 @@
   .board-card.is-blocked {
     border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
   }
+  .board-card.is-deps-blocked {
+    border-color: var(--warning);
+  }
   .board-card-top {
     display: flex;
     justify-content: space-between;
@@ -283,9 +328,46 @@
     color: var(--text);
   }
   .board-card h3 {
+    display: flex;
+    align-items: center;
+    gap: 5px;
     margin: 7px 0;
     font-size: var(--fs-sm);
     color: var(--text);
+  }
+  .board-card h3 :global(svg) {
+    flex-shrink: 0;
+    color: var(--warning);
+  }
+  .dependency-list {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 6px;
+    margin: 0 0 8px;
+  }
+  .dependency-label {
+    color: var(--muted);
+    font-size: var(--fs-2xs);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .dependency-chip {
+    padding: 2px 7px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--surface-2);
+    color: var(--muted);
+    font-size: var(--fs-2xs);
+    white-space: nowrap;
+  }
+  .dependency-chip.status-completed {
+    border-color: color-mix(in srgb, var(--success) 45%, var(--line));
+    color: var(--success);
+  }
+  .dependency-chip.status-missing {
+    border-color: var(--danger);
+    color: var(--danger);
   }
   .board-card p {
     display: -webkit-box;
