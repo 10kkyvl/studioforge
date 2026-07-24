@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"database/sql"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -10,11 +9,11 @@ import (
 	"io/fs"
 	"log/slog"
 	"mime"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -419,6 +418,31 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		if key == "playtest_window_seconds" {
+			seconds, err := strconv.Atoi(value)
+			if err != nil || seconds <= 0 {
+				writeError(w, r, 400, "invalid_playtest_window", "Playtest window must be a positive number of seconds", nil)
+				return
+			}
+		}
+		if key == "stuck_detection_enabled" && value != "true" && value != "false" {
+			writeError(w, r, 400, "invalid_stuck_detection", "Stuck detection must be true or false", nil)
+			return
+		}
+		if key == "stuck_idle_seconds" {
+			seconds, err := strconv.Atoi(value)
+			if err != nil || seconds <= 0 {
+				writeError(w, r, 400, "invalid_stuck_idle_seconds", "Stuck idle seconds must be a positive integer", nil)
+				return
+			}
+		}
+		if key == "stuck_repetition_cap" {
+			repetitions, err := strconv.Atoi(value)
+			if err != nil || repetitions <= 0 {
+				writeError(w, r, 400, "invalid_stuck_repetition_cap", "Stuck repetition cap must be a positive integer", nil)
+				return
+			}
+		}
 		if key == "openrouter_data_collection" && value != "" && value != "allow" && value != "deny" {
 			writeError(w, r, 400, "invalid_data_collection", "OpenRouter data collection must be allow or deny", nil)
 			return
@@ -465,7 +489,17 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	// Validate the complete request before persisting any entry. Map iteration
 	// order is intentionally undefined, so validation and mutation must be
 	// separate to prevent a rejected request from partially changing settings.
-	for key, value := range body {
+	// Every rejection applySetting can raise is duplicated in the validation
+	// pass above, so by this point only a storage failure can still stop the
+	// loop; the keys are walked in sorted order so that a failure leaves the
+	// same partial state on every run rather than a different one each time.
+	keys := make([]string, 0, len(body))
+	for key := range body {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		value := body[key]
 		if err := s.store.SetSetting(r.Context(), key, value); err != nil {
 			writeError(w, r, 500, "database_error", "Unable to save settings", err)
 			return
@@ -512,13 +546,19 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, 400, "path_error", err.Error(), nil)
 		return
 	}
-	project, err := s.store.CreateProject(r.Context(), models.Project{ID: id, Name: strings.TrimSpace(body.Name), Path: root, Fingerprint: projects.Fingerprint(root), Description: body.Description})
-	if err != nil {
-		writeError(w, r, 409, "project_conflict", "Unable to register project", err)
+	name := strings.TrimSpace(body.Name)
+	// The Rojo skeleton is written before the project row exists, so a
+	// filesystem failure here leaves nothing registered to clean up: the
+	// request fails and the operator can retry the same path. Registering
+	// first meant a failed scaffold answered 500 while still leaving a real
+	// project in the list.
+	if err := projects.Scaffold(root, name); err != nil {
+		writeError(w, r, 500, "scaffold_failed", "Project directory could not be prepared with its Rojo skeleton", err)
 		return
 	}
-	if err := projects.Scaffold(root, project.Name); err != nil {
-		writeError(w, r, 500, "scaffold_failed", "Project was registered but its Rojo skeleton could not be written", err)
+	project, err := s.store.CreateProject(r.Context(), models.Project{ID: id, Name: name, Path: root, Fingerprint: projects.Fingerprint(root), Description: body.Description})
+	if err != nil {
+		writeError(w, r, 409, "project_conflict", "Unable to register project", err)
 		return
 	}
 	studioNotice := ""
@@ -642,6 +682,14 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agent.ID, agent.ProjectID = r.PathValue("agentID"), r.PathValue("id")
+	// Same defaults createAgent applies: a form that submits only the fields it
+	// changes must not be rejected for omitting concurrency or budget.
+	if agent.Concurrency == 0 {
+		agent.Concurrency = 1
+	}
+	if agent.Budget == 0 {
+		agent.Budget = 10
+	}
 	if err := normalizeAgent(&agent); err != nil {
 		writeError(w, r, 400, "validation", err.Error(), nil)
 		return
@@ -871,6 +919,65 @@ func (s *Server) openStudio(w http.ResponseWriter, r *http.Request) {
 // site inside createRun.
 var testHookAfterInitialTaskReadinessCheck func()
 
+// subagentsFor is the delegation roster an orchestrator lead is handed: every
+// other enabled agent of the same project, so it can delegate through the
+// provider's native mechanism. A non-orchestrator lead gets none. Delegated
+// work is forwarded to the operator too, so a subagent carries the same house
+// rules about language and scope as the orchestrator that spawned it.
+func subagentsFor(lead models.Agent, all []models.Agent) []providers.Subagent {
+	if !strings.Contains(strings.ToLower(lead.Role), "orchestrator") {
+		return nil
+	}
+	var subagents []providers.Subagent
+	for _, candidate := range all {
+		if !candidate.Enabled || candidate.ID == lead.ID {
+			continue
+		}
+		subagents = append(subagents, providers.Subagent{Name: candidate.Name, Description: candidate.Role, Prompt: prompts.ForRun(candidate.SystemPrompt, "")})
+	}
+	return subagents
+}
+
+const checkpointLabel = "StudioForge checkpoint before agent run"
+
+// checkpointWritingProvider reports whether a provider's runs can change files
+// in the project directory and therefore need a rollback point taken first.
+// Claude Code edits files through its own tools; OpenRouter and NVIDIA runs do
+// it through agenttools' create_file/replace_exact_text/apply_patch/run_command.
+// Only mock, which never touches the filesystem, is left out.
+func checkpointWritingProvider(provider string) bool {
+	return provider == "claude" || provider == "openrouter" || provider == "nvidia"
+}
+
+// checkpointBeforeRun snapshots the project so the operator can revert an
+// agent's edits. Best effort: a non-git project or a hook failure never blocks
+// the run, but the failure is logged so an operator who loses `git revert`
+// coverage can find out why. A plan-mode run changes nothing and is skipped.
+func (s *Server) checkpointBeforeRun(project models.Project, provider, mode string) (hash, branch string) {
+	if !checkpointWritingProvider(provider) || mode == "plan" {
+		return "", ""
+	}
+	commit, onBranch, err := gitcheckpoint.Checkpoint(project.Path, checkpointLabel)
+	if err != nil {
+		s.logger.Warn("git checkpoint failed", "project_id", project.ID, "project_path", project.Path, "provider", provider, "error", err)
+		return "", ""
+	}
+	return commit, onBranch
+}
+
+// persistCheckpoint links a taken checkpoint to the run it protects. Best
+// effort for the same reason checkpointBeforeRun is: the commit already exists
+// on disk and is recoverable by hand even if this row never lands.
+func (s *Server) persistCheckpoint(ctx context.Context, runID, projectID, hash, branch string) {
+	if hash == "" {
+		return
+	}
+	checkpoint := models.Checkpoint{RunID: runID, ProjectID: projectID, CommitHash: hash, Branch: branch, Label: checkpointLabel, CreatedAt: time.Now().UTC()}
+	if err := s.store.CreateCheckpoint(ctx, checkpoint); err != nil {
+		s.logger.Warn("persist checkpoint failed", "run_id", runID, "project_id", projectID, "error", err)
+	}
+}
+
 func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	if s.safeMode {
 		writeError(w, r, 409, "safe_mode", "AI workers are disabled in safe mode", nil)
@@ -1041,33 +1148,11 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 			projectContext = strings.TrimSpace(projectContext + "\n\n" + block)
 		}
 	}
-	var subagents []providers.Subagent
-	if strings.Contains(strings.ToLower(agent.Role), "orchestrator") {
-		for _, candidate := range enabled {
-			if candidate.ID == agent.ID {
-				continue
-			}
-			// Delegated work is forwarded to the operator too, so a subagent needs the
-			// same rules about language and scope as the orchestrator that spawned it.
-			subagents = append(subagents, providers.Subagent{Name: candidate.Name, Description: candidate.Role, Prompt: prompts.ForRun(candidate.SystemPrompt, "")})
-		}
-	}
+	subagents := subagentsFor(agent, enabled)
 	// Carry the house rules and the project's standing context so the operator need
 	// not re-explain the project — or which language to answer in — on every message.
 	systemPrompt := prompts.ForRun(agent.SystemPrompt, projectContext)
-	const checkpointLabel = "StudioForge checkpoint before agent run"
-	var checkpointHash, checkpointBranch string
-	if agent.Provider == "claude" && body.Mode != "plan" {
-		// Snapshot the project so the operator can revert an agent's edits. Best
-		// effort: a non-git project or a hook failure never blocks the run, but the
-		// failure is logged so an operator who loses `git revert` coverage can find out why.
-		hash, branch, checkpointErr := gitcheckpoint.Checkpoint(project.Path, checkpointLabel)
-		if checkpointErr != nil {
-			s.logger.Warn("git checkpoint failed", "project_id", project.ID, "project_path", project.Path, "error", checkpointErr)
-		} else {
-			checkpointHash, checkpointBranch = hash, branch
-		}
-	}
+	checkpointHash, checkpointBranch := s.checkpointBeforeRun(project, agent.Provider, body.Mode)
 	if taskID != "" {
 		// Re-check right before submission, not just at the top of the
 		// handler: a dependency's status can change while the rest of this
@@ -1086,7 +1171,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	}
 	key := r.Header.Get("Idempotency-Key")
 	stuckDetectionEnabled := stuckSettings.Enabled && !agent.StuckDetectionDisabled && !stuckContinueSuppresses(prevStuckEscalated, rawPrompt)
-	run, created, err := s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: project.ID, AgentID: agent.ID, TaskID: body.TaskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, WorkingDirectory: project.Path, Prompt: body.Prompt, SystemPrompt: systemPrompt, Mode: body.Mode, ThreadID: thread.ID, ResumeThread: true, Scenario: body.Scenario, MaxBudget: maxBudget, AllowUnverifiedModel: agent.AllowUnverifiedModel, Resources: []string{"project:" + project.ID + ":write"}, IdempotencyKey: key, Subagents: subagents, ValidateAfterRun: agent.ValidateAfterRun, MaxCorrectionRuns: agent.MaxCorrectionRuns, StuckDetectionEnabled: stuckDetectionEnabled, StuckIdleSeconds: stuckSettings.IdleSeconds, StuckRepetitionCap: stuckSettings.RepetitionCap, Attachments: body.Attachments})
+	run, created, err := s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: project.ID, AgentID: agent.ID, TaskID: taskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, WorkingDirectory: project.Path, Prompt: body.Prompt, SystemPrompt: systemPrompt, Mode: body.Mode, ThreadID: thread.ID, ResumeThread: true, Scenario: body.Scenario, MaxBudget: maxBudget, AllowUnverifiedModel: agent.AllowUnverifiedModel, Resources: []string{"project:" + project.ID + ":write"}, IdempotencyKey: key, Subagents: subagents, ValidateAfterRun: agent.ValidateAfterRun, MaxCorrectionRuns: agent.MaxCorrectionRuns, StuckDetectionEnabled: stuckDetectionEnabled, StuckIdleSeconds: stuckSettings.IdleSeconds, StuckRepetitionCap: stuckSettings.RepetitionCap, Attachments: body.Attachments})
 	if err != nil {
 		writeError(w, r, 400, "run_error", err.Error(), nil)
 		return
@@ -1096,11 +1181,8 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 			s.logger.Warn("set task status failed", "task_id", taskID, "run_id", run.ID, "error", err)
 		}
 	}
-	if created && checkpointHash != "" {
-		checkpoint := models.Checkpoint{RunID: run.ID, ProjectID: project.ID, CommitHash: checkpointHash, Branch: checkpointBranch, Label: checkpointLabel, CreatedAt: time.Now().UTC()}
-		if err := s.store.CreateCheckpoint(r.Context(), checkpoint); err != nil {
-			s.logger.Warn("persist checkpoint failed", "run_id", run.ID, "project_id", project.ID, "error", err)
-		}
+	if created {
+		s.persistCheckpoint(r.Context(), run.ID, project.ID, checkpointHash, checkpointBranch)
 	}
 	status := 201
 	if !created {
@@ -1228,7 +1310,34 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		_, _, err = s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: run.ProjectID, AgentID: run.AgentID, TaskID: run.TaskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, WorkingDirectory: project.Path, Prompt: "Restart the interrupted task. Inspect the previous failure and complete the task with verification.", SystemPrompt: prompts.ForRun(agent.SystemPrompt, projects.LoadContext(project.Path)), MaxBudget: agent.Budget, AllowUnverifiedModel: agent.AllowUnverifiedModel, Resources: []string{"project:" + run.ProjectID + ":write"}})
+		// A restart is a fresh turn on the same thread, so it carries the same
+		// per-agent wiring a first run gets: the chat thread it belongs to (or
+		// its transcript never appears in the chat, and an OpenRouter run loses
+		// its history entirely), the agent's orchestrator subagents, its
+		// playtest-validation opt-in, and the stuck-detection safety net.
+		stuckSettings := scheduler.StuckSettings{Enabled: true, IdleSeconds: 600, RepetitionCap: 6}
+		if s.stuckSettings != nil {
+			stuckSettings = s.stuckSettings()
+		}
+		checkpointHash, checkpointBranch := s.checkpointBeforeRun(project, agent.Provider, "")
+		restarted, created, submitErr := s.scheduler.Submit(r.Context(), scheduler.Job{
+			ProjectID: run.ProjectID, AgentID: run.AgentID, TaskID: run.TaskID,
+			Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort,
+			PermissionProfile: agent.Permission, WorkingDirectory: project.Path,
+			Prompt:       "Restart the interrupted task. Inspect the previous failure and complete the task with verification.",
+			SystemPrompt: prompts.ForRun(agent.SystemPrompt, projects.LoadContext(project.Path)),
+			ThreadID:     run.ThreadID,
+			MaxBudget:    agent.Budget, AllowUnverifiedModel: agent.AllowUnverifiedModel,
+			Resources:        []string{"project:" + run.ProjectID + ":write"},
+			Subagents:        subagentsFor(*agent, agents),
+			ValidateAfterRun: agent.ValidateAfterRun, MaxCorrectionRuns: agent.MaxCorrectionRuns,
+			StuckDetectionEnabled: stuckSettings.Enabled && !agent.StuckDetectionDisabled,
+			StuckIdleSeconds:      stuckSettings.IdleSeconds, StuckRepetitionCap: stuckSettings.RepetitionCap,
+		})
+		err = submitErr
+		if err == nil && created {
+			s.persistCheckpoint(r.Context(), restarted.ID, project.ID, checkpointHash, checkpointBranch)
+		}
 	default:
 		writeError(w, r, 404, "not_found", "Unknown run action", nil)
 		return
@@ -1284,28 +1393,12 @@ func (s *Server) resumeRun(ctx context.Context, runID string) error {
 		return err
 	}
 	systemPrompt := prompts.ForRun(agent.SystemPrompt, projects.LoadContext(project.Path))
-	var subagents []providers.Subagent
-	if strings.Contains(strings.ToLower(agent.Role), "orchestrator") {
-		for _, candidate := range enabled {
-			if candidate.ID == agent.ID {
-				continue
-			}
-			subagents = append(subagents, providers.Subagent{Name: candidate.Name, Description: candidate.Role, Prompt: prompts.ForRun(candidate.SystemPrompt, "")})
-		}
-	}
+	subagents := subagentsFor(*agent, enabled)
 	stuckSettings := scheduler.StuckSettings{Enabled: true, IdleSeconds: 600, RepetitionCap: 6}
 	if s.stuckSettings != nil {
 		stuckSettings = s.stuckSettings()
 	}
-	const checkpointLabel = "StudioForge checkpoint before agent run"
-	var checkpointHash, checkpointBranch string
-	if agent.Provider == "claude" {
-		if hash, branch, checkpointErr := gitcheckpoint.Checkpoint(project.Path, checkpointLabel); checkpointErr != nil {
-			s.logger.Warn("git checkpoint failed", "project_id", project.ID, "project_path", project.Path, "error", checkpointErr)
-		} else {
-			checkpointHash, checkpointBranch = hash, branch
-		}
-	}
+	checkpointHash, checkpointBranch := s.checkpointBeforeRun(project, agent.Provider, "")
 	newRun, created, err := s.scheduler.Submit(ctx, scheduler.Job{
 		ProjectID: project.ID, AgentID: agent.ID, TaskID: run.TaskID,
 		Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort,
@@ -1319,11 +1412,8 @@ func (s *Server) resumeRun(ctx context.Context, runID string) error {
 	if err != nil {
 		return err
 	}
-	if created && checkpointHash != "" {
-		checkpoint := models.Checkpoint{RunID: newRun.ID, ProjectID: project.ID, CommitHash: checkpointHash, Branch: checkpointBranch, Label: checkpointLabel, CreatedAt: time.Now().UTC()}
-		if err := s.store.CreateCheckpoint(ctx, checkpoint); err != nil {
-			s.logger.Warn("persist checkpoint failed", "run_id", newRun.ID, "project_id", project.ID, "error", err)
-		}
+	if created {
+		s.persistCheckpoint(ctx, newRun.ID, project.ID, checkpointHash, checkpointBranch)
 	}
 	return nil
 }
@@ -1464,7 +1554,11 @@ func (s *Server) sse(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
-	stream, cancel := s.hub.Subscribe(256)
+	// Sized for the backlog that builds up while the replay below is still
+	// paging through history: the hub drops a subscriber whose buffer fills,
+	// which costs the client a reconnect and every transient partial-message
+	// chunk that was in flight.
+	stream, cancel := s.hub.Subscribe(2048)
 	defer cancel()
 	send := func(event models.RunEvent) error {
 		body, err := json.Marshal(event)
@@ -1652,8 +1746,3 @@ func writeTaskDependenciesIncomplete(w http.ResponseWriter, r *http.Request, blo
 	}
 	writeErrorDetails(w, r, 409, "task_dependencies_incomplete", message, map[string]any{"blockers": details}, nil)
 }
-
-var _ = context.Canceled
-var _ = errors.Is
-var _ = sql.ErrNoRows
-var _ = net.IPv4len

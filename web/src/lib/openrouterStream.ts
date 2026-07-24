@@ -12,6 +12,14 @@ function textOf(event: RunEvent): string {
   return typeof text === 'string' ? text : '';
 }
 
+// A retried request re-streams the whole answer from the beginning. The
+// provider marks that restart so the text accumulated from the failed attempt
+// is dropped instead of being prefixed onto the new one.
+function isReset(event: RunEvent): boolean {
+  if (!event.payload || typeof event.payload !== 'object') return false;
+  return (event.payload as Record<string, unknown>).reset === true;
+}
+
 function withText(event: RunEvent, text: string): RunEvent {
   return { ...event, payload: { ...(event.payload as Record<string, unknown>), text } };
 }
@@ -31,11 +39,13 @@ export function aggregateOpenRouterMessages(events: RunEvent[]): RunEvent[] {
     const position = positions.get(key);
     if (position === undefined) {
       positions.set(key, result.length);
-      result.push(event);
+      result.push(isReset(event) ? withText(event, '') : event);
       continue;
     }
     if (rawType.endsWith('.message')) {
       result[position] = event;
+    } else if (isReset(event)) {
+      result[position] = withText(result[position], '');
     } else {
       result[position] = withText(result[position], textOf(result[position]) + textOf(event));
     }

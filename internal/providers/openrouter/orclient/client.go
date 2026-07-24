@@ -108,6 +108,16 @@ func (c *Client) StreamChat(ctx context.Context, req ChatRequest, sink Sink) (*C
 	url := c.baseURL + "/chat/completions"
 
 	var last *Completion
+	// streamed tracks whether any attempt has already handed text to the sink.
+	// A retry re-sends the whole response from the beginning, so the sink is
+	// told to discard what it accumulated; without that the UI showed the
+	// answer twice, concatenated.
+	streamed := false
+	notifyRestart := func() {
+		if streamed && sink != nil {
+			sink(Delta{Restart: true})
+		}
+	}
 	for attempt := 0; ; attempt++ {
 		httpReq, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 		if reqErr != nil {
@@ -121,12 +131,16 @@ func (c *Client) StreamChat(ctx context.Context, req ChatRequest, sink Sink) (*C
 			if !c.retry(ctx, attempt, apiErr, nil) {
 				return last, apiErr
 			}
+			notifyRestart()
 			continue
 		}
 
 		if resp.StatusCode == http.StatusOK {
 			completion, streamErr := c.readStream(ctx, resp, sink)
 			resp.Body.Close()
+			if completion != nil && completion.Content != "" {
+				streamed = true
+			}
 			if streamErr == nil {
 				return completion, nil
 			}
@@ -135,6 +149,7 @@ func (c *Client) StreamChat(ctx context.Context, req ChatRequest, sink Sink) (*C
 			if !errors.As(streamErr, &apiErr) || !c.retry(ctx, attempt, apiErr, nil) {
 				return completion, streamErr
 			}
+			notifyRestart()
 			continue
 		}
 
@@ -143,6 +158,7 @@ func (c *Client) StreamChat(ctx context.Context, req ChatRequest, sink Sink) (*C
 		apiErr := c.parseErrorBody(resp.StatusCode, errBody)
 		apiErr.RetryAfter = parseRetryAfter(resp.Header)
 		if c.retry(ctx, attempt, apiErr, resp.Header) {
+			notifyRestart()
 			continue
 		}
 		return nil, apiErr

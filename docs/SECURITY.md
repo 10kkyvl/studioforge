@@ -82,6 +82,16 @@ directly, and does not open any listener other than the one loopback (or explici
   (`shell: true`) is refused outside `danger-full-access`, `workspace-write` restricts it to a fixed
   allowlist of command names, and `danger-full-access` allows an arbitrary command with the full
   filesystem permissions of the user account — the same ceiling a Claude run already has.
+- **The `workspace-write` command allowlist is a barrier, not a sandbox.** It refuses the direct
+  escapes — inline code execution (`node -e`, `node --eval`, `node -p`, `python -c`, `python3 -c`
+  and their long forms), `go run`, and `npx`, which fetches and runs an arbitrary package — so an
+  allowlisted interpreter cannot be turned into "run this source text". What it cannot do is contain
+  the allowlisted build tools themselves: a profile that can both write files and run `go test`,
+  `npm run`, `make` or `cargo` can always arrange to execute code by writing it into a test file, an
+  npm script or a Makefile recipe first. Treat `workspace-write` as "this agent can run code in this
+  project", not as isolation, and reserve `danger-full-access` for when you also want it reaching
+  outside the project. Real isolation would need an OS-level sandbox, which StudioForge does not
+  currently implement — see [docs/KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
 
 ## Roblox Studio access
 

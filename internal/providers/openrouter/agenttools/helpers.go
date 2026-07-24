@@ -84,6 +84,25 @@ func atomicWriteFile(path string, data []byte) error {
 	return nil
 }
 
+// TruncateBytes cuts s to at most limit bytes without splitting a UTF-8
+// sequence, so truncated tool output stays valid text instead of ending in a
+// replacement character once it is marshalled into a tool result.
+func TruncateBytes(s string, limit int) string { return truncateBytes(s, limit) }
+
+func truncateBytes(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(s) <= limit {
+		return s
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
 func replaceUnique(content, oldText, newText string) (string, error) {
 	count := strings.Count(content, oldText)
 	if count == 0 {

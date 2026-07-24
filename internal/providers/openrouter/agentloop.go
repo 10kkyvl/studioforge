@@ -24,6 +24,13 @@ const (
 	maxTruncatedContent = 4096
 )
 
+// writeToolNames are the tools whose success means the run changed something
+// on disk. Seeing one resets the identical-tool-call repeat guard, which would
+// otherwise count a legitimately recurring read across an entire run.
+var writeToolNames = map[string]bool{
+	"create_file": true, "replace_exact_text": true, "apply_patch": true, "create_dir": true,
+}
+
 type handle struct {
 	events chan providers.Event
 	done   chan struct{}
@@ -432,6 +439,14 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, priorM
 		}
 
 		sink := func(d orclient.Delta) {
+			if d.Restart {
+				// The request is being retried and the whole answer is about to
+				// stream again from the start. Tell the UI to drop what it has
+				// for this turn so the retried text replaces it rather than
+				// being appended to what the failed attempt already showed.
+				emit(ctx, h, sessionID, providers.Event{Type: "message", RawType: rawType("message.partial"), Payload: map[string]any{"text": "", "turn": turn, "reset": true}})
+				return
+			}
 			if d.Reasoning && !reasoningNotified {
 				reasoningNotified = true
 				emit(ctx, h, sessionID, providers.Event{Type: "status", RawType: rawType("reasoning"), Payload: map[string]any{"message": "Model is reasoning…", "turn": turn}})
@@ -614,11 +629,16 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, priorM
 				}
 				totalOutput += len(content)
 				if totalOutput > maxTotalOutputBytes {
-					if len(content) > maxTruncatedContent {
-						content = content[:maxTruncatedContent]
-					}
+					content = agenttools.TruncateBytes(content, maxTruncatedContent)
 					content += "\n... (truncated: run tool-output budget exceeded)"
 					forceFinal = true
+				}
+				// A write tool is real progress, so the repeat guard's history
+				// starts over: a read or status call that legitimately recurs
+				// between edits must not accumulate toward the cap for the
+				// whole run.
+				if writeToolNames[tc.Function.Name] {
+					repeatCounts = map[string]int{}
 				}
 			}
 

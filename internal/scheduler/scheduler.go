@@ -921,11 +921,22 @@ func first(values []string) string {
 func (m *Manager) finished(j *Job) {
 	m.mu.Lock()
 	delete(m.active, j.RunID)
-	m.projectActive[j.ProjectID]--
-	m.providerActive[j.Provider]--
-	m.modelActive[j.Provider+":"+j.Model]--
+	decrement(m.projectActive, j.ProjectID)
+	decrement(m.providerActive, j.Provider)
+	decrement(m.modelActive, j.Provider+":"+j.Model)
 	m.mu.Unlock()
 	m.signal()
+}
+
+// decrement drops a concurrency counter, removing the key once it reaches
+// zero. Leaving zero entries behind would grow these maps by one entry per
+// distinct project and model the daemon ever ran, for the daemon's lifetime.
+func decrement(counts map[string]int, key string) {
+	if counts[key] <= 1 {
+		delete(counts, key)
+		return
+	}
+	counts[key]--
 }
 func (m *Manager) fail(ctx context.Context, j *Job, message string) {
 	if err := m.store.UpdateRun(ctx, j.RunID, "failed", "failed", "", message); err != nil {

@@ -34,12 +34,16 @@ type StuckSettings struct {
 	RepetitionCap int
 }
 
-// stuckFileEditTools are Claude's own built-in tools that change a file on
-// disk, as opposed to a Studio MCP tool (start_stop_play, get_console_output,
-// and the rest) that only observes or drives an already-open Studio. Seeing
-// one of these means the run made real progress, so the repetition heuristic
-// resets rather than counting it as part of a stuck loop.
-var stuckFileEditTools = map[string]bool{"Edit": true, "Write": true, "MultiEdit": true}
+// stuckFileEditTools are the tools that change a file on disk, as opposed to a
+// Studio MCP tool (start_stop_play, get_console_output, and the rest) that only
+// observes or drives an already-open Studio. Seeing one of these means the run
+// made real progress, so the repetition heuristic resets rather than counting
+// it as part of a stuck loop. Both toolsets are listed: Claude Code's own
+// built-ins and the agenttools write tools an OpenRouter or NVIDIA run uses.
+var stuckFileEditTools = map[string]bool{
+	"Edit": true, "Write": true, "MultiEdit": true,
+	"create_file": true, "replace_exact_text": true, "apply_patch": true,
+}
 
 func isFileEditTool(name string) bool { return stuckFileEditTools[name] }
 
@@ -124,6 +128,39 @@ func toolResultText(payload any) string {
 		return ""
 	}
 	return strings.Join(parts, "\n")
+}
+
+// agentLoopToolName pulls the tool name out of the in-process agent loop's own
+// "tool.call" event (internal/providers/openrouter/agentloop.go), which every
+// OpenRouter and NVIDIA run emits instead of Claude's nested tool_use content
+// blocks. Without this the repetition heuristic saw nothing at all on those
+// providers and only the idle check could ever fire.
+func agentLoopToolName(rawType string, payload any) string {
+	if rawType != "tool.call" {
+		return ""
+	}
+	decoded, ok := payload.(map[string]any)
+	if !ok {
+		return ""
+	}
+	name, _ := decoded["tool"].(string)
+	return name
+}
+
+// agentLoopToolResult is agentLoopToolName's counterpart for "tool.result":
+// the observation text the repetition heuristic dedupes on, so a loop that
+// keeps reading the same output is told apart from one still learning
+// something new each cycle.
+func agentLoopToolResult(rawType string, payload any) string {
+	if rawType != "tool.result" {
+		return ""
+	}
+	decoded, ok := payload.(map[string]any)
+	if !ok {
+		return ""
+	}
+	text, _ := decoded["result"].(string)
+	return text
 }
 
 // maxStuckCycleLen bounds how long a repeated tool-call cycle detectRepeatedCycle
@@ -269,23 +306,17 @@ func (m *Manager) trackStuckSignals(e *execution, event providers.Event) {
 			return
 		}
 		for _, name := range toolUseNames(event.Payload) {
-			if isFileEditTool(name) {
-				e.toolCallsSinceEdit = nil
-				e.obsCountAtToolCall = nil
-				e.distinctObservations = nil
-				e.recentObservations = nil
-				continue
-			}
-			e.toolCallsSinceEdit = append(e.toolCallsSinceEdit, name)
-			e.obsCountAtToolCall = append(e.obsCountAtToolCall, len(e.distinctObservations))
-			if len(e.toolCallsSinceEdit) > maxStuckToolHistory {
-				trim := len(e.toolCallsSinceEdit) - maxStuckToolHistory
-				e.toolCallsSinceEdit = e.toolCallsSinceEdit[trim:]
-				e.obsCountAtToolCall = e.obsCountAtToolCall[trim:]
-			}
+			e.recordToolCall(name)
 		}
 	case "tool":
+		if name := agentLoopToolName(event.RawType, event.Payload); name != "" {
+			e.recordToolCall(name)
+			return
+		}
 		text := toolResultText(event.Payload)
+		if text == "" {
+			text = agentLoopToolResult(event.RawType, event.Payload)
+		}
 		if text == "" {
 			return
 		}
@@ -300,6 +331,27 @@ func (m *Manager) trackStuckSignals(e *execution, event providers.Event) {
 		if len(e.recentObservations) > maxStuckObservations {
 			e.recentObservations = e.recentObservations[len(e.recentObservations)-maxStuckObservations:]
 		}
+	}
+}
+
+// recordToolCall folds one tool call into the repetition heuristic's window:
+// a file-edit tool is real progress and clears the window entirely, anything
+// else extends it, paired with how many distinct observations had been seen by
+// that point. Owned by the run's own goroutine, like the fields it writes.
+func (e *execution) recordToolCall(name string) {
+	if isFileEditTool(name) {
+		e.toolCallsSinceEdit = nil
+		e.obsCountAtToolCall = nil
+		e.distinctObservations = nil
+		e.recentObservations = nil
+		return
+	}
+	e.toolCallsSinceEdit = append(e.toolCallsSinceEdit, name)
+	e.obsCountAtToolCall = append(e.obsCountAtToolCall, len(e.distinctObservations))
+	if len(e.toolCallsSinceEdit) > maxStuckToolHistory {
+		trim := len(e.toolCallsSinceEdit) - maxStuckToolHistory
+		e.toolCallsSinceEdit = e.toolCallsSinceEdit[trim:]
+		e.obsCountAtToolCall = e.obsCountAtToolCall[trim:]
 	}
 }
 

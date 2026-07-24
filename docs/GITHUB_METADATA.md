@@ -1,6 +1,6 @@
 # GitHub repository metadata (ready to paste)
 
-Values below are drafted for StudioForge's current public beta, heading toward the v0.5.0-rc.1
+Values below are drafted for StudioForge's current public beta, at the v0.5.0-rc.2
 release candidate. Every URL below is real (the repository and its releases page); there is no
 hosted docs site or demo site, so none is invented here.
 
@@ -50,7 +50,7 @@ For the 1280x640 social preview image (plain text overlay, no invented metrics):
 ```
 StudioForge
 AI coding agents for your Roblox project — local, open-source, one project at a time
-Public beta · v0.5.0-rc.1
+Public beta · v0.5.0-rc.2
 ```
 
 ## Reddit announcement (r/robloxgamedev style)
@@ -73,7 +73,7 @@ Providers: Claude Code (if you already have the CLI installed and signed in), Op
 NIM (bring your own free-tier API key), or a deterministic --mock demo mode that needs no accounts
 at all.
 
-Honest state of things: this is public beta software heading toward a v0.5.0-rc.1 release
+Honest state of things: this is public beta software at the v0.5.0-rc.2 release
 candidate, not a finished product. The Windows and macOS (Apple silicon) packages are unsigned, so
 expect a SmartScreen/Gatekeeper warning on first run. Task dependencies aren't enforced yet when
 starting a run, and project memory has no management UI yet. It's local-only — a loopback listener
@@ -105,7 +105,7 @@ You can point it at Claude Code (using your existing local CLI login), OpenRoute
 (both bring-your-own-API-key), or run it with a built-in --mock demo mode that needs no account at
 all.
 
-This is public beta software, currently heading toward a v0.5.0-rc.1 release candidate — expect
+This is public beta software, currently at the v0.5.0-rc.2 release candidate — expect
 rough edges. Windows and macOS (Apple silicon) builds are unsigned for now, so you'll see a
 SmartScreen or Gatekeeper warning on first launch. A few things are still partial: task dependencies
 aren't yet enforced when a run starts, and project memory (auto-collected from past runs) doesn't
@@ -129,12 +129,12 @@ output, per-run diffs, git rollback, task board, Rojo/Studio live-sync. Public b
 builds, feedback wanted. https://github.com/10kkyvl/studioforge
 ```
 
-## Draft GitHub Release — v0.5.0-rc.1
+## Draft GitHub Release — v0.5.0-rc.2
 
 **Title:**
 
 ```
-v0.5.0-rc.1 — release candidate
+v0.5.0-rc.2 — release candidate
 ```
 
 **Summary:**
@@ -143,7 +143,11 @@ v0.5.0-rc.1 — release candidate
 StudioForge is a free, open-source desktop app for Roblox creators: a single binary with a local
 web UI (Go backend, Svelte frontend) that runs AI coding agents against your Roblox/Rojo project.
 
-This release candidate carries forward the public beta: create a project, queue a prompt-driven
+This release candidate is a fix-only follow-up to v0.5.0-rc.1: Restart now keeps the run in its
+chat and takes a Git checkpoint, Git checkpoints and stuck-run detection cover every provider
+rather than only Claude, the Studio launcher no longer leaves processes behind on Windows, and a
+retried answer is no longer shown twice. It carries forward everything rc.1 offered: create a
+project, queue a prompt-driven
 run, watch its output stream live, review a per-run diff, and roll back to a git checkpoint if a run
 goes wrong. The task board supports dependencies with cycle validation, Rojo live-sync pushes files
 into an open Roblox Studio session, and the Sessions view can discover and bind open Studio

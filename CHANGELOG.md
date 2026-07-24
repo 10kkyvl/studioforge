@@ -8,6 +8,74 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ## [Unreleased]
 
+## [0.5.0-rc.2] - 2026-07-25
+
+### Fixed
+
+- **Restarting a run no longer loses the chat thread or the agent's own settings.** A restart
+  submitted a stripped-down job: no `threadId`, no orchestrator subagents, no playtest-validation
+  opt-in, and no stuck-detection settings. The restarted run therefore never appeared in the chat it
+  belonged to, ran without the stuck-detection safety net, and — on OpenRouter and NVIDIA, whose
+  history is keyed by thread — started with no conversation history at all. A restart now carries the
+  same wiring a first run gets, and takes its own Git checkpoint like every other run
+  (`internal/api/api.go`).
+- **`apply_patch` is now genuinely all-or-nothing, as its description always claimed.** Preparation
+  was transactional but the write pass was not: a failure on the third file left the first two
+  changed on disk while the model was told the patch had not applied. A failed write now restores
+  every file it already wrote, and says so explicitly if the rollback itself fails
+  (`internal/providers/openrouter/agenttools/tool_fs_write.go`).
+- **Studio MCP launcher processes are no longer left running.** The launcher was started without the
+  process-group/job-object setup the rest of the daemon uses, and closing the transport killed only
+  the launcher itself — on Windows that left the `StudioMCP.exe` grandchild alive after every probe,
+  and the Studio badge probes regularly. The launcher now runs in its own process tree and the whole
+  tree is terminated on close (`internal/roblox/mcp/transport.go`).
+- **A retried OpenRouter/NVIDIA request no longer shows its answer twice.** A transient failure
+  partway through a streamed response is retried automatically, which re-streams the whole answer
+  from the beginning; the chat appended it to the half-answer already on screen. The retry now
+  signals the restart and the UI drops the partial text before the new attempt streams in
+  (`internal/providers/openrouter/orclient`, `web/src/lib/openrouterStream.ts`).
+- **Two concurrent run submissions with the same `Idempotency-Key` no longer fail with a database
+  constraint error.** Both missed the pre-insert lookup and the loser surfaced a raw UNIQUE
+  violation; the insert now resolves the conflict and returns the run the winner created
+  (`internal/database/runs.go`).
+- **Saving settings can no longer fail halfway with part of the request applied.** Every rejection
+  the apply step can raise is now checked in the validation pass that runs before anything is
+  written, and the write pass walks keys in a fixed order (`internal/api/api.go`).
+- **A project whose Rojo skeleton could not be written is no longer registered anyway.** The
+  scaffold is now created before the project row exists, so a filesystem failure leaves nothing
+  behind instead of answering 500 while adding a real project to the list (`internal/api/api.go`).
+- **Editing an agent no longer fails when the form omits concurrency or budget.** Update now applies
+  the same defaults create does (`internal/api/api.go`).
+- **The live event stream survives a large history replay.** A subscriber whose buffer filled was
+  dropped by the hub, costing a reconnect and every streaming chunk in flight; the stream's buffer
+  is now sized for the backlog that builds up during replay (`internal/api/api.go`).
+- Truncated tool output no longer cuts a multi-byte character in half, which turned the last
+  character of a clipped line into a replacement character
+  (`internal/providers/openrouter/agenttools`, `internal/providers/openrouter/agentloop.go`).
+- The scheduler's per-project, per-provider and per-model concurrency counters no longer keep a
+  zero-valued entry for every project and model the daemon has ever run (`internal/scheduler`).
+
+### Changed
+
+- **Git checkpoints now cover OpenRouter and NVIDIA runs, not just Claude.** Those providers write
+  files through the same tools every other run uses, but no rollback point was taken before they
+  started, so the per-run "roll back" action had nothing to roll back to. Every provider that can
+  change files now gets a checkpoint before it starts; plan-mode runs, which change nothing, still
+  skip it (`internal/api/api.go`).
+- **Stuck-run detection now works on OpenRouter and NVIDIA, not only Claude.** The repeated-tool-cycle
+  check only understood Claude's event shape, so on other providers the setting was on but only the
+  idle check could ever fire. The in-process agent loop's own tool-call and tool-result events now
+  feed the same heuristic, and its write tools count as progress and reset the window the same way
+  Claude's edit tools do (`internal/scheduler/stuck.go`).
+- **The `workspace-write` command allowlist refuses the obvious ways around it.** Inline code
+  execution (`node -e`, `python -c` and their long forms), `go run`, and `npx` — which fetches and
+  runs an arbitrary package — now require `danger-full-access`. `docs/SECURITY.md` states plainly
+  that the allowlist is a barrier, not a sandbox: a profile that can both write files and run a
+  build tool can always arrange to execute code (`internal/providers/openrouter/agenttools`).
+- The identical-tool-call repeat guard in the OpenRouter/NVIDIA agent loop resets after a write tool
+  succeeds, so a read that legitimately recurs between edits no longer accumulates toward the cap
+  across a whole run (`internal/providers/openrouter/agentloop.go`).
+
 ## [0.5.0-rc.1] - 2026-07-24
 
 ### Added
