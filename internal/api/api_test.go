@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -551,5 +552,46 @@ func TestStaticExistingJSAssetServedWithCorrectContentType(t *testing.T) {
 	contentType := recorder.Header().Get("Content-Type")
 	if !strings.HasPrefix(contentType, "text/javascript") && !strings.HasPrefix(contentType, "application/javascript") {
 		t.Fatalf("content-type=%s", contentType)
+	}
+}
+func TestStaticIndexAndFallbackUseNoCacheHeader(t *testing.T) {
+	a := newTestAPI(t)
+	for _, path := range []string{"/", "/index.html"} {
+		request := httptest.NewRequest("GET", "http://127.0.0.1:1234"+path, nil)
+		recorder := httptest.NewRecorder()
+		a.handler.ServeHTTP(recorder, request)
+		if recorder.Code != 200 {
+			t.Fatalf("path=%s status=%d body=%s", path, recorder.Code, recorder.Body.String())
+		}
+		if cacheControl := recorder.Header().Get("Cache-Control"); cacheControl != "no-cache" {
+			t.Fatalf("path=%s cache-control=%s", path, cacheControl)
+		}
+	}
+}
+func TestStaticImmutableAssetUsesLongLivedCacheHeader(t *testing.T) {
+	a := newTestAPI(t)
+	var assetPath string
+	if err := fs.WalkDir(a.server.assets, "_app/immutable", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && assetPath == "" {
+			assetPath = path
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if assetPath == "" {
+		t.Fatal("no embedded assets found under _app/immutable")
+	}
+	request := httptest.NewRequest("GET", "http://127.0.0.1:1234/"+assetPath, nil)
+	recorder := httptest.NewRecorder()
+	a.handler.ServeHTTP(recorder, request)
+	if recorder.Code != 200 {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if cacheControl := recorder.Header().Get("Cache-Control"); cacheControl != "public, max-age=31536000, immutable" {
+		t.Fatalf("cache-control=%s", cacheControl)
 	}
 }

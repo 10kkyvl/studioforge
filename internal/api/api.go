@@ -1477,6 +1477,11 @@ func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 	}
 	// path is reassigned to "index.html" above on fallback, so the content type below is
 	// always derived from what was actually written, never from the originally requested path.
+	if strings.HasPrefix(path, "_app/immutable/") {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "no-cache")
+	}
 	w.Header().Set("Content-Type", contentTypeFor(path))
 	_, _ = w.Write(body)
 }
