@@ -11,4 +11,9 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
   reporter: [['list']],
+  projects: [
+    { name: 'e2e', testMatch: /studioforge\.spec\.ts/ },
+    { name: 'screenshots', testMatch: /screenshots\.spec\.ts/ },
+    { name: 'social', testMatch: /social-preview\.spec\.ts/ },
+  ],
 });

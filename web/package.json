@@ -1,7 +1,7 @@
 {
   "name": "studioforge-web",
   "private": true,
-  "version": "0.5.0-alpha.1",
+  "version": "0.5.0-rc.1",
   "type": "module",
   "engines": {
     "node": ">=22.0.0"
@@ -13,7 +13,9 @@
     "lint": "prettier --check .",
     "format": "prettier --write .",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test --project=e2e",
+    "screenshots": "playwright test --project=screenshots",
+    "screenshots:social": "playwright test --project=social"
   },
   "devDependencies": {
     "@playwright/test": "1.61.1",
