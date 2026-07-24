@@ -46,8 +46,8 @@ redaction and automatic history cleanup), and a hardened release pipeline. / v0.
 - **Old run history now cleans itself up automatically.** By default, StudioForge keeps the detailed,
   step-by-step trace of a finished run for 90 days, then quietly prunes it in the background — your
   chat messages, run summaries, costs, and checkpoints are never touched, only the verbose internal
-  trace. You can change how long it's kept (or turn this off) in Settings, or trigger a cleanup by
-  hand with `studioforge maintenance --prune-events`.
+  trace. The retention period is configurable via the `event_retention_days` setting (0 turns the
+  cleanup off), and `studioforge maintenance --prune-events` triggers a cleanup by hand.
 
 ### Release quality
 
@@ -80,8 +80,8 @@ redaction and automatic history cleanup), and a hardened release pipeline. / v0.
 
 ### Downloads and verification
 
-- `StudioForge-0.5.0-rc.1-windows-amd64.zip` — Windows (amd64).
-- `StudioForge-0.5.0-rc.1-macos-arm64.zip` — macOS (arm64).
+- `StudioForge-v0.5.0-rc.1-windows-amd64.zip` — Windows (amd64).
+- `StudioForge-v0.5.0-rc.1-macos-arm64.zip` — macOS (arm64).
 - `SHA256SUMS.txt` — checksums for both archives; verify with `sha256sum -c SHA256SUMS.txt` (or
   `Get-FileHash` on Windows) before running an unsigned binary you downloaded.
 - Both binaries are unsigned development builds — Windows SmartScreen and macOS Gatekeeper will warn on
@@ -134,8 +134,8 @@ string from `--version`, and, where possible, a `studioforge doctor --bundle` di
 - **Старая история запусков теперь очищается сама.** По умолчанию StudioForge хранит подробный,
   пошаговый след завершённого run'а 90 дней, а затем незаметно удаляет его в фоне — сообщения чата,
   сводки запусков, стоимость и checkpoints при этом никогда не трогаются, устаревает только подробный
-  внутренний след. Срок хранения можно изменить (или отключить очистку) в Settings, либо запустить
-  очистку вручную командой `studioforge maintenance --prune-events`.
+  внутренний след. Срок хранения задаётся настройкой `event_retention_days` (0 отключает очистку), а
+  команда `studioforge maintenance --prune-events` запускает очистку вручную.
 
 ### Качество релиза
 
@@ -167,8 +167,8 @@ string from `--version`, and, where possible, a `studioforge doctor --bundle` di
 
 ### Загрузка и проверка
 
-- `StudioForge-0.5.0-rc.1-windows-amd64.zip` — Windows (amd64).
-- `StudioForge-0.5.0-rc.1-macos-arm64.zip` — macOS (arm64).
+- `StudioForge-v0.5.0-rc.1-windows-amd64.zip` — Windows (amd64).
+- `StudioForge-v0.5.0-rc.1-macos-arm64.zip` — macOS (arm64).
 - `SHA256SUMS.txt` — контрольные суммы обоих архивов; проверяйте через `sha256sum -c SHA256SUMS.txt`
   (или `Get-FileHash` в Windows) перед запуском скачанного неподписанного бинарника.
 - Оба бинарника — неподписанные сборки для разработки: Windows SmartScreen и macOS Gatekeeper выдадут
