@@ -296,4 +296,4 @@ MIT — see [LICENSE](LICENSE).
 
 ## Project status
 
-Public beta. Prior alpha pre-releases (v0.1.0 through v0.5.0-alpha.1) established the feature set described above; this build is the first beta. There is still no stable interface — expect breaking changes between pre-release versions — and read [Known limitations](#known-limitations) before relying on any part of it.
+Public beta. Prior alpha pre-releases (v0.1.0 through v0.5.0-alpha.1) established the feature set described above; this build is v0.5.0-beta.3, the third beta following beta.1 and beta.2 (see [CHANGELOG.md](CHANGELOG.md)). There is still no stable interface — expect breaking changes between pre-release versions — and read [Known limitations](#known-limitations) before relying on any part of it.

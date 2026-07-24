@@ -6,7 +6,7 @@ This page includes the complete Russian guide below. For the full English guide,
 
 # Руководство StudioForge (русский)
 
-> **Публичная бета-версия.** Это предрелизная сборка (v0.5.0-beta.1). Часть описанных ниже функций реализована в коде, но пока не доступна из работающего приложения — такие места отмечены явно. Полную verification-матрицу см. в [Known Limitations](../KNOWN_LIMITATIONS.md).
+> **Публичная бета-версия.** Это предрелизная сборка (v0.5.0-beta.3). Часть описанных ниже функций реализована в коде, но пока не доступна из работающего приложения — такие места отмечены явно. Полную verification-матрицу см. в [Known Limitations](../KNOWN_LIMITATIONS.md).
 
 ## Установка
 
@@ -83,7 +83,7 @@ StudioForge получает список инструментов через ca
 
 ## Проекты, команды и конкурентность
 
-Project source остаётся в пользовательском каталоге; приложение хранит canonical path/fingerprint. Новый проект сразу получает default agent; при старте такой агент также добавляется старым проектам, у которых команды не было. В **Конструкторе команды** можно создавать, редактировать, включать/выключать и запускать агентов Claude Code, OpenRouter и mock. Опциональная `.agent/` может содержать `constitution.yaml` и `requirements.md` — StudioForge читает ровно эти два файла целиком и подставляет их в system prompt каждого run'а. Остальное содержимое `.agent/` (architecture, prompts, skills, memory) в этой альфа-версии не читается. Большие transcripts находятся в SQLite.
+Project source остаётся в пользовательском каталоге; приложение хранит canonical path/fingerprint. Новый проект сразу получает default agent; при старте такой агент также добавляется старым проектам, у которых команды не было. В разделе **Команда** можно создавать, редактировать, включать/выключать и запускать агентов Claude Code, OpenRouter и mock. Опциональная `.agent/` может содержать `constitution.yaml` и `requirements.md` — StudioForge читает ровно эти два файла целиком и подставляет их в system prompt каждого run'а. Остальное содержимое `.agent/` (architecture, prompts, skills, memory) в этой альфа-версии не читается. Большие transcripts находятся в SQLite.
 
 В **Настройки → Агенты и интеграции** задаются default provider/model/effort, общая параллельность, пути к Claude, Rojo, Git и Roblox Studio MCP, а также API-ключ OpenRouter. Пустое поле пути использует PATH/platform discovery. Изменения применяются сразу, а diagnostic cards показывают фактический путь (или, для OpenRouter, состояние ключа), версию, auth status и подсказку.
 

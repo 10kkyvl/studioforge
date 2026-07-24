@@ -126,7 +126,7 @@ scripted.
    ```
 
 2. **Register your project.** On the dashboard, click **New project**, fill in **Project name** and
-   **Canonical path** (point it at your directory; tick **Create directory if missing** if it does
+   **Project folder** (point it at your directory; tick **Create directory if missing** if it does
    not exist yet), leave **Open in Studio after creating** unchecked, and click **Register project**.
    This calls `POST /api/v1/projects`, which canonicalizes the path (resolving symlinks — see
    [docs/SECURITY.md](SECURITY.md#local-file-access)), writes `default.project.json` plus

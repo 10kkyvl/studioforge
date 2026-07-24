@@ -8,6 +8,78 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ## [Unreleased]
 
+## [0.5.0-beta.3] - 2026-07-24
+
+### Changed
+
+- Left navigation is grouped into three labeled sections — Work (Chat, Tasks), Project (Projects,
+  Overview, Team), Monitoring (Activity, Runs, Studio sessions) — plus a standalone Settings entry,
+  replacing a flat 9-item list (`web/src/routes/+page.svelte`'s `navGroups`, `web/src/app.css`). The
+  top bar's project selector is now hidden on the four views where it had no effect (Activity, Runs,
+  Studio sessions, Settings — `showProjectSwitch`), and the sidebar nav label for Activity is
+  shortened to "Activity"/«Активность» in both languages (the Activity view's own page heading is
+  unchanged: "Global activity"/«Общая активность»).
+- Typing `/` in the chat composer now opens a filterable slash-command menu
+  (`ChatView.svelte`'s `SLASH_COMMANDS`/`showSlashMenu`) listing `/task`, `/build`, `/playtest`,
+  `/plan`, `/do`, and `/open` with a localized one-line description for each, instead of requiring the
+  operator to already know a command's name.
+- Empty states are informative instead of misleading or absent: a fresh install's Projects view now
+  shows "No projects yet. Create the first one to get started." with a **New project** button, instead
+  of the filter-mismatch message it previously showed even with zero projects registered
+  (`ProjectsView.svelte`'s `hasAnyProjects`); the Tasks board, Runs list, and Chat thread list each get
+  a dedicated empty message instead of an empty board or blank panel; and Activity's empty-state text
+  no longer references a "demo run" button that does not exist.
+- Overview's project-health and git cards no longer show hardcoded fakes ("Verified" / "Active" for
+  every project regardless of its history): the health card now shows the project's actual last-run
+  status (or "No data yet" when it has none), and the git card reads "No data yet" until real git
+  status is wired up (`OverviewView.svelte`).
+- Dev-facing jargon is replaced with human, localized labels throughout Overview/Settings/Team/Studios:
+  effort levels (low/medium/high/xhigh → Low/Medium/High/Extra high), permission profiles
+  (read-only/workspace-write/danger-full-access → "Read only"/"Write in project"/"Full access
+  (unsafe)"), provider "Mock" → "Demo (no AI)", raw dependency/state codes (ok/missing/present/
+  active/stopped/none, play/edit) → localized words, server-default thread titles "New chat"/"Chat"
+  localized at render (`displayThreadTitle`), the seeded default agent role now localized instead of
+  hardcoded English, and the New Project dialog's "Canonical path" field relabeled "Project folder"
+  with an example-path hint.
+- Activity's table gained a time-updated column, empty resource cells now render nothing instead of a
+  dash, the Projects view's count label reads grammatically in Russian ("Проекты: 3" instead of a raw
+  pluralization glued to a number), an "All projects" chip appears on Team and Tasks when no project is
+  selected, and the first-run wizard now reassures that missing tools can be configured later in
+  Settings instead of only listing what's missing.
+
+### Fixed
+
+- The **Start agent run** button on project cards and the Overview, and the **Run this agent** button
+  on Team, silently did nothing when clicked. Both now open Chat with the corresponding project
+  selected; Team's variant also sets that agent as the thread's lead agent, via the new
+  `web/src/lib/uiIntents.ts` (`setPendingLeadAgent`) consumed by `ChatView.svelte`'s
+  `applyPendingLead`.
+- A failed run's `run.error` was recorded by the backend but never rendered anywhere in the UI. It now
+  shows as a danger banner in the Runs view's detail panel (`RunsView.svelte`), an error strip in Chat
+  for the thread's most recent failed run (`ChatView.svelte`'s `failedRunError`), and a hover tooltip
+  on a failed run's status chip in Activity (`ActivityView.svelte`).
+- The sidebar footer showed the literal run-status word "Interrupted"/«Прерван» whenever the live SSE
+  stream dropped, which read as a run problem rather than a connection problem. It now shows
+  "Online"/"Connection lost — reconnecting…" (`footer.online`/`footer.reconnecting`), and the footer
+  version no longer renders a doubled "vv" prefix
+  (`snapshot.diagnostics.version.replace(/^v/, '')` in `web/src/routes/+page.svelte`). The footer also
+  now shows a "Demo mode" chip under `--mock`.
+- The session-error screen shown for an invalid or expired local session had hardcoded English text and
+  a vague message; it is now localized in English and Russian with actionable copy ("Open StudioForge
+  again from the app…", new `session.title`/`session.body`/`session.retry` keys). Load and action
+  failures also now surface a human-readable reason through a new `friendlyError` mapping
+  (`web/src/lib/api.ts`) — timeout, network, session-expired (401/403), not-found (404), and server
+  error (5xx) — instead of a raw message like "HTTP 500".
+- A stale slash-command confirmation (e.g. from `/task` or `/plan`) could keep showing after switching
+  to a different thread or project. `ChatView.svelte` now clears `commandInfo` on both a thread switch
+  and a project switch.
+- The Runs view's own message composer, which created thread-less "orphan" runs duplicating what Chat
+  already does, is removed; the panel now shows a hint that new runs start from Chat
+  (`RunsView.svelte`).
+- Creating or updating an agent in Team showed the wrong toast text — creating one echoed the "Create
+  agent" button label and updating one echoed "Settings saved" — instead of a real confirmation; both
+  now show "Agent created"/"Agent updated" (`team.createdToast`/`team.updatedToast`).
+
 ## [0.5.0-beta.2] - 2026-07-23
 
 ### Fixed

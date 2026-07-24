@@ -1,6 +1,6 @@
 # StudioForge guide (English)
 
-> **Public beta.** This is a pre-release build (v0.5.0-beta.1). Some features described below are implemented in code but not yet reachable from the running app; each such case is marked explicitly. See [Known Limitations](../KNOWN_LIMITATIONS.md) for the full verification matrix.
+> **Public beta.** This is a pre-release build (v0.5.0-beta.3). Some features described below are implemented in code but not yet reachable from the running app; each such case is marked explicitly. See [Known Limitations](../KNOWN_LIMITATIONS.md) for the full verification matrix.
 
 ## Installation
 
