@@ -420,11 +420,10 @@ func TestRunRestartRechecksTaskReadiness(t *testing.T) {
 	if err := json.Unmarshal(submitted.Body.Bytes(), &run); err != nil {
 		t.Fatal(err)
 	}
+	waitRunStatus(t, a.store, run.ID, "completed", 10*time.Second)
 	if _, err := a.db.SQL.Exec("UPDATE runs SET status='interrupted' WHERE id=?", run.ID); err != nil {
 		t.Fatal(err)
 	}
-	// The dependency was completed at submit time; make it incomplete again
-	// before the restart.
 	if _, err := a.db.SQL.Exec("UPDATE tasks SET status='running' WHERE id='demo-obby-task-design'"); err != nil {
 		t.Fatal(err)
 	}
@@ -461,11 +460,10 @@ func TestRunResumeDoesNotRecheckTaskReadiness(t *testing.T) {
 	if err := json.Unmarshal(submitted.Body.Bytes(), &run); err != nil {
 		t.Fatal(err)
 	}
+	waitRunStatus(t, a.store, run.ID, "completed", 10*time.Second)
 	if _, err := a.db.SQL.Exec("UPDATE runs SET status='paused' WHERE id=?", run.ID); err != nil {
 		t.Fatal(err)
 	}
-	// The dependency that was fine at submit time is no longer complete: a
-	// resume must still be allowed to continue this already-started run.
 	if _, err := a.db.SQL.Exec("UPDATE tasks SET status='running' WHERE id='demo-obby-task-design'"); err != nil {
 		t.Fatal(err)
 	}
