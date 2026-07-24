@@ -3,7 +3,7 @@
 This is the detailed security model for StudioForge. The root [SECURITY.md](../SECURITY.md) is
 the short vulnerability-reporting policy; read this file for how the daemon actually behaves and
 why. Every claim below was checked against the code referenced next to it, on a repository with
-no prior public release (first tag will be `v0.1.0-alpha.1`).
+tagged pre-releases already published (latest `v0.5.0-beta.4`).
 
 ## Overview and the core assumption
 
@@ -243,22 +243,38 @@ directly, and does not open any listener other than the one loopback (or explici
   (`keychain`/`session`/`env`) — never the key itself — and `Doctor.ExportBundle` never includes it.
   An API key is required to use OpenRouter at all, including its free models.
 - Secret redaction (`internal/security/redact.go`) matches common patterns — `key=`/`token=`/
-  `password=`-style assignments, `sk-ant-...`/`sk-...` API key shapes, `Authorization: Bearer/Basic`
-  headers, and PEM private key blocks — and replaces matches with `[REDACTED]`. It has two production
-  call sites: the diagnostic bundle writer (`internal/diagnostics/doctor.go`, used by
-  `studioforge doctor --bundle` and described further in [Honest gaps](#honest-gaps-for-the-alpha-release)),
-  applied to the `doctor.json` report written into that zip, and `internal/database/runs.go`'s
-  `AppendEvents` — the single write path for every persisted `run_events` row — applied to each string
-  leaf of a run event's payload before it is written to SQLite. Redaction walks the payload's decoded
+  `password=`/`bootstrap=`/`cookie=`-style assignments, `sk-ant-...`/`sk-...`/`sk-or-...` and
+  `nvapi-...` API key shapes, `Authorization: Bearer/Basic` and `Cookie:` headers, query-string
+  secrets (`?api_key=`/`?token=`/`?session=`/`#bootstrap=`), and PEM private key blocks — and
+  replaces matches with `[REDACTED]`. It has three production call sites: the diagnostic bundle
+  writer (`internal/diagnostics/doctor.go`, used by `studioforge doctor --bundle` and described
+  further in [Honest gaps](#honest-gaps-for-the-beta-release)), applied to the `doctor.json` report
+  written into that zip; `internal/database/runs.go`'s `AppendEvents` — the single write path for
+  every persisted `run_events` row — applied to each string leaf of a run event's payload before it
+  is written to SQLite; and `internal/security.RedactingHandler` (`internal/security/logredact.go`),
+  which wraps the daemon's `slog` handler (`cmd/studioforge/main.go`'s `configureLogging`) so every
+  application log line — message text, plain attrs, nested groups, and `error`-typed values — is
+  redacted before it reaches stderr. The `mcp-shim` subcommand's stdout (MCP protocol traffic) and
+  `studioforge doctor`'s JSON report (printed directly, not through `slog`) never go through `slog`
+  at all, so the redacting handler does not touch them; the doctor bundle path already has its own
+  redaction call site above. Redaction on the `run_events` write path walks the payload's decoded
   value tree rather than the already-marshaled JSON text, so a match can only ever replace the content
   of a JSON string, never JSON structural characters, and can never corrupt the stored payload. Because
   redaction happens at write time, the raw secret is never durably stored at all — SSE, the chat
   transcript, the diff/checkpoint linkage, and portable export all read the persisted, already-redacted
-  payload back from `run_events`. It is still not wired into StudioForge's own `slog` application logs
-  — those are operational status text, not something this pass currently scans. Practically: **review a
-  diagnostic bundle, and review application logs, before sharing them** — the bundle's own
-  `README.json` entry already states plainly that secrets, environment variables, prompts, and project
-  source are not included in it by design.
+  payload back from `run_events`. Practically: **review a diagnostic bundle before sharing it** — the
+  bundle's own `README.json` entry already states plainly that secrets, environment variables,
+  prompts, and project source are not included in it by design.
+- **Event retention.** The `event_retention_days` setting (default 90, `0` disables pruning) bounds
+  how long verbose `run_events` rows survive for finished runs. A low-frequency maintenance loop
+  (`internal/database.Store.RunEventRetentionLoop`, started once the daemon is listening, and also
+  reachable on demand via `studioforge maintenance --prune-events`) deletes rows belonging to
+  terminal runs (`completed`/`failed`/`cancelled`) whose `finished_at` is older than the cutoff, in
+  bounded batches so it never holds a long write lock. It always keeps `event_type='message'` rows
+  that chat history actually reads (see `Store.ThreadMessages`), so pruning never erases a
+  project's chat transcript — only the verbose tool/status/usage events and streaming partial-message
+  chunks age out. Runs that are still active, and their events, are never touched regardless of age.
+  The maintenance loop logs only aggregate counts and durations, never event contents.
 
 ## Browser/session security
 
@@ -299,7 +315,7 @@ remote-authentication layer if you force it to, and assumes any code on the same
 could reach anything StudioForge or its subprocesses can reach — including, for OpenRouter, the same
 OS credential store StudioForge itself reads the API key from.
 
-## Honest gaps for the alpha release
+## Honest gaps for the beta release
 
 - Windows and macOS packages are **unsigned development builds**. Expect SmartScreen/Gatekeeper
   prompts; verify the published SHA-256 before running one.
