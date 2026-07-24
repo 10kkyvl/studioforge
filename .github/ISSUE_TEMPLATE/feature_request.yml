@@ -5,9 +5,10 @@ body:
   - type: markdown
     attributes:
       value: |
-        Please check [docs/ROADMAP.md](../blob/main/docs/ROADMAP.md) and the feature status table in the
-        README first. Several packages are already implemented but not connected to the running product —
-        wiring one of those up is usually more valuable than adding something new.
+        Please check [docs/ROADMAP.md](../blob/main/docs/ROADMAP.md), the feature status table in the
+        README, and [docs/KNOWN_LIMITATIONS.md](../blob/main/docs/KNOWN_LIMITATIONS.md) first — your idea
+        may already be a known limitation or a planned item, and closing one of those gaps is usually
+        more valuable than adding something new.
 
   - type: textarea
     id: problem

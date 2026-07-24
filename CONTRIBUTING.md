@@ -1,6 +1,6 @@
 # Contributing to StudioForge
 
-Thanks for considering a contribution. StudioForge is a public alpha maintained by a small number of people, so this guide is short on ceremony and specific about the things that actually cause problems.
+Thanks for considering a contribution. StudioForge is a public beta maintained by a small number of people, so this guide is short on ceremony and specific about the things that actually cause problems.
 
 ## Before you start
 

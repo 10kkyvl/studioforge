@@ -1,11 +1,5 @@
 name: Release
 
-# package.ps1 cross-builds and packages BOTH the Windows amd64 zip and the
-# macOS arm64 .app, plus a single SHA256SUMS.txt covering both.
-#
-# Packaging runs on an explicit tag push or a manual dispatch. Publishing is
-# tag-only and always creates a DRAFT release, so nothing becomes public until
-# a maintainer reviews the artifacts and presses Publish.
 on:
   push:
     tags: ['v*']
@@ -16,7 +10,7 @@ permissions:
 
 jobs:
   package:
-    runs-on: windows-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
         with: {fetch-depth: 0}
@@ -24,13 +18,98 @@ jobs:
         with: {node-version: 22, cache: npm, cache-dependency-path: web/package-lock.json}
       - uses: actions/setup-go@v5
         with: {go-version: '1.26.x', cache: true}
-      - shell: pwsh
-        run: ./scripts/package.ps1
+      - name: preflight
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: bash scripts/release-preflight.sh "$GITHUB_REF_NAME"
+      - run: bash scripts/package.sh
+      - name: verify-artifacts
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            bash scripts/verify-artifacts.sh "$GITHUB_REF_NAME"
+          else
+            bash scripts/verify-artifacts.sh
+          fi
       - uses: actions/upload-artifact@v4
         with: {name: release-artifacts, path: artifacts/*}
 
-  publish:
+  smoke-windows:
     needs: package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: {name: release-artifacts, path: artifacts}
+      - name: Extract windows archive
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem -Path artifacts -Filter 'StudioForge-*-windows-amd64.zip' | Select-Object -First 1
+          if (-not $zip) { throw 'smoke-windows: no StudioForge-*-windows-amd64.zip found in artifacts' }
+          Expand-Archive -LiteralPath $zip.FullName -DestinationPath $env:RUNNER_TEMP -Force
+          echo "SF_EXE=$env:RUNNER_TEMP\studioforge.exe" >> $env:GITHUB_ENV
+      - name: Version smoke test
+        shell: pwsh
+        run: |
+          $output = & "$env:SF_EXE" --version
+          Write-Host $output
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            if ($output -notmatch [regex]::Escape($env:GITHUB_REF_NAME)) { throw "smoke-windows: --version output '$output' does not contain tag $env:GITHUB_REF_NAME" }
+          }
+      - name: Health check
+        shell: pwsh
+        run: |
+          $dataDir = Join-Path $env:RUNNER_TEMP 'sf-data'
+          New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+          $proc = Start-Process -FilePath "$env:SF_EXE" -ArgumentList @('--mock', '--no-open', '--data-dir', $dataDir, '--port', '43117') -PassThru
+          try {
+            $healthy = $false
+            for ($i = 0; $i -lt 30; $i++) {
+              try {
+                $resp = Invoke-WebRequest -Uri 'http://127.0.0.1:43117/api/v1/health' -UseBasicParsing -TimeoutSec 5
+                if ($resp.StatusCode -eq 200) { $healthy = $true; break }
+              } catch {}
+              Start-Sleep -Seconds 2
+            }
+            if (-not $healthy) { throw 'smoke-windows: health endpoint did not return 200 within 60s' }
+          } finally {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            $proc.WaitForExit()
+          }
+
+  smoke-macos:
+    needs: package
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: {name: release-artifacts, path: artifacts}
+      - name: Smoke test macOS app
+        run: |
+          set -eu
+          zip=$(ls artifacts/StudioForge-*-macos-arm64.zip | head -n1)
+          extract=$(mktemp -d)
+          unzip -q "$zip" -d "$extract"
+          bin="$extract/StudioForge.app/Contents/MacOS/StudioForge"
+          test -x "$bin"
+          output=$("$bin" --version)
+          echo "$output"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "$output" | grep -qF "$GITHUB_REF_NAME"
+          fi
+          data_dir=$(mktemp -d)
+          "$bin" --mock --no-open --data-dir "$data_dir" --port 43117 &
+          pid=$!
+          healthy=0
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:43117/api/v1/health >/dev/null; then healthy=1; break; fi
+            sleep 2
+          done
+          kill -TERM "$pid"
+          wait "$pid" 2>/dev/null || true
+          if [ "$healthy" -ne 1 ]; then
+            echo "smoke-macos: health endpoint did not return 200 within 60s" >&2
+            exit 1
+          fi
+
+  publish:
+    needs: [smoke-windows, smoke-macos]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
