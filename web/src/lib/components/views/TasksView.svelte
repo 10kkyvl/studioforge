@@ -79,6 +79,7 @@
     <p class="eyebrow">{$translate('nav.tasks')}</p>
     <h1>{$translate('tasks.title')}</h1>
     <p>{$translate('tasks.subtitle')}</p>
+    {#if !project}<span class="chip">{$translate('common.allProjects')}</span>{/if}
   </div>
   <button class="primary" type="button" onclick={() => (showNewTask = !showNewTask)}
     ><Plus size={17} />{$translate('tasks.new')}</button
@@ -117,45 +118,51 @@
     {/if}
   </form>
 {/if}
-<section class="board">
-  {#each columns as column (column.key)}
-    <div
-      class="board-column"
-      role="list"
-      aria-label={$translate(column.label as TranslationKey)}
-      ondragover={(event) => event.preventDefault()}
-      ondrop={(event) => handleDrop(event, column.key)}
-    >
-      <header>
-        <h2>{$translate(column.label as TranslationKey)}</h2>
-        <span>{(grouped[column.key] ?? []).length}</span>
-      </header>
-      {#each grouped[column.key] ?? [] as task (task.id)}
-        <article
-          class="board-card"
-          class:is-blocked={task.status === 'blocked'}
-          role="listitem"
-          draggable="true"
-          ondragstart={(event) => handleDragStart(event, task.id)}
-        >
-          <div class="board-card-top">
-            <span class="priority">P{task.priority}</span>
-            <button
-              type="button"
-              class="delete-task"
-              aria-label={$translate('tasks.delete')}
-              title={$translate('tasks.delete')}
-              onclick={() => onDeleteTask(task.id)}><X size={13} /></button
-            >
-          </div>
-          <h3>{task.title}</h3>
-          {#if task.description}<p>{task.description}</p>{/if}
-          {#if task.blockedReason}<code>{task.blockedReason}</code>{/if}
-        </article>
-      {/each}
-    </div>
-  {/each}
-</section>
+{#if visibleTasks.length === 0}
+  <div class="empty">
+    <p>{$translate('tasks.empty')}</p>
+  </div>
+{:else}
+  <section class="board">
+    {#each columns as column (column.key)}
+      <div
+        class="board-column"
+        role="list"
+        aria-label={$translate(column.label as TranslationKey)}
+        ondragover={(event) => event.preventDefault()}
+        ondrop={(event) => handleDrop(event, column.key)}
+      >
+        <header>
+          <h2>{$translate(column.label as TranslationKey)}</h2>
+          <span>{(grouped[column.key] ?? []).length}</span>
+        </header>
+        {#each grouped[column.key] ?? [] as task (task.id)}
+          <article
+            class="board-card"
+            class:is-blocked={task.status === 'blocked'}
+            role="listitem"
+            draggable="true"
+            ondragstart={(event) => handleDragStart(event, task.id)}
+          >
+            <div class="board-card-top">
+              <span class="priority">P{task.priority}</span>
+              <button
+                type="button"
+                class="delete-task"
+                aria-label={$translate('tasks.delete')}
+                title={$translate('tasks.delete')}
+                onclick={() => onDeleteTask(task.id)}><X size={13} /></button
+              >
+            </div>
+            <h3>{task.title}</h3>
+            {#if task.description}<p>{task.description}</p>{/if}
+            {#if task.blockedReason}<code>{task.blockedReason}</code>{/if}
+          </article>
+        {/each}
+      </div>
+    {/each}
+  </section>
+{/if}
 
 <style>
   .new-task-form {

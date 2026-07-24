@@ -28,6 +28,7 @@
         .toLowerCase()
         .includes(search.toLowerCase()),
   );
+  $: hasAnyProjects = projects.some((project) => !project.archived);
 </script>
 
 <section class="page-heading">
@@ -47,7 +48,7 @@
       aria-label={$translate('common.search')}
     />
   </label>
-  <span class="metric">{activeProjects.length} {$translate('nav.projects').toLowerCase()}</span>
+  <span class="metric">{$translate('nav.projects')}: {activeProjects.length}</span>
 </div>
 <section class="project-grid" aria-live="polite">
   {#each activeProjects as project}
@@ -120,7 +121,14 @@
   {:else}
     <div class="empty">
       <FolderKanban size={32} />
-      <p>{$translate('projects.empty')}</p>
+      {#if hasAnyProjects}
+        <p>{$translate('projects.empty')}</p>
+      {:else}
+        <p>{$translate('projects.emptyNone')}</p>
+        <button class="primary" onclick={onNew}
+          ><Plus size={17} />{$translate('projects.new')}</button
+        >
+      {/if}
     </div>
   {/each}
 </section>

@@ -23,6 +23,7 @@
     connectEvents,
     createTask,
     deleteTask,
+    friendlyError,
     getSnapshot,
     post,
     updateTask,
@@ -37,6 +38,7 @@
     type TranslationKey,
   } from '$lib/i18n';
   import { normalizeFontSize, setThemeColorMeta, themeColorFor } from '$lib/theme';
+  import { setPendingLeadAgent } from '$lib/uiIntents';
   import type { Agent, AppSettings, Check, Project, Run, RunEvent, Snapshot } from '$lib/types';
   import FirstRunWizard from '$lib/components/FirstRunWizard.svelte';
   import NewProjectDialog from '$lib/components/NewProjectDialog.svelte';
@@ -119,6 +121,24 @@
     { id: 'studios', icon: Waypoints, key: 'nav.studios' },
     { id: 'settings', icon: Settings, key: 'nav.settings' },
   ];
+  type NavEntry = { id: View; icon: typeof Activity; key: TranslationKey; index: number };
+  const navById = new Map<View, NavEntry>(nav.map((item, index) => [item.id, { ...item, index }]));
+  const navGroups: { label: TranslationKey | null; items: NavEntry[] }[] = [
+    {
+      label: 'nav.groupWork',
+      items: [navById.get('chat')!, navById.get('tasks')!],
+    },
+    {
+      label: 'nav.groupProject',
+      items: [navById.get('projects')!, navById.get('overview')!, navById.get('team')!],
+    },
+    {
+      label: 'nav.groupMonitor',
+      items: [navById.get('activity')!, navById.get('runs')!, navById.get('studios')!],
+    },
+    { label: null, items: [navById.get('settings')!] },
+  ];
+  const globalViews: readonly View[] = ['activity', 'runs', 'studios', 'settings'];
 
   $: if (restored) saveView(view);
   $: if (restored) saveProject(selectedProjectId);
@@ -136,6 +156,7 @@
     activeProjects.find((project) => project.id === selectedProjectId) ?? activeProjects[0];
   $: selectedRun = snapshot?.runs.find((run) => run.id === selectedRunId);
   $: selectedEvents = events.filter((event) => event.runId === selectedRunId).slice(-250);
+  $: showProjectSwitch = !globalViews.includes(view);
 
   onMount(() => {
     const storedTheme = localStorage.getItem('studioforge-theme') ?? 'system';
@@ -265,6 +286,7 @@
   async function initialize() {
     loading = true;
     error = '';
+    locale.set(detectLocale());
     try {
       await bootstrapFromHash();
       await refresh();
@@ -276,7 +298,7 @@
       // error screen until the user manually retries.
       if (snapshot) connectStream();
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = friendlyError(cause, $translate);
     } finally {
       loading = false;
     }
@@ -403,31 +425,18 @@
       await refresh();
     });
   }
-  async function startRun(project = selectedProject, agentId = '', prompt = '') {
-    if (!project || !prompt.trim()) return;
-    await action(`run-${project.id}`, async () => {
-      const run = await post<Run>(
-        '/runs',
-        { projectId: project.id, agentId, prompt },
-        { 'Idempotency-Key': crypto.randomUUID() },
-      );
-      selectedRunId = run.id;
-      view = 'runs';
-      await refresh();
-    });
-  }
   async function createAgent(agent: Partial<Agent>) {
     if (!selectedProject) return;
     await action('agent-create', async () => {
       await post<Agent>(`/projects/${selectedProject.id}/agents`, agent);
-      notice = $translate('team.create');
+      notice = $translate('team.createdToast');
       await refresh();
     });
   }
   async function updateAgent(agent: Agent) {
     await action(`agent-${agent.id}`, async () => {
       await post<Agent>(`/projects/${agent.projectId}/agents/${agent.id}`, agent);
-      notice = $translate('settings.saved');
+      notice = $translate('team.updatedToast');
       await refresh();
     });
   }
@@ -491,11 +500,9 @@
     try {
       await work();
     } catch (cause) {
+      error = friendlyError(cause, $translate);
       if (cause instanceof APIError && cause.code === 'network') {
-        error = $translate('error.network');
         errorRetry = () => void action(id, work);
-      } else {
-        error = cause instanceof Error ? cause.message : String(cause);
       }
     } finally {
       busy = '';
@@ -547,9 +554,9 @@
 {:else if error && !snapshot}
   <main class="center-state error-state">
     <ShieldAlert size={34} />
-    <h1>{$translate('error.title')}</h1>
-    <p>{error}</p>
-    <button class="primary" onclick={initialize}>{$translate('common.retry')}</button>
+    <h1>{$translate('session.title')}</h1>
+    <p>{error || $translate('session.body')}</p>
+    <button class="primary" onclick={initialize}>{$translate('session.retry')}</button>
   </main>
 {:else if snapshot}
   <div class="app-shell">
@@ -559,34 +566,43 @@
         <div><strong>{brand.name}</strong><small>{$translate('app.tagline')}</small></div>
       </div>
       <nav aria-label={brand.name}>
-        {#each nav as item, index}
-          <button
-            class:active={view === item.id}
-            onclick={() => (view = item.id)}
-            title={`Alt+${index + 1}`}
-            aria-current={view === item.id ? 'page' : undefined}
-          >
-            <item.icon size={18} /><span>{$translate(item.key)}</span>
-          </button>
+        {#each navGroups as group}
+          {#if group.label}<p class="nav-group-label">{$translate(group.label)}</p>{/if}
+          {#each group.items as item}
+            <button
+              class:active={view === item.id}
+              onclick={() => (view = item.id)}
+              title={`Alt+${item.index + 1}`}
+              aria-current={view === item.id ? 'page' : undefined}
+            >
+              <item.icon size={18} /><span>{$translate(item.key)}</span>
+            </button>
+          {/each}
         {/each}
       </nav>
       <div class="sidebar-footer">
-        <span class:online={streamOnline} class="presence"></span><span
-          >{streamOnline ? $translate('common.active') : $translate('status.interrupted')}</span
-        ><code>v{snapshot.diagnostics.version}</code>
+        <span class="presence" class:online={streamOnline} class:reconnecting={!streamOnline}
+        ></span><span
+          >{streamOnline ? $translate('footer.online') : $translate('footer.reconnecting')}</span
+        >
+        {#if snapshot.diagnostics.mockMode}<span class="chip">{$translate('footer.mockMode')}</span
+          >{/if}
+        <code>v{snapshot.diagnostics.version.replace(/^v/, '')}</code>
       </div>
     </aside>
 
     <div class="workspace">
       <header class="topbar">
-        <label class="project-switch"
-          ><span>{$translate('common.project')}</span><select
-            bind:value={selectedProjectId}
-            aria-label={$translate('common.project')}
-            >{#each activeProjects as project}<option value={project.id}>{project.name}</option
-              >{/each}</select
-          ></label
-        >
+        {#if showProjectSwitch}
+          <label class="project-switch"
+            ><span>{$translate('common.project')}</span><select
+              bind:value={selectedProjectId}
+              aria-label={$translate('common.project')}
+              >{#each activeProjects as project}<option value={project.id}>{project.name}</option
+                >{/each}</select
+            ></label
+          >
+        {/if}
         <div class="top-actions">
           <button
             class="icon-button"
@@ -657,7 +673,10 @@
               view = 'overview';
             }}
             onArchive={archiveProject}
-            onRun={startRun}
+            onRun={(project) => {
+              selectedProjectId = project.id;
+              view = 'chat';
+            }}
             onOpenStudio={openStudio}
           />
         {:else if view === 'activity'}
@@ -669,7 +688,14 @@
             onRunAction={runAction}
           />
         {:else if view === 'overview'}
-          <OverviewView {snapshot} project={selectedProject} {busy} onRun={() => startRun()} />
+          <OverviewView
+            {snapshot}
+            project={selectedProject}
+            {busy}
+            onRun={() => {
+              view = 'chat';
+            }}
+          />
         {:else if view === 'team'}
           <TeamView
             agents={snapshot.agents}
@@ -677,7 +703,13 @@
             {busy}
             onCreate={createAgent}
             onUpdate={updateAgent}
-            onRun={(agent) => startRun(selectedProject, agent.id)}
+            onRun={(agent) => {
+              if (activeProjects.some((project) => project.id === agent.projectId)) {
+                selectedProjectId = agent.projectId;
+              }
+              setPendingLeadAgent(agent.id);
+              view = 'chat';
+            }}
           />
         {:else if view === 'tasks'}
           <TasksView
@@ -701,7 +733,6 @@
             decisions={snapshot.decisions}
             onResolveDecision={resolveDecision}
             busy={busy.startsWith('run-')}
-            onSend={(prompt) => startRun(selectedProject, '', prompt)}
           />
         {:else if view === 'studios'}
           <StudiosView

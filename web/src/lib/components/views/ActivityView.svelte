@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     cacheTokens,
+    formatDate,
     formatMoney,
     formatTokens,
     locale,
@@ -32,7 +33,9 @@
           >{$translate('common.agent')}</th
         ><th>{$translate('common.model')}</th><th>{$translate('activity.resource')}</th><th
           >{$translate('activity.tokens')}</th
-        ><th>{$translate('common.budget')}</th><th>{$translate('common.actions')}</th></tr
+        ><th>{$translate('common.budget')}</th><th>{$translate('projects.updated')}</th><th
+          >{$translate('common.actions')}</th
+        ></tr
       ></thead
     >
     <tbody>
@@ -41,7 +44,11 @@
         {@const cache = cacheTokens(run)}
         {@const legacy = isLegacyProvider(run.provider)}
         <tr>
-          <td><span class={`status status-${run.status}`}>{statusLabel(run.status)}</span></td>
+          <td
+            ><span class={`status status-${run.status}`} title={run.error || undefined}
+              >{statusLabel(run.status)}</span
+            ></td
+          >
           <td>{projectName(run.projectId)}</td><td>{agentName(run.agentId)}</td>
           <td
             ><code>{run.provider}/{run.modelAlias}</code>
@@ -50,7 +57,9 @@
                 >{$translate('run.legacyProvider')}</span
               >
             {/if}</td
-          ><td><code>{run.requiredResource || '—'}</code></td>
+          ><td
+            >{#if run.requiredResource}<code>{run.requiredResource}</code>{/if}</td
+          >
           <td>
             {#if spend > 0 || cache > 0}
               <div class="token-cell">
@@ -66,6 +75,7 @@
             {/if}
           </td>
           <td>{formatMoney(run.cost, $locale)}</td>
+          <td>{formatDate(run.updatedAt, $locale)}</td>
           <td
             ><div class="row-actions">
               {#if run.status === 'running'}
@@ -98,7 +108,7 @@
             </div></td
           >
         </tr>
-      {:else}<tr><td colspan="8" class="empty-cell">{$translate('activity.empty')}</td></tr>{/each}
+      {:else}<tr><td colspan="9" class="empty-cell">{$translate('activity.empty')}</td></tr>{/each}
     </tbody>
   </table>
 </div>

@@ -11,18 +11,9 @@
   export let statusLabel: (status: string) => string;
   export let validationLabel: (validation: string) => string;
   export let payloadText: (payload: unknown) => string;
-  export let onSend: (prompt: string) => void = () => {};
   export let decisions: Decision[] = [];
   export let onResolveDecision: (decisionId: string, approve: boolean) => void = () => {};
   export let busy = false;
-  let draft = '';
-
-  function send() {
-    const text = draft.trim();
-    if (!text) return;
-    onSend(text);
-    draft = '';
-  }
 
   // A run that scheduled a correction carries its own parentRunId only on the
   // correction, not on the parent — so "has this run got a correction" is a
@@ -105,6 +96,7 @@
         </div>
         <time>{formatDate(run.updatedAt, $locale)}</time>
       </div>
+    {:else}<div class="empty">{$translate('runs.emptyList')}</div>
     {/each}
   </div>
   <article class="event-panel">
@@ -146,9 +138,16 @@
           </div>
         </div>
       {/if}
+      {#if ['failed', 'interrupted'].includes(selectedRun.status) && selectedRun.error}
+        <div class="error-banner">
+          <strong>{$translate('error.runFailed')}</strong>
+          <p>{selectedRun.error}</p>
+        </div>
+      {/if}
     {/if}
     <div class="event-log" aria-live="polite">
-      {#if !selectedRun}<div class="empty">{$translate('runs.select')}</div>
+      {#if runs.length === 0}<div class="empty">{$translate('runs.emptyList')}</div>
+      {:else if !selectedRun}<div class="empty">{$translate('runs.select')}</div>
       {:else if events.length === 0}<div class="empty">{$translate('runs.noEvents')}</div>
       {:else}{#each events as event}<div class={`event event-${event.type}`}>
             <time
@@ -159,52 +158,18 @@
             <p>{payloadText(event.payload)}</p>
           </div>{/each}{/if}
     </div>
-    <form
-      class="composer"
-      onsubmit={(e) => {
-        e.preventDefault();
-        send();
-      }}
-    >
-      <textarea
-        bind:value={draft}
-        rows="2"
-        placeholder={$translate('runs.composerPlaceholder')}
-        onkeydown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            send();
-          }
-        }}
-      ></textarea>
-      <button class="primary" type="submit" disabled={busy || !draft.trim()}
-        >{$translate('runs.send')}</button
-      >
-    </form>
+    <p class="composer-hint">{$translate('runs.startFromChat')}</p>
   </article>
 </section>
 
 <style>
-  .composer {
-    display: flex;
-    gap: 0.5rem;
-    align-items: flex-end;
+  .composer-hint {
+    margin: 0;
     padding: 0.75rem;
     border-top: 1px solid var(--border);
-  }
-  .composer textarea {
-    flex: 1;
-    resize: vertical;
-    min-height: 2.5rem;
-    font: inherit;
-    padding: 0.5rem 0.65rem;
-    border-radius: 0.5rem;
-    border: 1px solid var(--border);
-    background: var(--surface-2, rgba(255, 255, 255, 0.04));
-    color: inherit;
-  }
-  .composer button {
-    white-space: nowrap;
+    color: var(--muted, #9a9a9a);
+    text-align: center;
+    font-size: 0.8rem;
   }
   .validation-badge {
     display: inline-block;
@@ -257,5 +222,20 @@
   .decision-actions {
     display: flex;
     gap: 0.5rem;
+  }
+  .error-banner {
+    margin: 0.5rem 0.75rem 0;
+    padding: 0.75rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--danger);
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+  }
+  .error-banner strong {
+    display: block;
+    margin-bottom: 0.35rem;
+    color: var(--danger);
+  }
+  .error-banner p {
+    margin: 0;
   }
 </style>

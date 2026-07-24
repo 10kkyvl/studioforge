@@ -271,6 +271,11 @@
     autofilled = autofilled;
   }
 
+  function checkStatusLabel(status: string): string {
+    const key = `state.${status}` as TranslationKey;
+    return $translate(key) || status;
+  }
+
   onMount(() => {
     void runDetection('empty');
     void loadOpenRouterStatus();
@@ -549,7 +554,9 @@
       <label
         >{$translate('settings.defaultProvider')}<select bind:value={settings.default_provider}
           ><option value="claude">Claude Code</option><option value="openrouter">OpenRouter</option
-          ><option value="nvidia">NVIDIA NIM</option><option value="mock">Mock</option></select
+          ><option value="nvidia">NVIDIA NIM</option><option value="mock"
+            >{$translate('provider.mock')}</option
+          ></select
         ></label
       >
       <label
@@ -560,9 +567,11 @@
       >
       <label
         >{$translate('settings.defaultEffort')}<select bind:value={settings.default_effort}
-          ><option value="low">low</option><option value="medium">medium</option><option
-            value="high">high</option
-          ><option value="xhigh">xhigh</option></select
+          ><option value="low">{$translate('effort.low')}</option><option value="medium"
+            >{$translate('effort.medium')}</option
+          ><option value="high">{$translate('effort.high')}</option><option value="xhigh"
+            >{$translate('effort.xhigh')}</option
+          ></select
         ></label
       >
       <label
@@ -722,7 +731,9 @@
     <div class="dependency-grid">
       {#each Object.entries(diagnostics.dependencies) as [id, check]}
         <section class="dependency" data-status={check.status}>
-          <div><strong>{check.name}</strong><span class="chip">{check.status}</span></div>
+          <div>
+            <strong>{check.name}</strong><span class="chip">{checkStatusLabel(check.status)}</span>
+          </div>
           <code>{check.path || id}</code>
           {#if check.version}<small>{check.version}</small>{/if}
           {#if check.message}<p>{check.message}</p>{/if}

@@ -8,6 +8,8 @@
   export let busy: string;
   export let onRefresh: () => void;
   export let onComplete: () => void;
+
+  $: hasMissing = checks.some((check) => check.status !== 'ok');
 </script>
 
 <div class="modal-backdrop">
@@ -43,6 +45,7 @@
         </article>
       {/each}
     </div>
+    {#if hasMissing}<p class="path-hint">{$translate('wizard.canContinue')}</p>{/if}
     <footer>
       <button onclick={onRefresh}><RefreshCw size={16} />{$translate('wizard.recheck')}</button
       ><button class="primary" onclick={onComplete} disabled={busy === 'wizard'}

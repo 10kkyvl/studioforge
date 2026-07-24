@@ -12,6 +12,12 @@
   export let detected = true;
   export let onRefresh: () => void = () => {};
   export let busy = false;
+
+  function playStateLabel(state: string): string {
+    if (state === 'play' || state === 'playing') return $translate('state.playing');
+    if (state === 'edit' || state === 'editing') return $translate('state.editing');
+    return state;
+  }
 </script>
 
 <section class="page-heading">
@@ -45,7 +51,7 @@
           </div>
           <div>
             <dt>{$translate('studios.playState')}</dt>
-            <dd>{studio.playState}</dd>
+            <dd>{playStateLabel(studio.playState)}</dd>
           </div>
           <div>
             <dt>{$translate('common.project')}</dt>

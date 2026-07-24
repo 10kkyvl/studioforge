@@ -1,3 +1,4 @@
+import type { TranslationKey } from './i18n';
 import type {
   ChatMessage,
   ChatThread,
@@ -11,13 +12,28 @@ import type {
 } from './types';
 
 export class APIError extends Error {
+  declare readonly status?: number;
   constructor(
     message: string,
     readonly code: string,
     readonly requestId?: string,
+    status?: number,
   ) {
     super(message);
+    Object.defineProperty(this, 'status', { value: status, enumerable: false });
   }
+}
+
+export function friendlyError(err: unknown, t: (key: TranslationKey) => string): string {
+  if (err instanceof APIError) {
+    if (err.code === 'timeout') return t('error.timeout');
+    if (err.code === 'network') return t('error.network');
+    if (err.status === 401 || err.status === 403) return t('error.session');
+    if (err.status === 404) return t('error.notFound');
+    if (err.status !== undefined && err.status >= 500) return t('error.server');
+    return err.message;
+  }
+  return err instanceof Error ? err.message : String(err);
 }
 
 async function parse<T>(response: Response): Promise<T> {
@@ -28,6 +44,7 @@ async function parse<T>(response: Response): Promise<T> {
       error.message ?? `HTTP ${response.status}`,
       error.code ?? 'http_error',
       error.requestId,
+      response.status,
     );
   }
   return body as T;
@@ -67,9 +84,9 @@ async function fetchWithTimeout(input: string, init: RequestInit): Promise<Respo
 }
 
 export async function bootstrapFromHash(): Promise<void> {
-  const match = location.hash.match(/^#bootstrap=(.+)$/);
-  if (!match) return;
-  const token = decodeURIComponent(match[1]);
+  const hashMatch = location.hash.match(/^#bootstrap=(.+)$/);
+  if (!hashMatch) return;
+  const token = decodeURIComponent(hashMatch[1]);
   const response = await fetchWithTimeout('/api/v1/session/bootstrap', {
     method: 'POST',
     credentials: 'same-origin',
@@ -207,7 +224,8 @@ function openSharedStream(after?: number) {
   stream.onopen = () => {
     for (const onStatus of statusSubscribers) onStatus(true);
   };
-  stream.onerror = () => {
+  stream.onerror = (event: Event) => {
+    if (event instanceof MessageEvent) return;
     for (const onStatus of statusSubscribers) onStatus(false);
   };
   sharedStream = stream;

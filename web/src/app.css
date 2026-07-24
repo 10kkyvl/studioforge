@@ -234,6 +234,17 @@ code {
   flex-direction: column;
   gap: 3px;
 }
+.nav-group-label {
+  margin: 14px 10px 4px;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 750;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+.nav-group-label:first-child {
+  margin-top: 0;
+}
 .sidebar nav button {
   display: flex;
   align-items: center;
@@ -283,11 +294,15 @@ code {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--red);
+  background: var(--muted);
 }
 .presence.online {
   background: var(--green);
   box-shadow: 0 0 10px var(--green);
+}
+.presence.reconnecting {
+  background: var(--yellow);
+  box-shadow: 0 0 10px var(--yellow);
 }
 .workspace {
   display: flex;
@@ -331,6 +346,7 @@ code {
 .top-actions {
   display: flex;
   gap: 7px;
+  margin-left: auto;
 }
 .icon-button,
 .locale-button {
@@ -1566,7 +1582,9 @@ tbody tr:last-child td {
   .brand > div:last-child,
   .sidebar nav span,
   .sidebar-footer span,
-  .sidebar-footer code {
+  .sidebar-footer code,
+  .sidebar-footer .chip,
+  .nav-group-label {
     display: none;
   }
   .sidebar nav button {
