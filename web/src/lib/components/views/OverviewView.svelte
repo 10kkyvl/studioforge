@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Bot, CircleDollarSign, Gauge, GitBranch, Play, Plug, Waypoints } from '@lucide/svelte';
-  import { formatMoney, locale, translate } from '$lib/i18n';
+  import { formatMoney, locale, translate, type TranslationKey } from '$lib/i18n';
   import type { Project, Snapshot } from '$lib/types';
 
   export let snapshot: Snapshot;
@@ -9,6 +9,30 @@
   export let onRun: () => void;
 
   $: studioMcpCheck = snapshot.diagnostics.dependencies.studioMcp;
+  $: lastRun = project
+    ? [...snapshot.runs]
+        .filter((run) => run.projectId === project?.id)
+        .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())[0]
+    : undefined;
+
+  function runStatusLabel(status: string): string {
+    const key = `status.${status}` as TranslationKey;
+    return $translate(key) || status;
+  }
+
+  const STATE_KEYS: Record<string, TranslationKey> = {
+    ok: 'state.ok',
+    missing: 'state.missing',
+    present: 'state.present',
+    active: 'state.active',
+    stopped: 'state.stopped',
+    none: 'state.none',
+  };
+  function stateLabel(raw: string | undefined): string {
+    if (raw === undefined) return $translate('common.none');
+    const key = STATE_KEYS[raw];
+    return key ? $translate(key) : raw;
+  }
 </script>
 
 <section class="page-heading">
@@ -29,19 +53,19 @@
     <article class="panel hero-panel">
       <div class="panel-icon"><Gauge /></div>
       <div>
-        <span>{$translate('overview.health')}</span>
-        <h2>{$translate('common.verified')}</h2>
+        <span>{$translate('overview.lastRun')}</span>
+        <h2>{lastRun ? runStatusLabel(lastRun.status) : $translate('overview.noData')}</h2>
         <p>{project.path}</p>
       </div>
     </article>
     <article class="panel">
       <GitBranch /><span>{$translate('overview.git')}</span><strong
-        >{$translate('common.active')}</strong
+        >{$translate('overview.noData')}</strong
       >
     </article>
     <article class="panel">
       <Waypoints /><span>{$translate('overview.rojo')}</span><strong
-        >{snapshot.diagnostics.dependencies.rojo?.status ?? $translate('common.none')}</strong
+        >{stateLabel(snapshot.diagnostics.dependencies.rojo?.status)}</strong
       >
     </article>
     <article class="panel">
@@ -59,7 +83,7 @@
     </article>
     <article class="panel" class:panel-warning={studioMcpCheck?.status === 'missing'}>
       <Plug /><span>{$translate('overview.studioMcp')}</span><strong
-        >{studioMcpCheck?.status ?? $translate('common.none')}</strong
+        >{stateLabel(studioMcpCheck?.status)}</strong
       >
       {#if studioMcpCheck?.status === 'missing'}
         <p class="panel-hint">{$translate('overview.studioMcpMissing')}</p>

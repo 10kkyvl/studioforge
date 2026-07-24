@@ -32,7 +32,8 @@
         >
       </header>
       <label>{$translate('projects.name')}<input bind:value={value.name} required /></label>
-      <label>{$translate('projects.path')}<input bind:value={value.path} required /></label>
+      <label>{$translate('project.folderLabel')}<input bind:value={value.path} required /></label>
+      <p class="path-hint">{$translate('project.folderHint')}</p>
       <label
         >{$translate('projects.description')}<textarea bind:value={value.description} rows="3"
         ></textarea></label

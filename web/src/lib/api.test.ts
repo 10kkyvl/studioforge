@@ -225,12 +225,19 @@ class FakeEventSource {
   static readonly CLOSED = 2;
   readyState = FakeEventSource.CONNECTING;
   onopen: (() => void) | null = null;
-  onerror: (() => void) | null = null;
+  onerror: ((event: Event) => void) | null = null;
   closeCalled = false;
+  listeners = new Map<string, EventListener>();
   constructor(public url: string) {
     FakeEventSource.instances.push(this);
   }
-  addEventListener() {}
+  addEventListener(type: string, listener: EventListener) {
+    this.listeners.set(type, listener);
+  }
+  dispatch(type: string, event: Event) {
+    this.listeners.get(type)?.(event);
+    if (type === 'error') this.onerror?.(event);
+  }
   close() {
     this.closeCalled = true;
     this.readyState = FakeEventSource.CLOSED;
@@ -246,11 +253,28 @@ describe('connectEvents', () => {
       () => {},
     );
     const stream = FakeEventSource.instances[0];
-    stream.onerror?.();
+    stream.onerror?.(new Event('error'));
     stream.readyState = FakeEventSource.OPEN;
     stream.onopen?.();
     disconnect();
     expect(stream.closeCalled).toBe(true);
     expect(FakeEventSource.instances).toHaveLength(1);
+  });
+  it('ignores server-sent error events but treats connection errors as offline', () => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('EventSource', FakeEventSource);
+    const statuses: boolean[] = [];
+    const disconnect = connectEvents(
+      () => {},
+      (online) => statuses.push(online),
+    );
+    const stream = FakeEventSource.instances[0];
+    stream.readyState = FakeEventSource.OPEN;
+    stream.onopen?.();
+    stream.dispatch('error', new MessageEvent('error', { data: '{"type":"error"}' }));
+    expect(statuses).toEqual([true]);
+    stream.dispatch('error', new Event('error'));
+    expect(statuses).toEqual([true, false]);
+    disconnect();
   });
 });

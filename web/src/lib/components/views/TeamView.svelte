@@ -40,7 +40,7 @@
   let showCreate = false;
   const blankDraft: Partial<Agent> = {
     name: '',
-    role: 'Roblox Engineer',
+    role: $translate('team.defaultRole'),
     provider: 'claude',
     modelAlias: 'default',
     allowUnverifiedModel: false,
@@ -64,6 +64,7 @@
   <div>
     <p class="eyebrow">{$translate('nav.team')}</p>
     <h1>{$translate('team.title')}</h1>
+    {#if !project}<span class="chip">{$translate('common.allProjects')}</span>{/if}
     <p>{$translate('team.subtitle')}</p>
   </div>
   {#if project}<button class="primary" onclick={() => (showCreate = !showCreate)}
@@ -83,7 +84,9 @@
     <label
       >{$translate('team.provider')}<select bind:value={draft.provider}
         ><option value="claude">Claude Code</option><option value="openrouter">OpenRouter</option
-        ><option value="nvidia">NVIDIA NIM</option><option value="mock">Mock</option></select
+        ><option value="nvidia">NVIDIA NIM</option><option value="mock"
+          >{$translate('provider.mock')}</option
+        ></select
       ></label
     >
     {#if draft.provider === 'openrouter'}
@@ -110,16 +113,18 @@
     {/if}
     <label
       >{$translate('team.effort')}<select bind:value={draft.effort}
-        ><option value="low">low</option><option value="medium">medium</option><option value="high"
-          >high</option
-        ><option value="xhigh">xhigh</option></select
+        ><option value="low">{$translate('effort.low')}</option><option value="medium"
+          >{$translate('effort.medium')}</option
+        ><option value="high">{$translate('effort.high')}</option><option value="xhigh"
+          >{$translate('effort.xhigh')}</option
+        ></select
       ></label
     >
     <label
       >{$translate('team.permission')}<select bind:value={draft.permission}
-        ><option value="read-only">read-only</option><option value="workspace-write"
-          >workspace-write</option
-        ><option value="danger-full-access">danger-full-access</option></select
+        ><option value="read-only">{$translate('perm.readOnly')}</option><option
+          value="workspace-write">{$translate('perm.workspaceWrite')}</option
+        ><option value="danger-full-access">{$translate('perm.dangerFull')}</option></select
       ></label
     >
     <label
@@ -177,7 +182,9 @@
           >{$translate('team.provider')}<select bind:value={agent.provider}
             ><option value="claude">Claude Code</option><option value="openrouter"
               >OpenRouter</option
-            ><option value="nvidia">NVIDIA NIM</option><option value="mock">Mock</option></select
+            ><option value="nvidia">NVIDIA NIM</option><option value="mock"
+              >{$translate('provider.mock')}</option
+            ></select
           ></label
         >
         {#if agent.provider === 'openrouter'}
@@ -204,16 +211,18 @@
         {/if}
         <label
           >{$translate('team.effort')}<select bind:value={agent.effort}
-            ><option value="low">low</option><option value="medium">medium</option><option
-              value="high">high</option
-            ><option value="xhigh">xhigh</option></select
+            ><option value="low">{$translate('effort.low')}</option><option value="medium"
+              >{$translate('effort.medium')}</option
+            ><option value="high">{$translate('effort.high')}</option><option value="xhigh"
+              >{$translate('effort.xhigh')}</option
+            ></select
           ></label
         >
         <label
           >{$translate('team.permission')}<select bind:value={agent.permission}
-            ><option value="read-only">read-only</option><option value="workspace-write"
-              >workspace-write</option
-            ><option value="danger-full-access">danger-full-access</option></select
+            ><option value="read-only">{$translate('perm.readOnly')}</option><option
+              value="workspace-write">{$translate('perm.workspaceWrite')}</option
+            ><option value="danger-full-access">{$translate('perm.dangerFull')}</option></select
           ></label
         >
         <label

@@ -33,7 +33,16 @@
     shouldAnswerQuestion,
   } from '$lib/questionCard';
   import { isStaleGeneration } from '$lib/staleness';
-  import { cacheTokens, formatDate, formatTokens, locale, spendTokens, translate } from '$lib/i18n';
+  import {
+    cacheTokens,
+    formatDate,
+    formatTokens,
+    locale,
+    spendTokens,
+    translate,
+    type TranslationKey,
+  } from '$lib/i18n';
+  import { clearPendingLeadAgent, pendingLeadAgent } from '$lib/uiIntents';
   import type {
     Agent,
     ChatMessage,
@@ -103,6 +112,7 @@
   // after project B is already selected.
   let projectGeneration = 0;
   let leadAgentId = '';
+  let applyingPendingLead = false;
   let attachedTaskId = '';
   let creatingThread = false;
   // Pasted images, uploaded but not yet sent. previewUrl is a local object URL
@@ -141,6 +151,12 @@
     }
   }
 
+  function displayThreadTitle(title: string): string {
+    if (title === 'New chat') return $translate('chat.defaultThreadTitle');
+    if (title === 'Chat') return $translate('chat.threadTitleChat');
+    return title;
+  }
+
   function runIdentity(runId: string, provider = '', modelAlias = '') {
     const run =
       submittedRuns.find((item) => item.id === runId) ?? runs.find((item) => item.id === runId);
@@ -168,6 +184,7 @@
     messages = [];
     submittedRuns = [];
     restoreActiveRun('');
+    commandInfo = '';
     leadAgentId = '';
     typicalSeconds = 0;
     paceSamples = 0;
@@ -391,6 +408,29 @@
     pendingAttachments = [];
   }
 
+  const SLASH_COMMANDS: { name: string; usage: string; key: TranslationKey }[] = [
+    { name: 'task', usage: '/task <title>', key: 'cmd.task' },
+    { name: 'build', usage: '/build <desc>', key: 'cmd.build' },
+    { name: 'playtest', usage: '/playtest <desc>', key: 'cmd.playtest' },
+    { name: 'plan', usage: '/plan', key: 'cmd.plan' },
+    { name: 'do', usage: '/do', key: 'cmd.do' },
+    { name: 'open', usage: '/open', key: 'cmd.open' },
+  ];
+  let composerEl: HTMLTextAreaElement;
+  let slashMenuDismissed = false;
+  $: slashPrefix =
+    draft.startsWith('/') && !draft.slice(1).includes(' ') ? draft.slice(1).toLowerCase() : null;
+  $: if (slashPrefix === null) slashMenuDismissed = false;
+  $: filteredSlashCommands =
+    slashPrefix === null ? [] : SLASH_COMMANDS.filter((cmd) => cmd.name.startsWith(slashPrefix));
+  $: showSlashMenu = filteredSlashCommands.length > 0 && !slashMenuDismissed;
+
+  function selectSlashCommand(usage: string) {
+    draft = `${usage.split(' ')[0]} `;
+    slashMenuDismissed = true;
+    void tick().then(() => composerEl?.focus());
+  }
+
   // Slash commands let the operator act without leaving the composer.
   async function runCommand(text: string): Promise<boolean> {
     const [name, ...rest] = text.slice(1).split(' ');
@@ -569,6 +609,17 @@
   $: currentThreadRuns = liveThreadRuns(runs, submittedRuns, selectedThreadId, endedRunIds);
   $: currentForegroundRun = foregroundRun(currentThreadRuns);
   $: queuedRuns = queuedBehindForeground(currentThreadRuns, currentForegroundRun);
+  $: latestThreadRun = (() => {
+    const byId = new Map<string, Run>();
+    for (const run of submittedRuns) byId.set(run.id, run);
+    for (const run of runs) byId.set(run.id, run);
+    return [...byId.values()]
+      .filter((run) => run.threadId === selectedThreadId)
+      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt) || a.id.localeCompare(b.id))
+      .pop();
+  })();
+  $: failedRunError =
+    latestThreadRun?.status === 'failed' && latestThreadRun.error ? latestThreadRun.error : '';
   // A follow-up must not steal the live transcript or Stop button from the
   // run that is actually executing. It becomes foreground only after the
   // predecessor reaches a terminal state (from snapshot or SSE).
@@ -702,6 +753,7 @@
 
   async function selectThread(id: string) {
     selectedThreadId = id;
+    commandInfo = '';
     restoreActiveRun(id);
     await loadMessages(id);
     // Opening a thread lands on its newest message regardless of where the
@@ -801,6 +853,20 @@
     }
   }
 
+  async function applyPendingLead(agentId: string) {
+    applyingPendingLead = true;
+    await changeLead(agentId);
+    if (leadAgentId === agentId) {
+      commandInfo = `✓ ${$translate('chat.lead')}: ${agentName(agentId)}`;
+    }
+    clearPendingLeadAgent();
+    applyingPendingLead = false;
+  }
+
+  $: if ($pendingLeadAgent && projectId && selectedThreadId && !applyingPendingLead) {
+    void applyPendingLead($pendingLeadAgent);
+  }
+
   async function newThread() {
     if (!projectId || creatingThread) return;
     creatingThread = true;
@@ -895,7 +961,9 @@
 <section class="page-heading">
   <div>
     <p class="eyebrow">{$translate('nav.chat')}</p>
-    <h1>{selectedThread?.title ?? $translate('chat.threadsTitle')}</h1>
+    <h1>
+      {selectedThread ? displayThreadTitle(selectedThread.title) : $translate('chat.threadsTitle')}
+    </h1>
   </div>
 </section>
 <section class="chat-layout">
@@ -919,11 +987,11 @@
             class:active={thread.id === selectedThreadId}
             onclick={() => selectThread(thread.id)}
           >
-            <strong>{thread.title}</strong>
+            <strong>{displayThreadTitle(thread.title)}</strong>
             <time>{formatDate(thread.updatedAt, $locale)}</time>
           </button>
         {:else}
-          <div class="empty"><p>{$translate('chat.empty')}</p></div>
+          <div class="empty"><p>{$translate('chat.threadsEmpty')}</p></div>
         {/each}
       {/if}
     </div>
@@ -931,7 +999,11 @@
   <article class="chat-panel">
     <header>
       <div class="chat-title-block">
-        <h2>{selectedThread?.title ?? $translate('chat.threadsTitle')}</h2>
+        <h2>
+          {selectedThread
+            ? displayThreadTitle(selectedThread.title)
+            : $translate('chat.threadsTitle')}
+        </h2>
         {#if threadSpendTokens > 0 || threadCacheTokens > 0}
           <p class="thread-tokens">
             {$translate('common.spend')}
@@ -1288,6 +1360,11 @@
         </div>
       </div>
     {/if}
+    {#if failedRunError}
+      <div class="chat-error">
+        <span>{$translate('error.runFailed')}: {failedRunError}</span>
+      </div>
+    {/if}
     {#if loadingDiff}
       <p class="diff-muted">{$translate('common.loading')}</p>
     {:else if runDiff}
@@ -1388,6 +1465,23 @@
         send();
       }}
     >
+      {#if showSlashMenu}
+        <div class="slash-menu" role="listbox" aria-label={$translate('chat.commandsTitle')}>
+          <p class="slash-menu-title">{$translate('chat.commandsTitle')}</p>
+          {#each filteredSlashCommands as cmd (cmd.name)}
+            <button
+              type="button"
+              class="slash-menu-item"
+              role="option"
+              aria-selected="false"
+              onclick={() => selectSlashCommand(cmd.usage)}
+            >
+              <code>{cmd.usage}</code>
+              <span>{$translate(cmd.key)}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
       <div class="mode-toggle" role="group" aria-label={$translate('chat.modeLabel')}>
         <button
           type="button"
@@ -1414,6 +1508,7 @@
         </label>
       {/if}
       <textarea
+        bind:this={composerEl}
         bind:value={draft}
         rows="2"
         placeholder={sentRunId
@@ -1422,6 +1517,11 @@
         title={$translate('chat.pasteImageHint')}
         disabled={!projectId || !selectedThreadId}
         onkeydown={(e) => {
+          if (e.key === 'Escape' && showSlashMenu) {
+            e.preventDefault();
+            slashMenuDismissed = true;
+            return;
+          }
           if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             send();
@@ -2151,12 +2251,65 @@
     color: var(--muted);
   }
   .composer {
+    position: relative;
     display: flex;
     flex: none;
     gap: 0.5rem;
     align-items: flex-end;
     padding: 0.75rem;
     border-top: 1px solid var(--line);
+  }
+  .slash-menu {
+    position: absolute;
+    bottom: 100%;
+    left: 0.75rem;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    width: min(360px, calc(100% - 1.5rem));
+    margin-bottom: 6px;
+    padding: 6px;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: var(--surface-2);
+    box-shadow: var(--shadow-soft);
+  }
+  .slash-menu-title {
+    margin: 2px 6px 4px;
+    color: var(--muted);
+    font-size: 0.66rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .slash-menu-item {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 6px 8px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .slash-menu-item:hover {
+    background: var(--surface);
+  }
+  .slash-menu-item code {
+    flex: none;
+    color: var(--accent);
+    font-size: 0.76rem;
+  }
+  .slash-menu-item span {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 0.72rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .task-select {
     display: flex;
