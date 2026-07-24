@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        StudioForge is an alpha. Before filing, please check
+        StudioForge is a public beta. Before filing, please check
         [docs/TROUBLESHOOTING.md](../blob/main/docs/TROUBLESHOOTING.md) and
         [docs/KNOWN_LIMITATIONS.md](../blob/main/docs/KNOWN_LIMITATIONS.md) — several packages are
         implemented but deliberately not wired up yet, and they are listed there.
@@ -31,7 +31,7 @@ body:
     attributes:
       label: Version
       description: Output of `studioforge --version`.
-      placeholder: v0.1.0-alpha.1 (abc123456789, 2026-01-01T00:00:00Z)
+      placeholder: v0.5.0-rc.1 (abc123456789, 2026-07-24T00:00:00Z)
     validations:
       required: true
 

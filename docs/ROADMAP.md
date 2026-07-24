@@ -1,20 +1,15 @@
 # Roadmap
 
 This roadmap has no dates. Order within and across sections is not a commitment, and it will change
-based on real feedback from people using the alpha, not on a predetermined schedule.
+based on real feedback from people using the beta, not on a predetermined schedule.
 
-## Current alpha stabilization
+## Current beta stabilization
 
-Work needed to make what already exists in the repository trustworthy for an alpha user, rather than
+Work needed to make what already exists in the repository trustworthy for a beta user, rather than
 adding new surface area:
 
-- Gate run execution on task-dependency readiness. Dependencies are now persisted and validated as a
-  DAG at creation time (`internal/tasks/dag.go`), but nothing yet stops a run from starting against a
-  task whose dependencies aren't done.
-- Wire up or deliberately remove the packages still implemented but unreachable: git rollback and tag
-  (`internal/gitops.SafeRollback`/`Tag` — `Status` and `DiffHead` are wired).
-- Add automatic pruning for persisted run events. Retention is schema-ready today but depends on
-  manual database maintenance.
+- Add a project-memory management UI/API. Entries are auto-saved from run prompts today with no way to
+  list, edit, or delete them.
 
 ## Near-term
 
@@ -44,4 +39,4 @@ description if it ever does.
 - Background polling for the Studio Sessions view, instead of the operator's own **Refresh** click.
   Deliberately not done yet: every probe spawns a launcher process that competes with a running agent
   for Studio's single WS host slot, so an unattended poll interval trades that risk for convenience
-  this alpha does not yet need.
+  this beta does not yet need.

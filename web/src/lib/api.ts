@@ -18,10 +18,30 @@ export class APIError extends Error {
     readonly code: string,
     readonly requestId?: string,
     status?: number,
+    readonly details?: unknown,
   ) {
     super(message);
     Object.defineProperty(this, 'status', { value: status, enumerable: false });
   }
+}
+
+// TaskDependencyBlocker mirrors internal/tasks.Blocker: one dependency (any
+// depth) that is keeping a run from starting because it has not reached
+// "completed" (or does not resolve to a same-project task at all, reported
+// as status "missing").
+export type TaskDependencyBlocker = {
+  taskId: string;
+  title: string;
+  status: string;
+};
+
+// taskDependencyBlockers reads the structured blocker list off a
+// task_dependencies_incomplete APIError, if that is what it is. The backend
+// is authoritative for this list; the UI only ever displays it.
+export function taskDependencyBlockers(err: unknown): TaskDependencyBlocker[] {
+  if (!(err instanceof APIError) || err.code !== 'task_dependencies_incomplete') return [];
+  const details = err.details as { blockers?: TaskDependencyBlocker[] } | undefined;
+  return Array.isArray(details?.blockers) ? details.blockers : [];
 }
 
 export function friendlyError(err: unknown, t: (key: TranslationKey) => string): string {
@@ -45,6 +65,7 @@ async function parse<T>(response: Response): Promise<T> {
       error.code ?? 'http_error',
       error.requestId,
       response.status,
+      error.details,
     );
   }
   return body as T;

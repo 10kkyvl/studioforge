@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/10kkyvl/studioforge/internal/providers/claudecode"
 	"github.com/10kkyvl/studioforge/internal/roblox/mcp"
 	"github.com/10kkyvl/studioforge/internal/rojo"
+	"github.com/10kkyvl/studioforge/internal/security"
 )
 
 func main() {
@@ -42,6 +44,8 @@ func run(args []string) error {
 			return importCommand(args[1:])
 		case "mcp-shim":
 			return mcpShimCommand(args[1:])
+		case "maintenance":
+			return maintenanceCommand(args[1:])
 		}
 	}
 	fs := flag.NewFlagSet("studioforge", flag.ContinueOnError)
@@ -84,7 +88,7 @@ func configureLogging(level string) error {
 	default:
 		return fmt.Errorf("unsupported log level %q", level)
 	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: l})))
+	slog.SetDefault(slog.New(security.NewRedactingHandler(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: l}))))
 	return nil
 }
 
@@ -194,6 +198,46 @@ func importCommand(args []string) error {
 		}
 		fmt.Println("imported project:", project.ID)
 	}
+	return nil
+}
+
+func maintenanceCommand(args []string) error {
+	fs := flag.NewFlagSet("maintenance", flag.ContinueOnError)
+	dataDirFlag := fs.String("data-dir", "", "application data directory")
+	pruneEvents := fs.Bool("prune-events", false, "prune old run_events belonging to terminal runs")
+	retentionDays := fs.Int("retention-days", -1, "override event_retention_days for this run (-1 uses the stored setting)")
+	logLevel := fs.String("log-level", "info", "debug, info, warn, or error")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if !*pruneEvents {
+		return errors.New("maintenance requires --prune-events")
+	}
+	if err := configureLogging(*logLevel); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	_, db, store, err := openData(ctx, *dataDirFlag)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	days := *retentionDays
+	if days < 0 {
+		days = 90
+		if value, ok, _ := store.Setting(ctx, "event_retention_days"); ok {
+			if n, err := strconv.Atoi(value); err == nil && n >= 0 {
+				days = n
+			}
+		}
+	}
+	deleted, err := store.PruneEvents(ctx, days)
+	if err != nil {
+		return err
+	}
+	slog.Info("maintenance prune-events complete", "deleted", deleted, "retention_days", days)
+	fmt.Printf("pruned %d run_events (retention_days=%d)\n", deleted, days)
 	return nil
 }
 

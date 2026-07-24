@@ -8,6 +8,81 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ## [Unreleased]
 
+## [0.5.0-rc.1] - 2026-07-24
+
+### Added
+
+- An NVIDIA NIM dependency check in diagnostics (`nvidia`), mirroring the OpenRouter key-state check,
+  so the doctor report and the first-run wizard reflect the real NVIDIA configuration state.
+- A deterministic documentation screenshot flow (`npm run screenshots` / `npm run screenshots:social`
+  from `web/`): Playwright boots the real daemon in `--mock` mode with a temporary data directory and
+  captures the README screenshots and the 1280×640 social preview card; documented in
+  `docs/screenshots/README.md`.
+- Real product screenshots in the English and Russian READMEs: a dashboard hero image and a
+  "See it in action" section, all captured from the built-in `--mock` demo.
+- Task dependency readiness enforcement: `POST /api/v1/runs` and a user-initiated
+  `POST /api/v1/runs/{id}/restart` now refuse with 409 `task_dependencies_incomplete`
+  (`details.blockers` lists each unfinished or missing dependency by task ID, title, and status) unless
+  every direct and transitive dependency of the attached task has reached `completed`
+  (`internal/tasks/readiness.go`). Resume and automatic correction runs of an existing lineage are
+  exempt. A deleted or cross-project dependency counts as a blocker with status `missing`. The chat
+  task selector and the task board mark blocked tasks, disable starting a run on them, and list the
+  unfinished dependencies.
+- Application-log secret redaction: every `slog` application log line now passes through
+  `internal/security.RedactingHandler` (`internal/security/logredact.go`), reusing the same rules
+  already applied to diagnostic bundles and stored run-event payloads (OpenRouter/NVIDIA API key
+  shapes, `Authorization`/bearer headers, cookies, bootstrap/session tokens, API-key query parameters),
+  replacing a match with `[REDACTED]`. The `mcp-shim` subcommand's stdout and `studioforge doctor`'s
+  JSON report are unaffected, since neither goes through `slog`.
+- Run-event retention: a new `event_retention_days` setting (default 90, `0` disables) bounds how long
+  verbose `run_events` rows survive for terminal runs. A background maintenance loop prunes them in
+  bounded batches shortly after startup and then every 12 hours, and
+  `studioforge maintenance --prune-events [--retention-days N]` runs the same prune on demand.
+  Chat-history messages, run summaries, usage/cost, checkpoints, decisions, memory, and
+  projects/tasks/agents are never deleted by this. Migration `014_event_retention_index.sql` adds a
+  supporting index.
+- A documentation consistency check (`scripts/check-docs.ps1` / `check-docs.sh`) that fails the build
+  on stale alpha-era tokens and placeholder URLs left in the docs, wired into CI as a dedicated docs
+  job.
+- A release preflight check (`scripts/release-preflight.ps1` / `release-preflight.sh`) that verifies
+  the release version agrees across the git tag, `web/package.json`, `RELEASE_NOTES.md`, the newest
+  `CHANGELOG.md` entry, and the artifact names before a release is cut.
+- Release artifact verification (`scripts/verify-artifacts.ps1` / `verify-artifacts.sh`): ZIP content
+  checks, `SHA256SUMS` validation, an `Info.plist` version check, and a macOS executable-bit check.
+- Native release smoke tests in the release workflow: the packaged Windows binary and the macOS app
+  binary are each run with `--version` and with `--mock --no-open` against a temporary data directory,
+  with a health-endpoint check on startup.
+
+### Changed
+
+- The first-run wizard now renders `ok`/`warning`/`error`/`missing` states distinctly, groups checks
+  into required prerequisites, AI providers, and feature integrations, explains safe mode and demo
+  mode, links each fixable check to its Settings card without marking setup complete, blocks
+  completion only on database or data-directory errors, offers a clearly labelled limited-mode
+  continuation otherwise, and lands new users in the New Project flow when no projects exist.
+- `docs/DEMO_SCRIPT.md` refreshed: a 30–45 second Reddit clip shot list, an updated 90-second shot
+  list including the run diff and rollback confirmation, and an extended privacy checklist.
+- Release packaging moved to a macOS runner using `scripts/package.sh`, so the `.app` executable bit
+  survives into the ZIP; GitHub Releases still stay drafts with automatic prerelease detection.
+- `scripts/package.sh` now clears stale files inside `artifacts/` before packaging, matching
+  `package.ps1`, and both package scripts now fail fast on a missing binary, README, LICENSE, or
+  `Info.plist` and verify the expected archives exist once packaging finishes.
+- Documentation refreshed from alpha-era claims to the current public beta: accurate provider
+  descriptions (Claude Code, OpenRouter, NVIDIA NIM; Codex documented as a removed legacy provider
+  with its history still readable), previously "unreachable" features are no longer described that
+  way now that they're wired (per-run diff, rollback, Rojo live-sync, Studio session discovery,
+  project memory, task dependency creation with DAG validation), honest current limitations spelled
+  out (there is no memory-management UI), placeholder URLs
+  replaced with the real repository URL, and `docs/GITHUB_METADATA.md` rewritten for the public beta.
+- Frontend package metadata version aligned with the release (`0.5.0-alpha.1` -> `0.5.0-rc.1`).
+
+### Fixed
+
+- `docs/GETTING_STARTED.md` incorrectly claimed `scripts/dev.ps1` and `scripts/dev.sh` always force
+  `--mock`; they pass arguments through unchanged and `--mock` is optional.
+- Stale current-version references: `v0.5.0-beta.3` banners in `docs/en` and `docs/ru`, and a
+  `v0.1.0-alpha.1` placeholder left in an issue template.
+
 ## [0.5.0-beta.4] - 2026-07-24
 
 ### Fixed
@@ -301,7 +376,7 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   are shown in the UI with a **Legacy provider** badge ("This run used a removed provider and is
   read-only history."). Restart and Resume on a legacy Codex run now return a controlled 409
   (`this run used the removed "codex" provider and is read-only history; it cannot be restarted or
-  resumed`) instead of attempting to relaunch a CLI that is no longer wired up.
+resumed`) instead of attempting to relaunch a CLI that is no longer wired up.
 
 ## [0.3.0-alpha.1] - 2026-07-20
 
@@ -315,7 +390,7 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   `studioforge/rollback-<timestamp>` branch (`gitops.Client.SafeRollback` - the run's own branch and
   history are never touched, reset, or force-pushed); it refuses with 409 while the project's write
   lease is held by another run, and with 400 when the run has no recorded checkpoint. `GET
-  /api/v1/projects/{id}/git/status` and `POST /api/v1/projects/{id}/git/tag` expose the rest of
+/api/v1/projects/{id}/git/status` and `POST /api/v1/projects/{id}/git/tag` expose the rest of
   `internal/gitops`, which previously had no HTTP endpoint. The chat diff panel shows a "Roll back to
   before this run" action, with an explicit confirmation step, whenever the current run has a
   checkpoint.
@@ -434,13 +509,13 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 - Roblox Studio launching a duplicate window when the already-open Studio's MCP connection is owned
   by another client (Claude Desktop, Cursor, or a lingering session). Roblox grants the plugin's WS
-  host slot to one client at a time, so a held slot makes the launcher list *no instances with no
-  error* — indistinguishable from no Studio at all. The provisioner's auto-open and the manual
+  host slot to one client at a time, so a held slot makes the launcher list _no instances with no
+  error_ — indistinguishable from no Studio at all. The provisioner's auto-open and the manual
   **Open Studio** button both read that empty listing as "safe to launch" and stacked a new window;
   both now run the same running-process tie-break the rest of the provisioner already used
   (`Provision`/`Status`) and withhold with the host-taken notice instead of launching.
 - Roblox Studio launching a second, duplicate window on top of one already open. Two causes, both
-  fixed: (1) the Studio MCP provisioner's auto-open used to fire whenever *no instance matched* the
+  fixed: (1) the Studio MCP provisioner's auto-open used to fire whenever _no instance matched_ the
   project, even if some other Studio instance was already open — it now only opens Studio when no
   instance is open at all, and otherwise withholds with a notice naming what is actually open next to
   what was expected; (2) `studio.Opener` (shared by the provisioner's auto-open and the manual **Open
@@ -637,7 +712,7 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   chat that never showed live progress and a "Working…" that never resolved. `connectStream` no longer
   gates on `document.hidden` at all; the `visibilitychange` handler still closes the connection when a
   tab genuinely goes hidden (so an abandoned background tab doesn't hold a permanent slot in Chrome's
-  6-connections-per-origin budget) and reopens it on return, but establishing the *first* connection no
+  6-connections-per-origin budget) and reopens it on return, but establishing the _first_ connection no
   longer depends on that event ever firing. Sending a chat message now also defensively ensures the
   stream is connected, as a second line of defense that needs no visibility signal at all.
 - The SSE message handler's `try/catch` covered both `JSON.parse` and the delivery of the parsed event

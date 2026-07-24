@@ -1,6 +1,6 @@
 # Getting started with StudioForge
 
-StudioForge is a newly released public **alpha** with no prior public release and no git tags. This
+StudioForge is a public **beta** (currently preparing the v0.5.0-rc.1 release candidate). This
 guide gets you from a clean checkout (or a downloaded package) to a running daemon, a registered
 project, and your first agent run.
 
@@ -61,15 +61,10 @@ cd studioforge
 ```
 
 Both scripts check that `go`, `node`, and `npm` are on `PATH`, run `npm ci && npm run build` in `web/`,
-and then run `go run ./cmd/studioforge --mock` with any extra arguments you passed appended. Note that
-`--mock` is baked into these scripts — running from source with `dev.ps1`/`dev.sh` always starts in the
-deterministic demo (see below). If you want to run the daemon from source against your own project
-instead of the demo, build the frontend once and invoke the daemon directly:
-
-```sh
-(cd web && npm ci && npm run build)
-go run ./cmd/studioforge --no-open
-```
+and then run `go run ./cmd/studioforge` with any extra arguments you passed appended — the scripts pass
+your flags straight through and do not force `--mock`. Add `--mock` yourself (e.g.
+`./scripts/dev.ps1 --no-open --mock`) if you want the seeded demo (see below); omit it to run the
+daemon from source against your own project.
 
 ### (b) From a release package
 
@@ -142,10 +137,10 @@ agents (orchestrator/engineer/QA), a budget, and a completed sample run with a u
 **Be explicit with yourself about what is fake here.** The Studio Sessions rows shown for the demo
 projects, and the task dependency links between the demo tasks, are seeded rows inserted once by
 `--mock` — they are not produced by a live Studio connection. Task dependencies are a real, live
-feature now (create a task with a `dependencies` field and it is persisted and cycle-checked — see
-[Known Limitations](KNOWN_LIMITATIONS.md) for the one caveat), so on a real project you can create
-your own instead of only seeing the demo ones. Outside of `--mock`, nothing in the product currently
-creates Studio session rows from a live run.
+feature now (create a task with a `dependencies` field and it is persisted, cycle-checked, and enforced
+before a run may start — see [Known Limitations](KNOWN_LIMITATIONS.md) for the resume/restart nuance),
+so on a real project you can create your own instead of only seeing the demo ones. Outside of `--mock`,
+nothing in the product currently creates Studio session rows from a live run.
 
 `--safe-mode` is the complementary flag: it disables AI provider workers, MCP, and Rojo while keeping
 data, backups, exports, and diagnostics available — useful for inspecting or maintaining a data
@@ -283,11 +278,12 @@ rojo --version
 
 What actually works today: StudioForge builds a project's `default.project.json` into a place file
 under `<project>/.studioforge/<name>.rbxl` and opens it in Roblox Studio (this is what happens when you
-open a project or when Studio access needs a specific place opened automatically). **Live-sync `rojo
-serve` sessions are implemented in the codebase (`internal/rojo`) but are not wired to any HTTP endpoint
-— there is currently no way to start, stop, or query a `rojo serve` session from the product.** Do not
-expect live-sync editing from StudioForge itself; use the Rojo CLI/VS Code extension directly for that
-workflow today.
+open a project or when Studio access needs a specific place opened automatically). Live-sync is also
+wired end to end: `POST`/`DELETE /api/v1/projects/{id}/sync` start and stop a `rojo serve` session, and
+the chat view can start/stop it with status, port, and recent logs shown in the Overview view. It
+requires a `default.project.json` at the project root, and it only carries files into an already-open
+Studio — the Rojo Studio plugin still has to be told to Connect once per session from inside Studio;
+StudioForge cannot press that button for you.
 
 ---
 
@@ -363,12 +359,14 @@ Adapt the content freely — these are illustrative, not a schema StudioForge va
 - **Expecting a run saved under the old Codex provider to restart or resume.** The Codex CLI provider
   is removed; those runs remain visible in history with a **Legacy provider** badge, but Restart and
   Resume return a controlled error instead of relaunching a CLI that no longer runs.
-- **Expecting a task's dependencies to block it from running.** Dependencies are persisted and
-  validated for cycles, but a run does not check whether a task's dependencies are finished before
-  starting — see [Known Limitations](KNOWN_LIMITATIONS.md).
-- **Expecting git rollback through the UI.** `internal/gitops.SafeRollback`/`Tag` exist and are
-  tested, but no endpoint exposes them; only the diff panel (`Status`/`DiffHead`) is wired. Use `git`
-  directly against the checkpoint commit instead.
+- **Expecting Resume to re-check a task's dependencies.** `POST /api/v1/runs` and a user-initiated
+  Restart both refuse (409 `task_dependencies_incomplete`) unless every dependency of the attached task
+  has reached `completed`, but Resume and an automatic playtest-correction run skip that check, since
+  both continue a lineage that already started rather than beginning fresh — see
+  [Known Limitations](KNOWN_LIMITATIONS.md).
+- **Expecting rollback to work without a stored checkpoint, or while a run is active.**
+  `POST /api/v1/runs/{id}/rollback` is wired and has a confirm dialog in the chat view, but it needs a
+  checkpoint recorded for that run and is refused while a run holds the project's write lease.
 - **Binding to a non-loopback host without understanding `--unsafe-host`.** StudioForge adds no remote
   authentication of its own; binding beyond loopback is an explicit escape hatch, not a hardening
   feature, and should not be exposed to an untrusted network.

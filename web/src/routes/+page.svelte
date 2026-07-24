@@ -1,5 +1,5 @@
 ﻿<script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import '../app.css';
   import {
     Activity,
@@ -39,7 +39,8 @@
   } from '$lib/i18n';
   import { normalizeFontSize, setThemeColorMeta, themeColorFor } from '$lib/theme';
   import { setPendingLeadAgent } from '$lib/uiIntents';
-  import type { Agent, AppSettings, Check, Project, Run, RunEvent, Snapshot } from '$lib/types';
+  import { completionTarget } from '$lib/wizard';
+  import type { Agent, AppSettings, Project, Run, RunEvent, Snapshot } from '$lib/types';
   import FirstRunWizard from '$lib/components/FirstRunWizard.svelte';
   import NewProjectDialog from '$lib/components/NewProjectDialog.svelte';
   import ActivityView from '$lib/components/views/ActivityView.svelte';
@@ -70,6 +71,7 @@
   let busy = '';
   let search = '';
   let showNewProject = false;
+  let wizardSuspended = false;
   let selectedProjectId = '';
   let selectedRunId = '';
   let events: RunEvent[] = [];
@@ -354,7 +356,15 @@
     await action('wizard', async () => {
       await post('/settings', { setup_complete: 'true', locale: $locale });
       await refresh();
+      view = 'projects';
+      showNewProject = completionTarget(snapshot?.projects ?? []) === 'new-project';
     });
+  }
+  async function openWizardSettings(anchor?: string) {
+    wizardSuspended = true;
+    view = 'settings';
+    await tick();
+    if (anchor) document.getElementById(anchor)?.scrollIntoView({ block: 'start' });
   }
   async function changeLocale(value: Locale) {
     locale.set(value);
@@ -521,12 +531,6 @@
   function validationLabel(validation: string): string {
     const key = `validation.${validation}` as TranslationKey;
     return $translate(key) || validation;
-  }
-  function checkList(): Check[] {
-    return [
-      ...Object.values(snapshot?.diagnostics.dependencies ?? {}),
-      ...(snapshot?.diagnostics.checks ?? []),
-    ];
   }
   function payloadText(payload: unknown): string {
     if (typeof payload === 'string') return payload;
@@ -774,13 +778,23 @@
     </div>
   </div>
 
-  {#if !snapshot.settings.setupComplete}
+  {#if !snapshot.settings.setupComplete && wizardSuspended}
+    <button
+      class="toast resume-setup-toast"
+      type="button"
+      onclick={() => (wizardSuspended = false)}
+    >
+      <ShieldAlert size={17} />{$translate('wizard.resumeSetup')}
+    </button>
+  {/if}
+  {#if !snapshot.settings.setupComplete && !wizardSuspended}
     <FirstRunWizard
-      checks={checkList()}
+      diagnostics={snapshot.diagnostics}
       safeMode={snapshot.settings.safeMode}
       {busy}
       onRefresh={() => refresh(true)}
       onComplete={finishWizard}
+      onOpenSettings={openWizardSettings}
     />
   {/if}
   {#if showNewProject}

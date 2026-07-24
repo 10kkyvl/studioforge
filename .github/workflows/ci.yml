@@ -6,6 +6,11 @@ on:
 permissions:
   contents: read
 jobs:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/check-docs.sh
   frontend:
     runs-on: ubuntu-latest
     steps:
@@ -67,8 +72,8 @@ jobs:
         working-directory: web
       - run: go build -trimpath -o ${{ matrix.output }} ./cmd/studioforge
         env: {CGO_ENABLED: '0', GOOS: '${{ matrix.goos }}', GOARCH: '${{ matrix.goarch }}'}
-      - run: ./${{ matrix.output }} --version
-        if: runner.os == 'macOS'
+      - run: ./"${{ matrix.output }}" --version
+        shell: bash
       - uses: actions/upload-artifact@v4
         with: {name: 'studioforge-${{ matrix.goos }}-${{ matrix.goarch }}', path: '${{ matrix.output }}'}
   audit:

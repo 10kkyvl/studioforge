@@ -1,17 +1,18 @@
 # GitHub repository metadata (ready to paste)
 
-Values below are drafted for StudioForge's first public alpha. Every URL is a placeholder in the
-form `<PLACEHOLDER>` — replace with the real address before publishing; do not guess one.
+Values below are drafted for StudioForge's current public beta, heading toward the v0.5.0-rc.1
+release candidate. Every URL below is real (the repository and its releases page); there is no
+hosted docs site or demo site, so none is invented here.
 
 ## Repository description
 
-Use exactly (156 characters, well under GitHub's 350-character limit):
+Use exactly (178 characters, well under GitHub's 350-character limit):
 
 ```
-Open-source project-level workflow for Claude Code and Roblox Studio, focused on context, orchestration, validation, and repeatable AI-assisted development.
+Open-source desktop app that runs AI coding agents on your Roblox project: live output, diffs, git rollback, task board, and Rojo/Studio live-sync. Public beta, feedback welcome.
 ```
 
-Character count: **156**.
+Character count: **178**.
 
 ## Recommended topics
 
@@ -20,30 +21,27 @@ Lowercase, hyphenated, GitHub topic slugs:
 ```
 roblox
 roblox-studio
+rojo
+luau
+ai
+ai-agents
+coding-agent
 claude
 claude-code
 openrouter
-mcp
-model-context-protocol
-ai-assisted-development
-ai-agents
 developer-tools
 go
-golang
-sveltekit
-rojo
-luau
-open-source
-alpha
-workflow-automation
+svelte
 game-development
+open-source
+desktop-app
 ```
 
 ## Homepage field
 
-Leave blank for the first public alpha. There is no hosted documentation site yet. Once one exists,
-point the homepage field at it; until then, either leave it empty or point it at the repository's
-own docs directory, e.g. `<REPOSITORY_URL>/tree/main/docs`.
+Either leave it blank, or point it at the [Releases page](https://github.com/10kkyvl/studioforge/releases)
+so a visitor lands on downloadable builds. There is no hosted documentation site or demo, so don't
+put anything else there.
 
 ## Suggested social preview text
 
@@ -51,70 +49,74 @@ For the 1280x640 social preview image (plain text overlay, no invented metrics):
 
 ```
 StudioForge
-An open-source workflow connecting Claude Code and Roblox Studio
-Public alpha
+AI coding agents for your Roblox project — local, open-source, one project at a time
+Public beta · v0.5.0-rc.1
 ```
 
 ## Reddit announcement (r/robloxgamedev style)
 
 ```
-Title: StudioForge — an open-source workflow layer for Claude Code + Roblox Studio (public alpha, feedback wanted)
+Title: StudioForge — a local, open-source app that runs AI coding agents on your Roblox project (public beta)
 
-I've just made StudioForge public as an alpha. It's a local, single-binary daemon with a small
-web UI that helps Claude Code (or, via OpenRouter, other models) work on a Roblox/Rojo project: it registers
-your project, runs an agent against it, streams the run's events live, makes a git checkpoint
-before every change so you can review or revert it, and can build your place with Rojo and open it
-in Studio.
+StudioForge is a free, open-source desktop app for Roblox creators. You describe what you want
+built in chat, and an AI coding agent writes the code, builds the place, and can test it — inside
+your own Roblox Studio, on your own machine.
 
-Important: this does not replace or reimplement Roblox Studio's own official MCP tooling. Roblox
-Studio ships its own MCP server (Assistant → Manage MCP Servers → Studio as MCP server). StudioForge
-detects that official launcher, starts it, and speaks MCP to it — it adds project-level orchestration,
-a tool allowlist by permission profile, and a run/event/checkpoint workflow around it. It complements
-the official tooling rather than competing with it, and ships no Roblox Studio plugin of its own.
+What it actually does: you create a project pointing at your Roblox/Rojo folder, queue a
+prompt-driven run, and watch the agent's output stream live. Every run gets its own git checkpoint
+first, so you can review a per-run diff and roll back anything you don't like. There's a task board
+with dependencies for planning bigger work, live-sync to Roblox Studio via Rojo, and a Sessions
+view that discovers and binds open Studio instances so a run can reach into the one you're
+actually using.
 
-It's genuinely an alpha: some packages in the codebase (project memory, a task dependency graph,
-asset review, Rojo live-sync control) are implemented and tested but not yet wired into the running
-UI, and the docs say so plainly rather than listing them as features. Studio access is only granted
-to a run when exactly one Studio instance is open, by design — that's a real constraint of how
-Studio's MCP client state works, not a bug.
+Providers: Claude Code (if you already have the CLI installed and signed in), OpenRouter or NVIDIA
+NIM (bring your own free-tier API key), or a deterministic --mock demo mode that needs no accounts
+at all.
 
-Repo: <REPOSITORY_URL>
-Docs: <DOCUMENTATION_URL>
-Releases: <RELEASE_URL>
+Honest state of things: this is public beta software heading toward a v0.5.0-rc.1 release
+candidate, not a finished product. The Windows and macOS (Apple silicon) packages are unsigned, so
+expect a SmartScreen/Gatekeeper warning on first run. Task dependencies aren't enforced yet when
+starting a run, and project memory has no management UI yet. It's local-only — a loopback listener
+on your machine, and your API keys stay in your OS's own credential store.
 
-Feedback, issues, and pull requests are welcome — especially from anyone running real Rojo projects
-against it.
+Repo: https://github.com/10kkyvl/studioforge
+Releases: https://github.com/10kkyvl/studioforge/releases
+
+Feedback, bug reports, and pull requests are all welcome — especially from anyone running it
+against a real Rojo project.
 ```
 
 ## DevForum announcement (more conservative tone)
 
 ```
-Title: StudioForge (public alpha) — a workflow layer around Claude Code, OpenRouter, and Studio's official MCP tooling
+Title: StudioForge (public beta) — an open-source desktop app for running AI coding agents against your Roblox project
 
-Hi all — I wanted to share an early, public alpha of an open-source tool called StudioForge. It's a
-local daemon with a web UI that sits alongside your existing Roblox Studio and Rojo setup.
+Hi all — sharing an open-source tool I've been building called StudioForge. It's a local desktop
+app (a single binary with a browser-based UI) that runs AI coding agents against a Roblox/Rojo
+project on your own machine.
 
-To be clear about scope: StudioForge does not replace or modify Roblox Studio, and it does not ship
-a Studio plugin. Roblox Studio already provides its own official MCP server (enabled via
-Assistant → Manage MCP Servers → Studio as MCP server), and StudioForge's role is to detect that
-official launcher, start it per run, and connect an AI coding agent — Claude Code as a local CLI, or
-OpenRouter through its own in-process agent loop, both with Studio access — to it under a scoped tool
-allowlist. On top of that it adds a project registry, a
-run scheduler, live event streaming, and an automatic git checkpoint before each change so results
-are easy to review or revert.
+The workflow: register a project, describe a change in chat or queue a prompt-driven run, and watch
+the agent's output stream live. Before each run, StudioForge takes a git checkpoint, so you get a
+per-run diff and can roll back if the result isn't what you wanted. It also has a task board with
+dependency tracking, live-sync into an open Roblox Studio session via Rojo, and a Sessions view that
+can discover and bind open Studio instances.
 
-This is a first public alpha, not a finished product. Some parts described in the repository's own
-"known limitations" doc are implemented but not yet reachable from the UI, and platform packages
-(Windows/macOS) are unsigned development builds for now. Studio access is intentionally refused
-whenever more than one Studio instance is open, since the official MCP client has no way for an
-external process to pin which instance an agent's connection is bound to.
+You can point it at Claude Code (using your existing local CLI login), OpenRouter, or NVIDIA NIM
+(both bring-your-own-API-key), or run it with a built-in --mock demo mode that needs no account at
+all.
 
-I'm sharing this early to get feedback from people who actually use Rojo-based workflows day to day.
-Repo: <REPOSITORY_URL>
-Docs: <DOCUMENTATION_URL>
-Releases: <RELEASE_URL>
+This is public beta software, currently heading toward a v0.5.0-rc.1 release candidate — expect
+rough edges. Windows and macOS (Apple silicon) builds are unsigned for now, so you'll see a
+SmartScreen or Gatekeeper warning on first launch. A few things are still partial: task dependencies
+aren't yet enforced when a run starts, and project memory (auto-collected from past runs) doesn't
+have a management UI yet. Everything runs locally — no external server sees your project, and API
+keys are kept in your OS's own credential store.
 
-Happy to answer questions about what does and doesn't work yet.
+Repo: https://github.com/10kkyvl/studioforge
+Releases: https://github.com/10kkyvl/studioforge/releases
+
+Happy to answer questions about what it does and doesn't do yet — feedback from people running real
+Rojo workflows is exactly what this beta needs.
 ```
 
 ## X/Twitter announcement
@@ -122,31 +124,38 @@ Happy to answer questions about what does and doesn't work yet.
 Fits within 280 characters:
 
 ```
-StudioForge is now public: an open-source workflow layer for Claude Code + Roblox Studio's own
-official MCP tooling — project registry, live run events, git checkpoints, Rojo build/open.
-Public alpha, feedback welcome. <REPOSITORY_URL>
+StudioForge: an open-source desktop app that runs AI coding agents on your Roblox project. Live
+output, per-run diffs, git rollback, task board, Rojo/Studio live-sync. Public beta, unsigned
+builds, feedback wanted. https://github.com/10kkyvl/studioforge
 ```
 
-(Character count of the body above is close to the limit — trim the placeholder URL length in the
-final post if needed; most URL shorteners keep this under 280 including the link.)
-
-## First public release
+## Draft GitHub Release — v0.5.0-rc.1
 
 **Title:**
 
 ```
-v0.1.0-alpha.1 — first public alpha
+v0.5.0-rc.1 — release candidate
 ```
 
 **Summary:**
 
 ```
-This is StudioForge's first public release: a single Go binary with an embedded web UI that
-registers Roblox/Rojo projects, runs Claude Code or OpenRouter agents against them, streams run events
-live, checkpoints changes with git before each run, and can build and open a project in Roblox
-Studio through Rojo and Studio's official MCP tooling. Windows (amd64) and macOS (arm64) builds are
-provided as unsigned development packages. This release is an alpha: some implemented packages are
-not yet wired into the running product, and real end-to-end paths against a live Claude account or
-a live Studio session are covered only by opt-in tests, not by default CI. See
-docs/KNOWN_LIMITATIONS.md for the full list before relying on any specific behavior.
+StudioForge is a free, open-source desktop app for Roblox creators: a single binary with a local
+web UI (Go backend, Svelte frontend) that runs AI coding agents against your Roblox/Rojo project.
+
+This release candidate carries forward the public beta: create a project, queue a prompt-driven
+run, watch its output stream live, review a per-run diff, and roll back to a git checkpoint if a run
+goes wrong. The task board supports dependencies with cycle validation, Rojo live-sync pushes files
+into an open Roblox Studio session, and the Sessions view can discover and bind open Studio
+instances (manual refresh). Project memory now carries context from completed runs into future ones.
+
+Providers: Claude Code (your local CLI and existing login), OpenRouter, NVIDIA NIM (bring your own
+API key for either), or a deterministic --mock demo mode needing no account at all.
+
+Packages: Windows 10/11 (amd64) and macOS (Apple silicon, arm64), both unsigned — expect a
+SmartScreen or Gatekeeper warning on first launch. Building from source needs Go and Node.
+
+This is beta software with known rough edges — see docs/KNOWN_LIMITATIONS.md before relying on any
+specific behavior. Issues, pull requests, and feedback from real Rojo/Studio setups are very
+welcome.
 ```

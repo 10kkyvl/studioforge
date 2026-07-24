@@ -127,6 +127,42 @@ func TestRunWritableDataDirectoryReportsOk(t *testing.T) {
 	}
 }
 
+func TestRunDependencyNvidiaAbsentWhenKeyStateNil(t *testing.T) {
+	d := &Doctor{DataDir: t.TempDir()}
+	report := d.Run(context.Background())
+
+	if _, ok := report.Dependencies["nvidia"]; ok {
+		t.Error("expected no nvidia dependency entry when NVIDIAKeyState is nil")
+	}
+}
+
+func TestRunDependencyNvidiaKeyStateStatus(t *testing.T) {
+	cases := []struct {
+		name     string
+		keyState string
+		want     string
+	}{
+		{"configured", "configured", "ok"},
+		{"unverified", "unverified", "warning"},
+		{"invalid", "invalid", "error"},
+		{"empty", "", "missing"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := &Doctor{DataDir: t.TempDir(), NVIDIAKeyState: func(context.Context) string { return c.keyState }}
+			report := d.Run(context.Background())
+
+			got, ok := report.Dependencies["nvidia"]
+			if !ok {
+				t.Fatal("expected an nvidia dependency entry")
+			}
+			if got.Status != c.want {
+				t.Errorf("status = %q, want %q (message=%q)", got.Status, c.want, got.Message)
+			}
+		})
+	}
+}
+
 func TestRunDatabaseIntegrityOk(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "doctor.db"))

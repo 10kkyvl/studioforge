@@ -2,7 +2,7 @@
 
 This file holds draft answers for StudioForge's application to Anthropic's Claude for Open Source
 program. It is a working draft, not a submission record: re-read every field against the current
-state of the repository immediately before pasting it into the application form, since alpha-stage
+state of the repository immediately before pasting it into the application form, since beta-stage
 details (what is wired up, what is unsigned, what test coverage exists) can change between now and
 submission time.
 
@@ -11,7 +11,8 @@ submission time.
 ## Field 1: Tell us about the project's reach and impact
 
 ```
-StudioForge has just become public as an alpha release. It has no accumulated reach metrics —
+StudioForge has been shipping regular tagged pre-releases since its first alpha and is now a public
+beta, heading toward a v0.5.0-rc.1 release candidate. It has no accumulated reach metrics —
 no meaningful star count, download count, or contributor history yet — and this answer does not
 lean on any of that, because there isn't any to report honestly.
 
@@ -36,7 +37,7 @@ official MCP launcher, not a substitute: StudioForge detects and starts that off
 speaks MCP to it, and contains no reimplementation of Studio operations and no Roblox Studio plugin
 of its own.
 
-This is a newly released open-source alpha focused on improving AI-assisted development workflows
+This is a public-beta, open-source project focused on improving AI-assisted development workflows
 for Roblox Studio. No claim is made that any user currently depends on it — it is too new for that
 to be true. The plausible benefit is for independent developers and small teams who want an AI
 coding agent to work against a real Roblox/Rojo project with some guardrails (one writer per
@@ -71,7 +72,7 @@ consume real, sustained usage rather than occasional code generation:
 - Diagnosing and fixing synchronization failures between StudioForge, Rojo, and Roblox Studio.
 - Preparing and maintaining documentation as functionality changes.
 - Reviewing community issues and pull requests once the project is public.
-- Shipping regular alpha releases as fixes and features land.
+- Shipping regular tagged pre-releases as fixes and features land, on the way to v0.5.0-rc.1.
 
 The specific reason this needs a higher-tier plan rather than a lighter one is architectural: every
 StudioForge run execs a real `claude` subprocess and inherits the operator's own Claude Code
@@ -107,17 +108,21 @@ access is scoped by an explicit permission-profile allowlist rather than
 hard-coded per feature. This separation is meant to make it realistic to add another provider
 adapter or another Studio capability without reworking the domain layer.
 
-It is being released early, as an alpha, specifically to develop it against real-world feedback
-rather than in isolation. The current state is labeled honestly as alpha throughout the
-documentation, including the fact that some implemented, unit-tested packages — project memory,
-a task dependency graph, git status/diff/rollback endpoints, asset quarantine, and Rojo live-sync
-session control — are not yet wired into the running UI or API, and are documented as not
-user-reachable rather than advertised as working features. Real end-to-end paths against a live
-Claude account or a live Roblox Studio session are covered only by opt-in smoke tests, not by
-default CI, and that gap is stated in the repository's own known-limitations documentation as well.
+It was released early, as a public beta, specifically to develop it against real-world feedback
+rather than in isolation. The current state is labeled honestly throughout the documentation as a
+public beta heading toward a v0.5.0-rc.1 release candidate. Project memory, the task dependency
+graph, git status/diff/rollback endpoints, and Rojo live-sync session control are all wired into
+the running UI and API today — project memory auto-collects from completed runs and injects into
+future run context, task dependencies are created and validated as a DAG (though not yet enforced
+when a run starts), git status/diff/rollback back per-run checkpoints and tags, and Rojo live-sync
+pushes files into an open Studio session. The one package once described here, asset quarantine,
+has since been removed from the codebase entirely rather than left unwired. Real end-to-end paths
+against a live Claude account or a live Roblox Studio session are covered only by opt-in smoke
+tests, not by default CI, and that gap is stated in the repository's own known-limitations
+documentation as well.
 
-Repository URL: <REPOSITORY_URL>
-Demo URL: <DEMO_URL>
-Documentation URL: <DOCUMENTATION_URL>
-Release URL: <RELEASE_URL>
+Repository URL: https://github.com/10kkyvl/studioforge
+Demo URL: none yet
+Documentation URL: none yet — see the repository's docs/ directory
+Release URL: https://github.com/10kkyvl/studioforge/releases
 ```

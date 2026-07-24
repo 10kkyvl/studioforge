@@ -2,23 +2,29 @@ package security
 
 import "regexp"
 
-const sensitiveKeyAlternation = `api[_-]?key|token|secret|password`
+const sensitiveKeyAlternation = `api[_-]?key|token|secret|password|bootstrap|cookie`
 
 var sensitiveKeyPattern = regexp.MustCompile(`(?i)` + sensitiveKeyAlternation)
 
-var secretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)(` + sensitiveKeyAlternation + `)\s*[:=]\s*(["']?)[^\s,"']+`),
-	regexp.MustCompile(`\b(sk-ant-[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9_-]{20,})\b`),
-	regexp.MustCompile(`\b(nvapi-[A-Za-z0-9_-]{20,})\b`),
-	regexp.MustCompile(`(?i)authorization:\s*(bearer|basic)\s+[A-Za-z0-9._~+/=-]+`),
-	regexp.MustCompile(`(?i)-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`),
+type secretRule struct {
+	pattern     *regexp.Regexp
+	replacement string
+}
+
+var secretRules = []secretRule{
+	{regexp.MustCompile(`(?i)(cookie["']?\s*:\s*)[^\r\n]+`), "$1[REDACTED]"},
+	{regexp.MustCompile(`(?i)(` + sensitiveKeyAlternation + `)["']?\s*[:=]\s*["']?[^\s,"'&#]+`), "$1=[REDACTED]"},
+	{regexp.MustCompile(`\b(sk-ant-[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9_-]{20,})\b`), "[REDACTED]"},
+	{regexp.MustCompile(`\b(nvapi-[A-Za-z0-9_-]{20,})\b`), "[REDACTED]"},
+	{regexp.MustCompile(`(?i)authorization["']?\s*:\s*["']?(bearer|basic)\s+[A-Za-z0-9._~+/=-]+`), "[REDACTED]"},
+	{regexp.MustCompile(`(?i)-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`), "[REDACTED]"},
+	{regexp.MustCompile(`(?i)([?&#](?:api[_-]?key|key|token|access_token|bootstrap|session)=)[^&\s"'#]+`), "$1[REDACTED]"},
 }
 
 func Redact(input string) string {
 	out := input
-	out = secretPatterns[0].ReplaceAllString(out, "$1=[REDACTED]")
-	for _, pattern := range secretPatterns[1:] {
-		out = pattern.ReplaceAllString(out, "[REDACTED]")
+	for _, rule := range secretRules {
+		out = rule.pattern.ReplaceAllString(out, rule.replacement)
 	}
 	return out
 }

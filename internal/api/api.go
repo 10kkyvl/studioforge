@@ -35,6 +35,7 @@ import (
 	"github.com/10kkyvl/studioforge/internal/providers/openrouter/credential"
 	"github.com/10kkyvl/studioforge/internal/resources"
 	"github.com/10kkyvl/studioforge/internal/scheduler"
+	"github.com/10kkyvl/studioforge/internal/tasks"
 	"github.com/10kkyvl/studioforge/internal/webui"
 )
 
@@ -392,6 +393,7 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		"playtest_window_seconds": true,
 		"stuck_detection_enabled": true, "stuck_idle_seconds": true, "stuck_repetition_cap": true,
 		"openrouter_data_collection": true, "openrouter_zdr": true, "openrouter_allow_fallbacks": true,
+		"event_retention_days": true,
 	}
 	for key, value := range body {
 		if !allowed[key] {
@@ -428,6 +430,13 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		if key == "openrouter_allow_fallbacks" && value != "" && value != "true" && value != "false" {
 			writeError(w, r, 400, "invalid_allow_fallbacks", "OpenRouter allow fallbacks must be true or false", nil)
 			return
+		}
+		if key == "event_retention_days" {
+			days, err := strconv.Atoi(value)
+			if err != nil || days < 0 {
+				writeError(w, r, 400, "invalid_event_retention_days", "Event retention days must be a non-negative integer", nil)
+				return
+			}
 		}
 	}
 	defaultProvider := body["default_provider"]
@@ -858,6 +867,10 @@ func (s *Server) openStudio(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"place": place})
 }
 
+// testHookAfterInitialTaskReadinessCheck is a test-only seam; see its call
+// site inside createRun.
+var testHookAfterInitialTaskReadinessCheck func()
+
 func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	if s.safeMode {
 		writeError(w, r, 409, "safe_mode", "AI workers are disabled in safe mode", nil)
@@ -898,8 +911,29 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, 400, "task_not_in_project", "Task does not belong to project", nil)
 			return
 		}
+		// Reject before any provider check, budget lookup, or scheduler
+		// submission: an unready task must never reach the scheduler, acquire a
+		// write lease, or flip status, no matter how far the rest of the
+		// handler would otherwise get.
+		ready, blockers, err := tasks.TaskReadiness(r.Context(), s.store, project.ID, task.ID)
+		if err != nil {
+			writeError(w, r, 500, "database_error", "Unable to check task dependencies", err)
+			return
+		}
+		if !ready {
+			writeTaskDependenciesIncomplete(w, r, blockers)
+			return
+		}
 		taskID = task.ID
 		body.Prompt = buildTaskPrompt(task, body.Prompt)
+		// Test seam only: lets a test flip a dependency's status here, after the
+		// initial readiness check passed but before the recheck immediately
+		// before scheduler submission below, to prove that recheck actually
+		// catches a race rather than trusting the first check. Nil, and never
+		// called, outside tests.
+		if testHookAfterInitialTaskReadinessCheck != nil {
+			testHookAfterInitialTaskReadinessCheck()
+		}
 	}
 	if len(body.Attachments) > 0 {
 		for _, path := range body.Attachments {
@@ -1034,6 +1068,22 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 			checkpointHash, checkpointBranch = hash, branch
 		}
 	}
+	if taskID != "" {
+		// Re-check right before submission, not just at the top of the
+		// handler: a dependency's status can change while the rest of this
+		// request (provider diagnostics, memory search, checkpointing) was in
+		// flight, and this is the last point before the job actually reaches
+		// the scheduler.
+		ready, blockers, err := tasks.TaskReadiness(r.Context(), s.store, project.ID, taskID)
+		if err != nil {
+			writeError(w, r, 500, "database_error", "Unable to check task dependencies", err)
+			return
+		}
+		if !ready {
+			writeTaskDependenciesIncomplete(w, r, blockers)
+			return
+		}
+	}
 	key := r.Header.Get("Idempotency-Key")
 	stuckDetectionEnabled := stuckSettings.Enabled && !agent.StuckDetectionDisabled && !stuckContinueSuppresses(prevStuckEscalated, rawPrompt)
 	run, created, err := s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: project.ID, AgentID: agent.ID, TaskID: body.TaskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, WorkingDirectory: project.Path, Prompt: body.Prompt, SystemPrompt: systemPrompt, Mode: body.Mode, ThreadID: thread.ID, ResumeThread: true, Scenario: body.Scenario, MaxBudget: maxBudget, AllowUnverifiedModel: agent.AllowUnverifiedModel, Resources: []string{"project:" + project.ID + ":write"}, IdempotencyKey: key, Subagents: subagents, ValidateAfterRun: agent.ValidateAfterRun, MaxCorrectionRuns: agent.MaxCorrectionRuns, StuckDetectionEnabled: stuckDetectionEnabled, StuckIdleSeconds: stuckSettings.IdleSeconds, StuckRepetitionCap: stuckSettings.RepetitionCap, Attachments: body.Attachments})
@@ -1110,40 +1160,75 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 		run, runErr := s.store.Run(r.Context(), id)
 		if runErr != nil {
 			err = runErr
-		} else if _, configured := s.scheduler.Diagnose(r.Context(), run.Provider); !configured {
+			break
+		}
+		if _, configured := s.scheduler.Diagnose(r.Context(), run.Provider); !configured {
 			err = fmt.Errorf("this run used the removed %q provider and is read-only history; it cannot be restarted or resumed", run.Provider)
-		} else if run.Status != "interrupted" && run.Status != "failed" && run.Status != "cancelled" {
+			break
+		}
+		if run.Status != "interrupted" && run.Status != "failed" && run.Status != "cancelled" {
 			err = fmt.Errorf("run in status %s cannot be restarted", run.Status)
-		} else {
-			project, pErr := s.store.Project(r.Context(), run.ProjectID)
-			if pErr != nil {
-				err = pErr
-			} else {
-				agents, agentErr := s.store.ListAgents(r.Context(), run.ProjectID)
-				if agentErr != nil {
-					err = agentErr
-				} else {
-					var agent *models.Agent
-					for index := range agents {
-						if agents[index].ID == run.AgentID && agents[index].Enabled {
-							agent = &agents[index]
-							break
-						}
-					}
-					if agent == nil {
-						err = errors.New("the original agent is missing or disabled")
-					} else {
-						if validateErr := s.validateOpenRouterAgent(r.Context(), agent, true); validateErr != nil {
-							err = validateErr
-						} else if validateErr := validateNVIDIAAgent(agent); validateErr != nil {
-							err = validateErr
-						} else {
-							_, _, err = s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: run.ProjectID, AgentID: run.AgentID, TaskID: run.TaskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, WorkingDirectory: project.Path, Prompt: "Restart the interrupted task. Inspect the previous failure and complete the task with verification.", SystemPrompt: prompts.ForRun(agent.SystemPrompt, projects.LoadContext(project.Path)), MaxBudget: agent.Budget, AllowUnverifiedModel: agent.AllowUnverifiedModel, Resources: []string{"project:" + run.ProjectID + ":write"}})
-						}
-					}
-				}
+			break
+		}
+		// A user-initiated restart re-checks task readiness, same as a fresh
+		// run start (createRun); resume and automatic correction runs do not,
+		// since those continue a lineage that already started. Rejecting here
+		// is still before any project/agent lookup, and well before the
+		// scheduler submission below.
+		if run.TaskID != "" {
+			ready, blockers, readyErr := tasks.TaskReadiness(r.Context(), s.store, run.ProjectID, run.TaskID)
+			if readyErr != nil {
+				err = readyErr
+				break
+			}
+			if !ready {
+				writeTaskDependenciesIncomplete(w, r, blockers)
+				return
 			}
 		}
+		project, pErr := s.store.Project(r.Context(), run.ProjectID)
+		if pErr != nil {
+			err = pErr
+			break
+		}
+		agents, agentErr := s.store.ListAgents(r.Context(), run.ProjectID)
+		if agentErr != nil {
+			err = agentErr
+			break
+		}
+		var agent *models.Agent
+		for index := range agents {
+			if agents[index].ID == run.AgentID && agents[index].Enabled {
+				agent = &agents[index]
+				break
+			}
+		}
+		if agent == nil {
+			err = errors.New("the original agent is missing or disabled")
+			break
+		}
+		if validateErr := s.validateOpenRouterAgent(r.Context(), agent, true); validateErr != nil {
+			err = validateErr
+			break
+		}
+		if validateErr := validateNVIDIAAgent(agent); validateErr != nil {
+			err = validateErr
+			break
+		}
+		if run.TaskID != "" {
+			// Re-check right before submission: a dependency's status can
+			// change while the lookups above were in flight.
+			ready, blockers, readyErr := tasks.TaskReadiness(r.Context(), s.store, run.ProjectID, run.TaskID)
+			if readyErr != nil {
+				err = readyErr
+				break
+			}
+			if !ready {
+				writeTaskDependenciesIncomplete(w, r, blockers)
+				return
+			}
+		}
+		_, _, err = s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: run.ProjectID, AgentID: run.AgentID, TaskID: run.TaskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, WorkingDirectory: project.Path, Prompt: "Restart the interrupted task. Inspect the previous failure and complete the task with verification.", SystemPrompt: prompts.ForRun(agent.SystemPrompt, projects.LoadContext(project.Path)), MaxBudget: agent.Budget, AllowUnverifiedModel: agent.AllowUnverifiedModel, Resources: []string{"project:" + run.ProjectID + ":write"}})
 	default:
 		writeError(w, r, 404, "not_found", "Unknown run action", nil)
 		return
@@ -1528,11 +1613,44 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 func writeError(w http.ResponseWriter, r *http.Request, status int, code, message string, internal error) {
+	writeErrorDetails(w, r, status, code, message, nil, internal)
+}
+
+// writeErrorDetails is writeError plus an optional machine-readable details
+// payload (e.g. the list of blockers behind a task_dependencies_incomplete
+// rejection), included in the envelope only when non-nil so every other
+// caller's response shape is unchanged.
+func writeErrorDetails(w http.ResponseWriter, r *http.Request, status int, code, message string, details any, internal error) {
 	requestID := w.Header().Get("X-Request-ID")
 	if internal != nil {
 		slog.Default().Error("request failed", "request_id", requestID, "method", r.Method, "path", r.URL.Path, "error", internal)
 	}
-	writeJSON(w, status, map[string]any{"error": map[string]any{"code": code, "message": message, "requestId": requestID}})
+	body := map[string]any{"code": code, "message": message, "requestId": requestID}
+	if details != nil {
+		body["details"] = details
+	}
+	writeJSON(w, status, map[string]any{"error": body})
+}
+
+// writeTaskDependenciesIncomplete rejects a run start or restart whose
+// attached task is not ready: at least one direct or transitive dependency
+// has not reached "completed" (or does not resolve at all). The blockers are
+// carried both in the message, for a human glancing at the error, and in
+// details.blockers, for the UI to render a structured list.
+func writeTaskDependenciesIncomplete(w http.ResponseWriter, r *http.Request, blockers []tasks.Blocker) {
+	details := make([]map[string]any, 0, len(blockers))
+	titles := make([]string, 0, len(blockers))
+	for _, b := range blockers {
+		details = append(details, map[string]any{"taskId": b.TaskID, "title": b.Title, "status": b.Status})
+		if b.Title != "" {
+			titles = append(titles, b.Title)
+		}
+	}
+	message := "This task has unfinished dependencies"
+	if len(titles) > 0 {
+		message = "This task has unfinished dependencies: " + strings.Join(titles, ", ")
+	}
+	writeErrorDetails(w, r, 409, "task_dependencies_incomplete", message, map[string]any{"blockers": details}, nil)
 }
 
 var _ = context.Canceled

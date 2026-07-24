@@ -173,6 +173,7 @@ func Run(ctx context.Context, opts config.Options) error {
 	rojoManager := rojo.New(supervisor, setting("rojo_path", ""))
 	doctor := &diagnostics.Doctor{DB: db, DataDir: dataDir, SafeMode: opts.SafeMode, MockMode: opts.MockMode, Claude: claudeProvider, Rojo: rojoManager, MCPOverride: setting("studio_mcp_path", ""), GitOverride: setting("git_path", "")}
 	doctor.OpenRouterKeyState = func(ctx context.Context) string { return string(credManager.Status(ctx).State) }
+	doctor.NVIDIAKeyState = func(ctx context.Context) string { return string(nvidiaCredManager.Status(ctx).State) }
 	// rojoManager.Start puts its process on the same supervisor every other
 	// child process runs under, so the shutdown sequence below
 	// (supervisor.Close) already stops a live sync session and frees its port
@@ -216,6 +217,11 @@ func Run(ctx context.Context, opts config.Options) error {
 			IdleSeconds:   int(stuckIdleSeconds.Load()),
 			RepetitionCap: int(stuckRepetitionCap.Load()),
 		}
+	}
+	var eventRetentionDays atomic.Int64
+	eventRetentionDays.Store(90)
+	if value, err := strconv.Atoi(setting("event_retention_days", "90")); err == nil && value >= 0 {
+		eventRetentionDays.Store(int64(value))
 	}
 	studioOpener := &studio.Opener{Rojo: rojoManager}
 	studioProvisioner := &mcp.Provisioner{
@@ -405,6 +411,12 @@ func Run(ctx context.Context, opts config.Options) error {
 			schedulerManager.SetLimits(count, 0, 0, 0)
 		case "openrouter_data_collection", "openrouter_zdr", "openrouter_allow_fallbacks":
 			applyOpenRouterRouting()
+		case "event_retention_days":
+			days, err := strconv.Atoi(value)
+			if err != nil || days < 0 {
+				return errors.New("event_retention_days must be a non-negative integer")
+			}
+			eventRetentionDays.Store(int64(days))
 		}
 		return nil
 	}
@@ -426,9 +438,10 @@ func Run(ctx context.Context, opts config.Options) error {
 	launchURL := baseURL.String() + "/#bootstrap=" + url.QueryEscape(sessions.BootstrapToken())
 	slog.Info("StudioForge ready", "url", baseURL.String(), "data_dir", dataDir, "safe_mode", opts.SafeMode, "mock_mode", opts.MockMode)
 	fmt.Printf("STUDIOFORGE_URL=%s\nSTUDIOFORGE_BOOTSTRAP=%s\n", baseURL.String(), sessions.BootstrapToken())
+	go store.RunEventRetentionLoop(ctx, func() int { return int(eventRetentionDays.Load()) })
 	if !opts.NoOpen {
 		if err := platform.OpenBrowser(launchURL); err != nil {
-			slog.Warn("browser did not open automatically", "error", err, "url", launchURL)
+			slog.Warn("browser did not open automatically", "error", err, "url", baseURL.String())
 		}
 	}
 	serveErr := make(chan error, 1)

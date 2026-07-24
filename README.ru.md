@@ -12,6 +12,9 @@
 
 StudioForge — бесплатное приложение с открытым кодом, которое встаёт между вами и AI-моделями и ведёт Roblox-проект так, как это делал бы человек-лид: один проект за раз, с историей изменений, бюджетом и кнопкой отмены.
 
+<p align="center"><img src="docs/screenshots/dashboard.png" width="720" alt="Дашборд StudioForge со списком трёх Roblox-проектов, их статусом, бюджетом и агентами"></p>
+<p align="center"><i>На скриншоте данные встроенной demo-версии <code>--mock</code> (Skyline Obby / Harbor Tycoon / Neon Arena), а не реальный проект.</i></p>
+
 ## Что можно делать
 
 - **Собирать игру через чат.** Напишите, что хотите получить, или используйте команду вроде `/build`, `/playtest`, `/task` или `/plan`, чтобы направить агента, даже не помня точный синтаксис.
@@ -19,6 +22,17 @@ StudioForge — бесплатное приложение с открытым к
 - **Смотреть запуск вживую и откатывать его.** Каждый шаг агента стримится в чат в реальном времени; перед любым запуском StudioForge делает Git-checkpoint проекта, так что изменения видны как diff и запуск, который не понравился, можно откатить.
 - **Пользоваться бесплатными AI-моделями.** StudioForge из коробки работает с бесплатными моделями OpenRouter и бесплатными hosted-моделями NVIDIA — нужен только бесплатный API-ключ, без платной подписки. Claude Code тоже поддерживается, если он у вас уже есть.
 - **Держать всё локально.** Файлы проекта, Roblox Studio, история Git — всё на вашем компьютере. StudioForge — это программа, которую вы запускаете сами; ничей чужой сервер ваш проект не видит.
+
+## В действии
+
+<p align="center"><img src="docs/screenshots/chat-run.png" width="720" alt="Чат StudioForge с выбранным агентом и запуском, который стримится вживую"></p>
+<p align="center"><i>Отправка инструкции агенту и запуск, стримящийся вживую — demo-данные <code>--mock</code>.</i></p>
+
+<p align="center"><img src="docs/screenshots/run-diff.png" width="720" alt="Завершённый запуск с git-диффом и панелью подтверждения отката"></p>
+<p align="center"><i>Перед каждым запуском StudioForge делает Git-checkpoint, поэтому доступны diff и откат в один клик — demo-данные <code>--mock</code>.</i></p>
+
+<p align="center"><img src="docs/screenshots/first-run.png" width="720" alt="Мастер первого запуска, проверяющий Studio, Git и AI-провайдера"></p>
+<p align="center"><i>Мастер первого запуска подтверждает, что Studio, Git и ваш AI-провайдер найдены и готовы.</i></p>
 
 ## Что понадобится
 
@@ -43,20 +57,20 @@ StudioForge — публичная beta, а не готовый продукт. 
 
 - **Сделайте резервную копию.** Подойдёт Git-репозиторий (StudioForge и так делает checkpoint перед каждым запуском) или обычная копия папки.
 - **Ожидайте предупреждений от системы.** Windows SmartScreen и macOS Gatekeeper предупредят при первом запуске — это ожидаемо для неподписанной development-сборки, а не признак взломанного файла. Для дополнительной уверенности сверьте контрольную сумму релиза.
-- **Часть возможностей ещё сырая или неполная.** Например, зависимости задач отслеживаются, но пока не проверяются перед стартом запуска. Полный список: [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) (на английском).
+- **Часть возможностей ещё сырая или неполная.** Например, пока нет интерфейса для просмотра или курирования памяти проекта. Полный список: [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) (на английском).
 
 ## Хотите больше подробностей?
 
-| | |
-| --- | --- |
-| **Полное руководство** | [docs/ru/README.md](docs/ru/README.md) · [English](docs/en/README.md) |
-| **Первые шаги подробно** | [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) |
-| **Известные ограничения** | [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) |
-| **Архитектура** (для разработчиков) | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
-| **Настройка для разработки** (для контрибьюторов) | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
-| **Участие в проекте** | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| **История изменений** | [CHANGELOG.md](CHANGELOG.md) |
-| **Политика безопасности** | [SECURITY.md](SECURITY.md) · [Модель безопасности](docs/SECURITY.md) |
+|                                                   |                                                                       |
+| ------------------------------------------------- | --------------------------------------------------------------------- |
+| **Полное руководство**                            | [docs/ru/README.md](docs/ru/README.md) · [English](docs/en/README.md) |
+| **Первые шаги подробно**                          | [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)                    |
+| **Известные ограничения**                         | [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md)                |
+| **Архитектура** (для разработчиков)               | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)                          |
+| **Настройка для разработки** (для контрибьюторов) | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)                            |
+| **Участие в проекте**                             | [CONTRIBUTING.md](CONTRIBUTING.md)                                    |
+| **История изменений**                             | [CHANGELOG.md](CHANGELOG.md)                                          |
+| **Политика безопасности**                         | [SECURITY.md](SECURITY.md) · [Модель безопасности](docs/SECURITY.md)  |
 
 ## Лицензия
 
