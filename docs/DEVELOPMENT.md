@@ -162,25 +162,25 @@ internal/
   diagnostics/              Doctor: dependency checks, diagnostic bundle export
   events/                   Hub: persisted-then-published run event fan-out
   gitcheckpoint/            auto-commit before non-plan Claude runs (wired)
-  gitops/                   status/diff/rollback/tag (not wired to an endpoint)
-  memory/                   FTS5-backed store (no live caller)
+  gitops/                   status/diff/rollback/tag (wired: GET .../diff, POST .../rollback, POST .../git/tag)
+  memory/                   FTS5-backed store (wired: auto-saved after each completed run, injected into
+                             the next run's context)
   migrations/               embedded ordered .sql migration files
   models/                   shared DTOs
   platform/                 data dir, single-instance lock, browser launch, secret store, toolpath
   portable/                 export/import archive format
   processes/                subprocess supervisor, minimal-environment allowlist
   projects/                 path guard, fingerprint, scaffold, static context loader
-  prompts/                  structured prompt assembly template (no live caller)
+  prompts/                  house rules + per-run system prompt assembly (wired: called on every run)
   providers/                Provider interface + claudecode, openrouter, mock adapters
   resources/                atomic resource lease manager
   roblox/
-    assets/                 quarantine transition validator (no caller)
     mcp/                    launcher discovery, stdio transport, client, provisioner, shim
-    studio/                 place builder/launcher, instance/binding tracker (tracker unwired)
-  rojo/                     build/plugin-install (wired) + serve session lifecycle (unwired)
+    studio/                 place builder/launcher
+  rojo/                     build/plugin-install (wired) + serve session lifecycle (wired via the sync endpoints)
   scheduler/                fair queue, run state machine, concurrency/budget enforcement
   security/                 secret redaction
-  tasks/                    task DAG validator (no live caller)
+  tasks/                    task DAG validator (wired: validated at task creation)
   webui/                    //go:embed of the built SvelteKit dist
 web/                        SvelteKit 5 SPA source
   e2e/                      Playwright end-to-end tests

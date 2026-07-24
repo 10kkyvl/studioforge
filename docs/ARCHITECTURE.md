@@ -1,6 +1,6 @@
 # Architecture
 
-StudioForge is a public alpha with no prior release and no git tags. This document describes what the
+StudioForge is a public beta (latest tagged release `v0.5.0-beta.4`). This document describes what the
 code in this repository actually does, not a target state.
 
 ## Overview
@@ -190,8 +190,12 @@ plugin loading or dynamic linking.
 
 ### Cross-cutting
 
-- `internal/security` — `Redact`, a regex-based secret scrubber for API keys, bearer tokens, and PEM
-  private key blocks, applied to diagnostic bundle exports.
+- `internal/security` — `Redact`, a regex-based secret scrubber for API keys, bearer tokens, cookies,
+  bootstrap/session tokens, and PEM private key blocks, applied to diagnostic bundle exports, to a run
+  event's payload before it is written to SQLite, and — via `RedactingHandler`
+  (`internal/security/logredact.go`), which wraps the daemon's `slog` handler — to every application log
+  line. The `mcp-shim` subcommand's stdout and `studioforge doctor`'s JSON report never go through
+  `slog`, so the handler does not touch them.
 - `internal/diagnostics` — `Doctor.Run` (dependency and database checks surfaced by `studioforge doctor`
   and `GET /api/v1/diagnostics`) and `Doctor.ExportBundle` (a redacted diagnostic zip). This package has
   no test files.
@@ -382,7 +386,7 @@ proposer is even installed. Resolving an already-resolved or nonexistent decisio
 silent success. Pending decisions ride on `GET /api/v1/snapshot` (`"decisions"`, filtered to `status=
 pending`) the same way Studio sessions and studio-sync status already do, and are shown as an inline
 banner (with Approve/Dismiss) on the Runs view, keyed by the decision's `runId`, rather than as a
-separate nav section — a scope choice, since this alpha's only producer is 1:1 with a run's own
+separate nav section — a scope choice, since this beta's only producer is 1:1 with a run's own
 correction lineage.
 
 ## Data flow: one chat message, end to end

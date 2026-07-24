@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ## [Unreleased]
 
+## [0.5.0-rc.1] - 2026-07-24
+
 ### Added
 
 - An NVIDIA NIM dependency check in diagnostics (`nvidia`), mirroring the OpenRouter key-state check,
@@ -18,21 +20,27 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   `docs/screenshots/README.md`.
 - Real product screenshots in the English and Russian READMEs: a dashboard hero image and a
   "See it in action" section, all captured from the built-in `--mock` demo.
-
-### Changed
-
-- The first-run wizard now renders `ok`/`warning`/`error`/`missing` states distinctly, groups checks
-  into required prerequisites, AI providers, and feature integrations, explains safe mode and demo
-  mode, links each fixable check to its Settings card without marking setup complete, blocks
-  completion only on database or data-directory errors, offers a clearly labelled limited-mode
-  continuation otherwise, and lands new users in the New Project flow when no projects exist.
-- `docs/DEMO_SCRIPT.md` refreshed: a 30–45 second Reddit clip shot list, an updated 90-second shot
-  list including the run diff and rollback confirmation, and an extended privacy checklist.
-
-## [0.5.0-rc.1] - 2026-07-24
-
-### Added
-
+- Task dependency readiness enforcement: `POST /api/v1/runs` and a user-initiated
+  `POST /api/v1/runs/{id}/restart` now refuse with 409 `task_dependencies_incomplete`
+  (`details.blockers` lists each unfinished or missing dependency by task ID, title, and status) unless
+  every direct and transitive dependency of the attached task has reached `completed`
+  (`internal/tasks/readiness.go`). Resume and automatic correction runs of an existing lineage are
+  exempt. A deleted or cross-project dependency counts as a blocker with status `missing`. The chat
+  task selector and the task board mark blocked tasks, disable starting a run on them, and list the
+  unfinished dependencies.
+- Application-log secret redaction: every `slog` application log line now passes through
+  `internal/security.RedactingHandler` (`internal/security/logredact.go`), reusing the same rules
+  already applied to diagnostic bundles and stored run-event payloads (OpenRouter/NVIDIA API key
+  shapes, `Authorization`/bearer headers, cookies, bootstrap/session tokens, API-key query parameters),
+  replacing a match with `[REDACTED]`. The `mcp-shim` subcommand's stdout and `studioforge doctor`'s
+  JSON report are unaffected, since neither goes through `slog`.
+- Run-event retention: a new `event_retention_days` setting (default 90, `0` disables) bounds how long
+  verbose `run_events` rows survive for terminal runs. A background maintenance loop prunes them in
+  bounded batches shortly after startup and then every 12 hours, and
+  `studioforge maintenance --prune-events [--retention-days N]` runs the same prune on demand.
+  Chat-history messages, run summaries, usage/cost, checkpoints, decisions, memory, and
+  projects/tasks/agents are never deleted by this. Migration `014_event_retention_index.sql` adds a
+  supporting index.
 - A documentation consistency check (`scripts/check-docs.ps1` / `check-docs.sh`) that fails the build
   on stale alpha-era tokens and placeholder URLs left in the docs, wired into CI as a dedicated docs
   job.
@@ -47,6 +55,13 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ### Changed
 
+- The first-run wizard now renders `ok`/`warning`/`error`/`missing` states distinctly, groups checks
+  into required prerequisites, AI providers, and feature integrations, explains safe mode and demo
+  mode, links each fixable check to its Settings card without marking setup complete, blocks
+  completion only on database or data-directory errors, offers a clearly labelled limited-mode
+  continuation otherwise, and lands new users in the New Project flow when no projects exist.
+- `docs/DEMO_SCRIPT.md` refreshed: a 30–45 second Reddit clip shot list, an updated 90-second shot
+  list including the run diff and rollback confirmation, and an extended privacy checklist.
 - Release packaging moved to a macOS runner using `scripts/package.sh`, so the `.app` executable bit
   survives into the ZIP; GitHub Releases still stay drafts with automatic prerelease detection.
 - `scripts/package.sh` now clears stale files inside `artifacts/` before packaging, matching
@@ -57,8 +72,7 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   with its history still readable), previously "unreachable" features are no longer described that
   way now that they're wired (per-run diff, rollback, Rojo live-sync, Studio session discovery,
   project memory, task dependency creation with DAG validation), honest current limitations spelled
-  out (dependencies are not enforced at run submission, there is no memory-management UI, no
-  run-event pruning, and application logs sit outside the secret-redaction path), placeholder URLs
+  out (there is no memory-management UI), placeholder URLs
   replaced with the real repository URL, and `docs/GITHUB_METADATA.md` rewritten for the public beta.
 - Frontend package metadata version aligned with the release (`0.5.0-alpha.1` -> `0.5.0-rc.1`).
 

@@ -186,12 +186,12 @@ retry.
   valid Rojo project JSON.
 - **Nothing happens when Studio should open automatically:** Studio detection runs before the build; a
   missing Studio install is reported and no place is built.
-- **"How do I use live `rojo serve` for live-sync editing?"** — you can't, from StudioForge, today.
-  Live-sync session management (`internal/rojo`'s `Manager.Start`/`Stop`/`Session`, per-project port
-  allocation, log streaming) exists in the codebase and is unit-tested, but no HTTP endpoint starts,
-  stops, or queries a `rojo serve` session. Only Rojo **build + open place** is reachable from the
-  product. Run `rojo serve` yourself with the Rojo CLI/VS Code extension if you need live sync; this is
-  out of scope for StudioForge issue reports until it is wired up.
+- **"How do I use live `rojo serve` for live-sync editing?"** — use the project's **Sync** action in
+  the Overview view. It requires a `default.project.json` at the project root (the same file Rojo
+  **build** needs); starting it calls `POST /api/v1/projects/{id}/sync`, and stopping it calls
+  `DELETE /api/v1/projects/{id}/sync`. The Overview view shows the session's status and its most
+  recent log lines while it runs. If Sync won't start, check for the missing-`default.project.json`
+  error above first.
 
 ---
 

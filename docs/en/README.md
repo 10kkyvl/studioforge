@@ -112,7 +112,7 @@ studioforge import --file project.zip
 studioforge import --file project.zip --apply --path C:\existing\project
 ```
 
-Portable export contains project metadata, agents, and tasks—not source. Task dependencies (create a task with a `dependencies` field naming other task IDs in the project; a cycle is rejected) are included with the tasks they belong to, though run execution does not yet check whether a task's dependencies are finished. Import always previews missing paths and conflicts before `--apply`.
+Portable export contains project metadata, agents, and tasks—not source. Task dependencies (create a task with a `dependencies` field naming other task IDs in the project; a cycle is rejected) are included with the tasks they belong to, and a run now checks the full dependency graph before it may start: `POST /api/v1/runs` and a user-initiated Restart refuse with 409 `task_dependencies_incomplete` while any dependency isn't `completed` (Resume and automatic correction runs are exempt, since they continue an already-started run). Import always previews missing paths and conflicts before `--apply`.
 
 ## Troubleshooting
 

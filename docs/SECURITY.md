@@ -203,6 +203,19 @@ directly, and does not open any listener other than the one loopback (or explici
   "create a run" handler only — `POST /api/v1/runs/{id}/restart` does not repeat that check. Treat
   `--safe-mode` as blocking new work started from the chat composer, not as a global kill switch on
   every run-related endpoint.
+- **Task dependency readiness** (`internal/tasks/readiness.go`) makes `POST /api/v1/runs` and a
+  user-initiated `POST /api/v1/runs/{id}/restart` refuse with 409, error code
+  `task_dependencies_incomplete`, unless every dependency in the target task's dependency graph —
+  direct and transitive — has reached `completed`. The response's `details.blockers` array lists each
+  blocking task by ID, title, and status, so the caller can show exactly what is still unfinished.
+  `POST /api/v1/runs/{id}/resume` and an automatic playtest-correction run skip this check, since both
+  continue a lineage that already started rather than beginning fresh. A dependency that does not
+  resolve to a task in the same project — deleted, or belonging to a different project — is reported as
+  a blocker with status `missing` and no title, rather than silently ignored or leaking another
+  project's task details; cross-project dependencies stay invalid regardless of status. The chat task
+  selector and the task board (`web/src/lib/tasksReadiness.ts`) mirror this same walk client-side to
+  mark blocked tasks and disable starting a run on them before the request round-trips, but the server
+  check above is the one that actually gates a run.
 
 ## Network access
 

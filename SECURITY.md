@@ -10,9 +10,9 @@ Do not file a public issue for an unpatched vulnerability. Use GitHub private vu
 
 ## Local security model
 
-StudioForge binds to loopback by default, creates a cryptographically random one-use bootstrap token, exchanges it for an HttpOnly SameSite cookie, validates Host and Origin on mutating requests, and sets no CORS headers at all. Project roots are canonicalized when they are registered. Provider processes receive a reduced environment. Known credential formats are redacted from diagnostic bundles and, before they are written to the database, from stored run event payloads.
+StudioForge binds to loopback by default, creates a cryptographically random one-use bootstrap token, exchanges it for an HttpOnly SameSite cookie, validates Host and Origin on mutating requests, and sets no CORS headers at all. Project roots are canonicalized when they are registered. Provider processes receive a reduced environment. Known credential formats are redacted from diagnostic bundles, from stored run event payloads before they are written to the database, and from StudioForge's own `slog` application log lines.
 
-One scope limit, stated precisely because the difference matters: redaction does not cover StudioForge's own `slog` application logs — only diagnostic bundles and stored run event payloads are redacted, so review application logs before sharing them. The path traversal and symlink-escape guard is implemented but currently has no caller, because no endpoint accepts a project-relative path; registration-time canonicalization is what is actually enforced today. See [docs/SECURITY.md](docs/SECURITY.md) for the full model.
+One scope limit, stated precisely because the difference matters: the `mcp-shim` subcommand's stdout (MCP protocol traffic) and `studioforge doctor`'s JSON report never go through `slog`, so the log-redaction handler does not touch them — the doctor bundle path has its own separate redaction call site instead. The path traversal and symlink-escape guard is implemented but currently has no caller, because no endpoint accepts a project-relative path; registration-time canonicalization is what is actually enforced today. See [docs/SECURITY.md](docs/SECURITY.md) for the full model.
 
 Localhost is not treated as a trust boundary. Malware running as the same OS user can still access user files and local processes. Keep the workstation and external CLIs updated.
 
@@ -40,9 +40,9 @@ Never include API keys, OAuth tokens, complete environment dumps, private prompt
 
 ## Локальная модель безопасности
 
-По умолчанию StudioForge слушает только loopback, создаёт криптографически случайный одноразовый bootstrap-токен и обменивает его на HttpOnly SameSite-cookie. Изменяющие запросы проверяют Host и Origin; заголовки CORS не выставляются вовсе. Корни проектов канонизируются при регистрации. Процессы provider получают сокращённое окружение. Известные форматы учётных данных редактируются в диагностических архивах.
+По умолчанию StudioForge слушает только loopback, создаёт криптографически случайный одноразовый bootstrap-токен и обменивает его на HttpOnly SameSite-cookie. Изменяющие запросы проверяют Host и Origin; заголовки CORS не выставляются вовсе. Корни проектов канонизируются при регистрации. Процессы provider получают сокращённое окружение. Известные форматы учётных данных редактируются в диагностических архивах, в сохранённых run event перед записью в базу и в собственных `slog`-логах приложения.
 
-Два уточнения, потому что разница важна: редактирование секретов работает только для диагностических архивов — логи приложения и сохранённые транскрипты запусков не редактируются, поэтому просматривайте их перед отправкой. Проверка path traversal и выхода по symlink реализована, но сейчас не вызывается, так как ни один endpoint не принимает путь относительно проекта; фактически действует канонизация при регистрации. Полная модель: [docs/SECURITY.md](docs/SECURITY.md).
+Уточнение, потому что разница важна: stdout подкоманды `mcp-shim` (MCP-трафик) и JSON-отчёт `studioforge doctor` не проходят через `slog`, поэтому handler редактирования логов их не затрагивает — у пути diagnostic bundle есть собственная отдельная точка редактирования. Проверка path traversal и выхода по symlink реализована, но сейчас не вызывается, так как ни один endpoint не принимает путь относительно проекта; фактически действует канонизация при регистрации. Полная модель: [docs/SECURITY.md](docs/SECURITY.md).
 
 Localhost не является границей доверия: вредоносная программа того же пользователя ОС всё ещё может читать пользовательские файлы и локальные процессы. Поддерживайте рабочую станцию и внешние CLI в актуальном состоянии.
 

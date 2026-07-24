@@ -108,7 +108,7 @@ studioforge import --file project.zip
 studioforge import --file project.zip --apply --path C:\existing\project
 ```
 
-Portable archive содержит metadata, agents и tasks, но не копирует project source. Зависимости задач (создайте задачу с полем `dependencies`, перечисляющим ID других задач проекта; цикл будет отклонён) входят в состав своих задач, хотя выполнение run'а пока не проверяет, завершены ли зависимости задачи. Import сначала показывает preview и конфликты.
+Portable archive содержит metadata, agents и tasks, но не копирует project source. Зависимости задач (создайте задачу с полем `dependencies`, перечисляющим ID других задач проекта; цикл будет отклонён) входят в состав своих задач, и теперь перед стартом run'а полный граф зависимостей проверяется: `POST /api/v1/runs` и запущенный оператором Restart отказывают с 409 `task_dependencies_incomplete`, пока не все зависимости в статусе `completed` (Resume и автоматические correction-запуски от этой проверки освобождены, поскольку продолжают уже начатый run). Import сначала показывает preview и конфликты.
 
 ## Решение проблем
 
