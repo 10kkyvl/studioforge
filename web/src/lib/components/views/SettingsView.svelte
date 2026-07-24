@@ -276,6 +276,39 @@
     return $translate(key) || status;
   }
 
+  function checkNameLabel(id: string, name: string): string {
+    const key = `check.${id}` as TranslationKey;
+    return $translate(key) || name;
+  }
+
+  const checkHelpKeys: Record<string, TranslationKey> = {
+    'Install Git or configure its executable path in Settings.': 'check.gitHelp',
+    'Run `claude auth status`, then authenticate with Claude Code if needed.': 'check.claudeHelp',
+    'Install Rojo 7 from the official Rojo documentation.': 'check.rojoHelp',
+    'Update Roblox Studio, open Assistant settings, and enable Studio as MCP server.':
+      'check.studioMcpHelp',
+    'Add your OpenRouter API key in Settings and click Test connection.': 'check.openrouterHelp',
+  };
+
+  const checkMessageKeys: Record<string, TranslationKey> = {
+    'Claude Code detected': 'check.claudeDetected',
+    'Claude Code was not found. Install it, then run StudioForge doctor. Mock mode remains available.':
+      'check.claudeNotFound',
+    'Rojo CLI detected': 'check.rojoDetected',
+    'Rojo CLI not found; install Rojo 7 and ensure rojo is on PATH': 'check.rojoNotFound',
+    'Official Studio MCP launcher detected': 'check.studioMcpDetected',
+  };
+
+  function checkHelpLabel(help: string): string {
+    const key = checkHelpKeys[help];
+    return key ? $translate(key) : help;
+  }
+
+  function checkMessageLabel(message: string): string {
+    const key = checkMessageKeys[message];
+    return key ? $translate(key) : message;
+  }
+
   onMount(() => {
     void runDetection('empty');
     void loadOpenRouterStatus();
@@ -708,7 +741,7 @@
     <dl>
       <div>
         <dt>{$translate('settings.database')}</dt>
-        <dd>{diagnostics.database}</dd>
+        <dd>{checkStatusLabel(diagnostics.database)}</dd>
       </div>
       <div>
         <dt>{$translate('settings.wal')}</dt>
@@ -732,12 +765,14 @@
       {#each Object.entries(diagnostics.dependencies) as [id, check]}
         <section class="dependency" data-status={check.status}>
           <div>
-            <strong>{check.name}</strong><span class="chip">{checkStatusLabel(check.status)}</span>
+            <strong>{checkNameLabel(id, check.name)}</strong><span class="chip"
+              >{checkStatusLabel(check.status)}</span
+            >
           </div>
           <code>{check.path || id}</code>
           {#if check.version}<small>{check.version}</small>{/if}
-          {#if check.message}<p>{check.message}</p>{/if}
-          {#if check.help}<p class="help">{check.help}</p>{/if}
+          {#if check.message}<p>{checkMessageLabel(check.message)}</p>{/if}
+          {#if check.help}<p class="help">{checkHelpLabel(check.help)}</p>{/if}
         </section>
       {/each}
     </div>

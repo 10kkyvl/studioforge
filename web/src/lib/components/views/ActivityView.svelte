@@ -122,8 +122,7 @@
   /* Cache rides under spend in the same cell, smaller and dimmer — a
      secondary reading, not a second column competing with it. */
   .token-cache {
-    font-size: 0.68rem;
+    font-size: var(--fs-2xs);
     color: var(--muted);
-    opacity: 0.75;
   }
 </style>

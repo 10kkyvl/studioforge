@@ -581,13 +581,20 @@
         {/each}
       </nav>
       <div class="sidebar-footer">
-        <span class="presence" class:online={streamOnline} class:reconnecting={!streamOnline}
-        ></span><span
-          >{streamOnline ? $translate('footer.online') : $translate('footer.reconnecting')}</span
-        >
-        {#if snapshot.diagnostics.mockMode}<span class="chip">{$translate('footer.mockMode')}</span
-          >{/if}
-        <code>v{snapshot.diagnostics.version.replace(/^v/, '')}</code>
+        <div class="sidebar-footer-line">
+          <span class="presence" class:online={streamOnline} class:reconnecting={!streamOnline}
+          ></span><span
+            class="sidebar-footer-status"
+            title={streamOnline ? $translate('footer.online') : $translate('footer.reconnecting')}
+            >{streamOnline ? $translate('footer.online') : $translate('footer.reconnecting')}</span
+          >
+        </div>
+        <div class="sidebar-footer-line">
+          <code>v{snapshot.diagnostics.version.replace(/^v/, '')}</code>
+          {#if snapshot.diagnostics.mockMode}<span class="chip"
+              >{$translate('footer.mockMode')}</span
+            >{/if}
+        </div>
       </div>
     </aside>
 
@@ -639,126 +646,130 @@
         </div>{/if}
 
       <main class="content" class:chat={view === 'chat'}>
-        {#if view === 'chat'}
-          <ChatView
-            projectId={selectedProject?.id}
-            project={selectedProject}
-            liveEvents={events.filter(
-              (event) => selectedProject && event.projectId === selectedProject.id,
-            )}
-            agents={snapshot.agents.filter(
-              (a) => selectedProject && a.projectId === selectedProject.id && a.enabled,
-            )}
-            tasks={snapshot.tasks.filter(
-              (t) => selectedProject && t.projectId === selectedProject.id,
-            )}
-            runs={snapshot.runs}
-            {agentName}
-            {statusLabel}
-            onSent={(id) => {
-              selectedRunId = id;
-            }}
-            onSynced={() => void refresh()}
-            onEnsureStream={connectStream}
-          />
-        {:else if view === 'projects'}
-          <ProjectsView
-            {projects}
-            {busy}
-            safeMode={snapshot.settings.safeMode}
-            bind:search
-            onNew={() => (showNewProject = true)}
-            onSelect={(project) => {
-              selectedProjectId = project.id;
-              view = 'overview';
-            }}
-            onArchive={archiveProject}
-            onRun={(project) => {
-              selectedProjectId = project.id;
-              view = 'chat';
-            }}
-            onOpenStudio={openStudio}
-          />
-        {:else if view === 'activity'}
-          <ActivityView
-            runs={snapshot.runs}
-            {projectName}
-            {agentName}
-            {statusLabel}
-            onRunAction={runAction}
-          />
-        {:else if view === 'overview'}
-          <OverviewView
-            {snapshot}
-            project={selectedProject}
-            {busy}
-            onRun={() => {
-              view = 'chat';
-            }}
-          />
-        {:else if view === 'team'}
-          <TeamView
-            agents={snapshot.agents}
-            project={selectedProject}
-            {busy}
-            onCreate={createAgent}
-            onUpdate={updateAgent}
-            onRun={(agent) => {
-              if (activeProjects.some((project) => project.id === agent.projectId)) {
-                selectedProjectId = agent.projectId;
-              }
-              setPendingLeadAgent(agent.id);
-              view = 'chat';
-            }}
-          />
-        {:else if view === 'tasks'}
-          <TasksView
-            tasks={snapshot.tasks}
-            project={selectedProject}
-            onCreateTask={addTask}
-            onUpdateStatus={moveTask}
-            onDeleteTask={removeTask}
-          />
-        {:else if view === 'runs'}
-          <RunsView
-            runs={snapshot.runs}
-            bind:selectedRunId
-            {selectedRun}
-            events={selectedEvents}
-            {projectName}
-            {agentName}
-            {statusLabel}
-            {validationLabel}
-            {payloadText}
-            decisions={snapshot.decisions}
-            onResolveDecision={resolveDecision}
-            busy={busy.startsWith('run-')}
-          />
-        {:else if view === 'studios'}
-          <StudiosView
-            studios={snapshot.studios}
-            {projects}
-            {projectName}
-            onBind={bindStudio}
-            detected={studioSessionsDetected}
-            onRefresh={refreshStudioSessions}
-            busy={busy === 'studio-sessions-refresh'}
-          />
-        {:else if view === 'settings'}
-          <SettingsView
-            diagnostics={snapshot.diagnostics}
-            settings={snapshot.settings}
-            {theme}
-            {fontSize}
-            {busy}
-            onLocale={changeLocale}
-            onTheme={setTheme}
-            onFontSize={setFontSize}
-            onRefresh={() => refresh(true)}
-            onBackup={createBackup}
-            onSave={saveSettings}
-          />
-        {/if}
+        {#key view}
+          <div class="view-transition">
+            {#if view === 'chat'}
+              <ChatView
+                projectId={selectedProject?.id}
+                project={selectedProject}
+                liveEvents={events.filter(
+                  (event) => selectedProject && event.projectId === selectedProject.id,
+                )}
+                agents={snapshot.agents.filter(
+                  (a) => selectedProject && a.projectId === selectedProject.id && a.enabled,
+                )}
+                tasks={snapshot.tasks.filter(
+                  (t) => selectedProject && t.projectId === selectedProject.id,
+                )}
+                runs={snapshot.runs}
+                {agentName}
+                {statusLabel}
+                onSent={(id) => {
+                  selectedRunId = id;
+                }}
+                onSynced={() => void refresh()}
+                onEnsureStream={connectStream}
+              />
+            {:else if view === 'projects'}
+              <ProjectsView
+                {projects}
+                {busy}
+                safeMode={snapshot.settings.safeMode}
+                bind:search
+                onNew={() => (showNewProject = true)}
+                onSelect={(project) => {
+                  selectedProjectId = project.id;
+                  view = 'overview';
+                }}
+                onArchive={archiveProject}
+                onRun={(project) => {
+                  selectedProjectId = project.id;
+                  view = 'chat';
+                }}
+                onOpenStudio={openStudio}
+              />
+            {:else if view === 'activity'}
+              <ActivityView
+                runs={snapshot.runs}
+                {projectName}
+                {agentName}
+                {statusLabel}
+                onRunAction={runAction}
+              />
+            {:else if view === 'overview'}
+              <OverviewView
+                {snapshot}
+                project={selectedProject}
+                {busy}
+                onRun={() => {
+                  view = 'chat';
+                }}
+              />
+            {:else if view === 'team'}
+              <TeamView
+                agents={snapshot.agents}
+                project={selectedProject}
+                {busy}
+                onCreate={createAgent}
+                onUpdate={updateAgent}
+                onRun={(agent) => {
+                  if (activeProjects.some((project) => project.id === agent.projectId)) {
+                    selectedProjectId = agent.projectId;
+                  }
+                  setPendingLeadAgent(agent.id);
+                  view = 'chat';
+                }}
+              />
+            {:else if view === 'tasks'}
+              <TasksView
+                tasks={snapshot.tasks}
+                project={selectedProject}
+                onCreateTask={addTask}
+                onUpdateStatus={moveTask}
+                onDeleteTask={removeTask}
+              />
+            {:else if view === 'runs'}
+              <RunsView
+                runs={snapshot.runs}
+                bind:selectedRunId
+                {selectedRun}
+                events={selectedEvents}
+                {projectName}
+                {agentName}
+                {statusLabel}
+                {validationLabel}
+                {payloadText}
+                decisions={snapshot.decisions}
+                onResolveDecision={resolveDecision}
+                busy={busy.startsWith('run-')}
+              />
+            {:else if view === 'studios'}
+              <StudiosView
+                studios={snapshot.studios}
+                {projects}
+                {projectName}
+                onBind={bindStudio}
+                detected={studioSessionsDetected}
+                onRefresh={refreshStudioSessions}
+                busy={busy === 'studio-sessions-refresh'}
+              />
+            {:else if view === 'settings'}
+              <SettingsView
+                diagnostics={snapshot.diagnostics}
+                settings={snapshot.settings}
+                {theme}
+                {fontSize}
+                {busy}
+                onLocale={changeLocale}
+                onTheme={setTheme}
+                onFontSize={setFontSize}
+                onRefresh={() => refresh(true)}
+                onBackup={createBackup}
+                onSave={saveSettings}
+              />
+            {/if}
+          </div>
+        {/key}
       </main>
     </div>
   </div>

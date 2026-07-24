@@ -138,11 +138,11 @@
      activity table: spend reads first, cache trails it, dimmer. */
   .token-line {
     margin: 6px 0 0;
-    font-size: 0.72rem;
+    font-size: var(--fs-xs);
     color: var(--muted);
   }
   .token-cache {
-    opacity: 0.75;
+    color: var(--muted);
   }
   .card-actions {
     display: flex;

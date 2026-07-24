@@ -165,19 +165,19 @@
 <style>
   .composer-hint {
     margin: 0;
-    padding: 0.75rem;
-    border-top: 1px solid var(--border);
-    color: var(--muted, #9a9a9a);
+    padding: 12px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
     text-align: center;
-    font-size: 0.8rem;
+    font-size: var(--fs-sm);
   }
   .validation-badge {
     display: inline-block;
     margin-left: 0.4rem;
     padding: 0.05rem 0.4rem;
     border-radius: 999px;
-    font-size: 0.7rem;
-    background: var(--surface-2, rgba(255, 255, 255, 0.08));
+    font-size: var(--fs-xs);
+    background: var(--surface-2);
   }
   .validation-passed {
     color: var(--success);
@@ -187,10 +187,10 @@
     color: var(--danger);
   }
   .validation-inconclusive {
-    color: var(--muted, #9a9a9a);
+    color: var(--muted);
   }
   .validation-corrected {
-    color: var(--accent, #4a8fe7);
+    color: var(--accent);
   }
   .correction-link {
     display: block;
@@ -201,7 +201,7 @@
     background: none;
     border: none;
     padding: 0;
-    color: var(--accent, #4a8fe7);
+    color: var(--accent);
     text-decoration: underline;
     cursor: pointer;
     font: inherit;
@@ -210,29 +210,29 @@
     color: var(--warning);
   }
   .decision-banner {
-    margin: 0.5rem 0.75rem 0;
-    padding: 0.75rem;
-    border-radius: 0.5rem;
+    margin: 8px 12px 0;
+    padding: 12px;
+    border-radius: var(--r-md);
     border: 1px solid var(--warning);
     background: color-mix(in srgb, var(--warning) 12%, transparent);
   }
   .decision-banner p {
-    margin: 0 0 0.5rem;
+    margin: 0 0 8px;
   }
   .decision-actions {
     display: flex;
-    gap: 0.5rem;
+    gap: 8px;
   }
   .error-banner {
-    margin: 0.5rem 0.75rem 0;
-    padding: 0.75rem;
-    border-radius: 0.5rem;
+    margin: 8px 12px 0;
+    padding: 12px;
+    border-radius: var(--r-md);
     border: 1px solid var(--danger);
     background: color-mix(in srgb, var(--danger) 12%, transparent);
   }
   .error-banner strong {
     display: block;
-    margin-bottom: 0.35rem;
+    margin-bottom: 6px;
     color: var(--danger);
   }
   .error-banner p {
