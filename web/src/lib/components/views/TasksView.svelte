@@ -180,7 +180,7 @@
     min-width: 0;
     padding: 9px 12px;
     border: 1px solid var(--line);
-    border-radius: 8px;
+    border-radius: var(--r-md);
     background: var(--surface);
     color: var(--text);
   }
@@ -191,12 +191,12 @@
     margin: 0;
     padding: 10px 12px;
     border: 1px solid var(--line);
-    border-radius: 8px;
+    border-radius: var(--r-md);
   }
   .dependency-picker legend {
     padding: 0 4px;
     color: var(--muted);
-    font-size: 0.72rem;
+    font-size: var(--fs-xs);
     text-transform: uppercase;
     letter-spacing: 0.06em;
   }
@@ -204,7 +204,7 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-size: 0.78rem;
+    font-size: var(--fs-sm);
     color: var(--text);
   }
   .board {
@@ -215,9 +215,9 @@
   }
   .board-column {
     min-height: 420px;
-    padding: 10px;
+    padding: 12px;
     border: 1px solid var(--line);
-    border-radius: 10px;
+    border-radius: var(--r-lg);
     background: color-mix(in srgb, var(--surface) 70%, transparent);
   }
   .board-column > header {
@@ -228,23 +228,27 @@
   }
   .board-column h2 {
     margin: 0;
-    font-size: 0.76rem;
+    font-size: var(--fs-xs);
     text-transform: uppercase;
     letter-spacing: 0.07em;
     color: var(--text);
   }
   .board-column header span {
     color: var(--muted);
-    font-size: 0.72rem;
+    font-size: var(--fs-xs);
   }
   .board-card {
     position: relative;
     margin-bottom: 9px;
-    padding: 13px;
+    padding: 12px;
     border: 1px solid var(--line);
-    border-radius: 8px;
+    border-radius: var(--r-md);
     background: var(--surface);
     cursor: grab;
+    transition: border-color 140ms ease;
+  }
+  .board-card:hover {
+    border-color: color-mix(in srgb, var(--accent) 18%, var(--line));
   }
   .board-card:active {
     cursor: grabbing;
@@ -259,8 +263,8 @@
   }
   .priority {
     color: var(--accent);
-    font-size: 0.64rem;
-    font-weight: 750;
+    font-size: var(--fs-2xs);
+    font-weight: 700;
   }
   .delete-task {
     display: inline-flex;
@@ -268,7 +272,7 @@
     justify-content: center;
     padding: 3px;
     border: 1px solid transparent;
-    border-radius: 6px;
+    border-radius: var(--r-sm);
     background: transparent;
     color: var(--muted);
     cursor: pointer;
@@ -280,7 +284,7 @@
   }
   .board-card h3 {
     margin: 7px 0;
-    font-size: 0.82rem;
+    font-size: var(--fs-sm);
     color: var(--text);
   }
   .board-card p {
@@ -291,16 +295,16 @@
     overflow: hidden;
     margin: 0 0 8px;
     color: var(--muted);
-    font-size: 0.7rem;
+    font-size: var(--fs-xs);
     line-height: 1.45;
   }
   .board-card code {
     display: block;
     padding: 6px;
-    border-radius: 5px;
+    border-radius: var(--r-sm);
     background: var(--surface-2);
     color: var(--accent);
-    font-size: 0.68rem;
+    font-size: var(--fs-2xs);
   }
   @media (max-width: 1100px) {
     .board {

@@ -1,53 +1,50 @@
-# StudioForge v0.5.0-beta.3
+# StudioForge v0.5.0-beta.4
 
-_v0.5.0-beta.3 is a UX overhaul of the web UI — navigation, run visibility, and honest status
-everywhere; beta.1/beta.2's theme and shutdown-safety fixes are unchanged and summarized below. /
-v0.5.0-beta.3 — это доработка UX веб-интерфейса: навигация, видимость запусков и честный статус везде;
-исправления темы и безопасного завершения из beta.1/beta.2 не изменились и вкратце описаны ниже._
+_v0.5.0-beta.4 is a visual-polish and fix pass on the web UI: the app no longer shows a stale cached
+UI after an update, several Settings-screen oddities are gone, and the whole interface got a
+typography and motion cleanup. beta.1–beta.3's theme, shutdown-safety, navigation, and honest-state
+fixes are unchanged and summarized below. / v0.5.0-beta.4 — это проход по визуальной полировке и
+исправлениям веб-интерфейса: приложение больше не показывает устаревший закэшированный интерфейс после
+обновления, несколько странностей на экране Настроек устранены, а весь интерфейс получил
+переработанную типографику и анимации. Исправления темы, безопасного завершения, навигации и честных
+состояний из beta.1–beta.3 не изменились и вкратце описаны ниже._
 
 ## English
 
-This beta is a UX pass across the whole web UI: navigation is reorganized, buttons that used to do
-nothing now work, failed runs finally explain why, and the interface stops showing placeholder data
-and dev-facing jargon.
+This beta fixes a real update-visibility bug — the app could keep showing yesterday's UI after being
+upgraded — cleans up several rough edges in Settings, and gives the whole interface a lighter, more
+consistent look with subtle motion.
 
 ### What changed
 
-- **"Start agent run" and "Run this agent" actually do something now.** These buttons on project
-  cards, Overview, and Team previously did nothing when clicked. They now open Chat with the right
-  project selected, and Team's version also makes that agent the conversation's lead.
-- **Failed runs explain why.** A run's failure reason is now shown everywhere it matters: a banner on
-  the Runs detail panel, an error strip in Chat, and a tooltip on failed status chips in Activity —
-  previously the reason was recorded but never displayed anywhere.
-- **Clearer sidebar status.** The footer used to show the word "Interrupted" whenever the live
-  connection dropped, which read like a run failure. It now says "Online" or "Connection lost —
-  reconnecting…", and the version number no longer shows a doubled "v".
-- **A real session-error screen.** An expired or invalid session used to show a vague, English-only
-  message. It's now localized (English/Russian) with clear next steps, and other load errors show a
-  plain-language reason (timed out, network, session expired, not found, server error) instead of raw
-  text like "HTTP 500".
-- **No more stuck slash-command confirmations** when switching chats or projects.
-- **Reorganized navigation.** The left sidebar's nine items are now grouped under Work, Project, and
-  Monitoring headings, and the project selector no longer appears on screens where it did nothing
-  (Activity, Runs, Studio sessions, Settings).
-- **Discoverable slash commands.** Typing `/` in the chat box now opens a menu of available commands
-  (`/task`, `/build`, `/playtest`, `/plan`, `/do`, `/open`) with a description of what each does.
-- **Honest empty states.** A brand-new install now sees "Create your first project" instead of a
-  confusing "no projects match this filter" message, and the same care was applied to Tasks, Runs,
-  Chat, and Activity.
-- **No more fake status cards.** The Overview page's "Project health: Verified" and "Git checkpointing:
-  Active" were always shown, even for a project that had never run anything. They now reflect the
-  project's real last-run status, or say "No data yet".
-- **Plain-language labels everywhere**, in both English and Russian: effort levels, permission profiles
-  ("Read only" / "Write in project" / "Full access (unsafe)"), the "Demo (no AI)" provider name, and
-  status words that used to show raw internal codes.
-- **Smaller polish:** the Runs view's own message box (which created runs disconnected from any chat)
-  is gone in favor of a hint pointing to Chat; Activity's table gained a time column; the project count
-  reads correctly in Russian; an "All projects" label appears on Team/Tasks when no project is
-  selected; and the first-run setup screen now reassures you that missing tools can be configured later.
+- **No more stale UI after an update.** The embedded web UI was served without any cache instructions,
+  so a browser could keep rendering the old interface after StudioForge itself had been updated. The
+  app's shell now always revalidates, while its versioned assets are cached long-term and instantly
+  replaced when they change — you should now always see the current UI after an update.
+- **Settings status chips look right.** The small status pill next to each integration (Git, Rojo,
+  OpenRouter, etc.) used to stretch into a stray, clipped circle around the label. It's now a clean,
+  compact pill.
+- **No more English/raw-code leftovers in Settings.** The database diagnostic used to show the literal
+  word "ok"; integration cards showed raw ids like "git" or "openrouter" instead of names; and several
+  guidance sentences ("Rojo CLI not found...", "Add your OpenRouter API key...") stayed in English even
+  in the Russian UI. All of that is now properly localized.
+- **A calmer sidebar footer.** The connection status, demo-mode badge, and version number used to
+  crowd into overlapping, wrapping text in the narrow sidebar. They're now a clean two-line layout,
+  with tooltips for anything that gets truncated.
+- **First-run setup polish.** The initial checklist showed raw internal names instead of readable
+  labels, and — while chasing a cramped-looking hint — we found and fixed a styling bug that made
+  enabled primary buttons look disabled in the setup wizard, the New Project dialog, and Settings.
+- **Chat header no longer overflows.** Long Russian status badges could overflow the chat header; they
+  now wrap and truncate cleanly with tooltips, and the composer's controls line up on one baseline.
+- **Cleaner typography and spacing throughout.** Roughly 25 slightly-different font sizes were
+  consolidated into one consistent scale, border radii and padding were unified, and muted text is no
+  longer unintentionally extra-faded.
+- **Subtle, tasteful motion.** Views fade in smoothly when you switch between them, the slash-command
+  menu eases in, and status indicators transition instead of snapping — all of it turned off
+  automatically if your system has reduced-motion enabled.
 
-Beta.1 and beta.2 already fixed the light theme, theme-flash-on-load, task status, and shutdown-safety
-issues — see [CHANGELOG.md](CHANGELOG.md) for the full detail.
+beta.1–beta.3 already reorganized navigation, made previously-dead buttons work, surfaced failed-run
+reasons, fixed shutdown safety, and more — see [CHANGELOG.md](CHANGELOG.md) for the full detail.
 
 ### Before installing
 
@@ -61,51 +58,44 @@ issues — see [CHANGELOG.md](CHANGELOG.md) for the full detail.
 
 ## Русский
 
-Эта бета — проход по UX всего веб-интерфейса: навигация переработана, кнопки, которые раньше ничего не
-делали, теперь работают, неудачные запуски наконец объясняют причину, а интерфейс больше не показывает
-фиктивные данные и жаргон разработчика.
+Эта бета устраняет реальную проблему с видимостью обновлений — приложение могло продолжать показывать
+вчерашний интерфейс после обновления, — приводит в порядок несколько шероховатостей в Настройках и
+делает весь интерфейс более лёгким и последовательным на вид, с деликатной анимацией.
 
 ### Что изменилось
 
-- **«Запустить агента» теперь действительно что-то делает.** Кнопки «Start agent run» на карточках
-  проектов и в Overview, а также «Run this agent» в Team, раньше ничего не делали при нажатии. Теперь
-  они открывают Чат с нужным выбранным проектом, а вариант из Team ещё и делает этого агента ведущим
-  агентом треда.
-- **Неудачные запуски объясняют причину.** Причина сбоя запуска теперь показывается везде, где это
-  важно: баннер в панели деталей Runs, строка ошибки в Чате и подсказка при наведении на статус-чип
-  неудачного запуска в Activity — раньше причина сохранялась, но нигде не отображалась.
-- **Понятнее статус в сайдбаре.** Футер раньше показывал слово "Interrupted"/«Прерван», когда обрывалось
-  живое соединение, что читалось как сбой самого запуска. Теперь там «Online»/«В сети» или «Connection
-  lost — reconnecting…»/«Нет соединения — переподключение…», а номер версии больше не задваивает букву
-  "v".
-- **Настоящий экран ошибки сессии.** Просроченная или недействительная сессия раньше показывала
-  расплывчатое сообщение только на английском. Теперь оно локализовано (английский/русский) с понятными
-  следующими шагами, а другие ошибки загрузки показывают причину простыми словами (таймаут, сеть,
-  сессия истекла, не найдено, ошибка сервера) вместо сырого текста вроде "HTTP 500".
-- **Больше не зависают подтверждения slash-команд** при переключении чатов или проектов.
-- **Перестроенная навигация.** Девять пунктов левого сайдбара теперь сгруппированы под заголовками
-  «Работа», «Проект» и «Мониторинг», а селектор проекта больше не показывается на экранах, где он ни на
-  что не влиял (Activity, Runs, Studio sessions, Settings).
-- **Обнаруживаемые slash-команды.** Ввод `/` в поле чата теперь открывает меню доступных команд
-  (`/task`, `/build`, `/playtest`, `/plan`, `/do`, `/open`) с описанием, что делает каждая.
-- **Честные пустые состояния.** На свежей установке теперь показывается «Создайте первый проект», а не
-  запутывающее «нет проектов, подходящих под фильтр» — то же самое сделано для Tasks, Runs, Chat и
-  Activity.
-- **Больше нет фиктивных карточек статуса.** Карточки Overview "Project health: Verified" и "Git
-  checkpointing: Active" раньше показывались всегда, даже для проекта, в котором ещё ни разу не
-  запускали агента. Теперь они отражают реальный статус последнего запуска проекта или говорят «Данных
-  пока нет».
-- **Понятные подписи везде**, на английском и русском: уровни усилия, профили разрешений («Только
-  чтение» / «Запись в проекте» / «Полный доступ (опасно)»), название провайдера «Демо (без ИИ)» и
-  статусные слова, которые раньше показывали сырые внутренние коды.
-- **Более мелкие улучшения:** собственное поле ввода в Runs (создававшее запуски в отрыве от чата)
-  убрано в пользу подсказки о том, что запуски начинаются в Чате; в таблице Activity появилась колонка
-  времени; счётчик проектов теперь грамматически верен на русском; на Team/Tasks появляется метка «Все
-  проекты», когда проект не выбран; а экран первичной настройки теперь уверяет, что недостающие
-  инструменты можно настроить позже.
+- **Больше нет устаревшего интерфейса после обновления.** Встроенный веб-интерфейс отдавался вообще без
+  инструкций кэширования, поэтому браузер мог продолжать показывать старый интерфейс после того, как сам
+  StudioForge уже обновился. Теперь оболочка приложения всегда перепроверяется заново, а версионные
+  ресурсы кэшируются надолго и мгновенно заменяются при изменении — после обновления вы всегда должны
+  видеть актуальный интерфейс.
+- **Статус-чипы в Настройках выглядят правильно.** Маленькая пилюля статуса рядом с каждой интеграцией
+  (Git, Rojo, OpenRouter и т. д.) раньше растягивалась в странный обрезанный круг вокруг подписи. Теперь
+  это аккуратная компактная пилюля.
+- **Больше нет английских/сырых обрывков в Настройках.** Диагностика базы данных показывала буквальное
+  слово "ok"; карточки интеграций показывали сырые идентификаторы вроде "git" или "openrouter" вместо
+  названий; а несколько поясняющих фраз ("Rojo CLI not found...", "Add your OpenRouter API key...")
+  оставались на английском даже в русском интерфейсе. Всё это теперь корректно локализовано.
+- **Более спокойный футер сайдбара.** Статус соединения, значок демо-режима и номер версии раньше
+  теснились в перекрывающихся, переносящихся строках в узком сайдбаре. Теперь это аккуратная
+  двухстрочная раскладка с подсказками для всего, что обрезается.
+- **Полировка первичной настройки.** Начальный чек-лист показывал сырые внутренние имена вместо понятных
+  подписей, а при исправлении тесноватой подсказки под ним была найдена и исправлена ошибка стилей,
+  из-за которой включённые основные кнопки выглядели отключёнными в мастере настройки, диалоге нового
+  проекта и футерах Настроек.
+- **Заголовок чата больше не переполняется.** Длинные русские статус-бейджи могли переполнять заголовок
+  чата; теперь они аккуратно переносятся и обрезаются с подсказками, а элементы управления в поле ввода
+  выровнены по одной базовой линии.
+- **Более чистая типографика и отступы везде.** Около 25 слегка различающихся размеров шрифта сведены к
+  единой последовательной шкале, радиусы скругления и отступы унифицированы, а приглушённый текст больше
+  не затемняется случайно вдвойне.
+- **Деликатная, уместная анимация.** Экраны плавно проявляются при переключении между ними, меню
+  slash-команд плавно появляется, а статусные индикаторы переходят между состояниями плавно, а не рывком
+  — всё это автоматически отключается, если в системе включён режим уменьшенной анимации.
 
-Beta.1 и beta.2 уже исправили светлую тему, мигание темы при загрузке, статус задачи и безопасность
-завершения работы — подробности в [CHANGELOG.md](CHANGELOG.md).
+beta.1–beta.3 уже переработали навигацию, заставили ранее нерабочие кнопки работать, показали причины
+неудачных запусков, исправили безопасность завершения работы и многое другое — подробности в
+[CHANGELOG.md](CHANGELOG.md).
 
 ### Перед установкой
 

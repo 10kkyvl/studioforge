@@ -9,7 +9,7 @@
 <style>
   .markdown-body {
     overflow-wrap: anywhere;
-    font-size: 0.85rem;
+    font-size: var(--fs-md);
     line-height: 1.55;
   }
   .markdown-body :global(> :first-child) {
@@ -31,14 +31,14 @@
     letter-spacing: -0.01em;
   }
   .markdown-body :global(h1) {
-    font-size: 1.18rem;
+    font-size: var(--fs-2xl);
   }
   .markdown-body :global(h2) {
-    font-size: 1.08rem;
+    font-size: var(--fs-xl);
   }
   .markdown-body :global(h3),
   .markdown-body :global(h4) {
-    font-size: 0.98rem;
+    font-size: var(--fs-lg);
   }
   .markdown-body :global(ul),
   .markdown-body :global(ol) {
@@ -63,12 +63,12 @@
     padding: 10px 12px;
     overflow-x: auto;
     border: 1px solid var(--line);
-    border-radius: 8px;
+    border-radius: var(--r-md);
     background: color-mix(in srgb, var(--bg) 72%, var(--surface));
   }
   .markdown-body :global(code) {
     padding: 0.12em 0.32em;
-    border-radius: 4px;
+    border-radius: var(--r-sm);
     background: color-mix(in srgb, var(--accent) 9%, var(--surface));
     color: color-mix(in srgb, var(--text) 88%, var(--accent));
   }

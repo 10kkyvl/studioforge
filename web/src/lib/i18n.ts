@@ -361,6 +361,7 @@ export const en = {
   'state.unknown': 'Unknown',
   'state.playing': 'Playing',
   'state.editing': 'Editing',
+  'state.warning': 'Needs attention',
   'effort.low': 'Low',
   'effort.medium': 'Medium',
   'effort.high': 'High',
@@ -376,6 +377,25 @@ export const en = {
   'project.folderLabel': 'Project folder',
   'project.folderHint': 'Absolute path, e.g. D:\\Roblox\\my-game',
   'wizard.canContinue': 'You can continue — set missing tools later in Settings.',
+  'check.claude': 'Claude Code',
+  'check.git': 'Git',
+  'check.openrouter': 'OpenRouter',
+  'check.rojo': 'Rojo',
+  'check.studioMcp': 'Roblox Studio MCP',
+  'check.database': 'Database',
+  'check.dataDirectory': 'Data directory',
+  'check.gitHelp': 'Install Git or configure its executable path in Settings.',
+  'check.claudeHelp': 'Run `claude auth status`, then authenticate with Claude Code if needed.',
+  'check.rojoHelp': 'Install Rojo 7 from the official Rojo documentation.',
+  'check.studioMcpHelp':
+    'Update Roblox Studio, open Assistant settings, and enable Studio as MCP server.',
+  'check.openrouterHelp': 'Add your OpenRouter API key in Settings and click Test connection.',
+  'check.claudeDetected': 'Claude Code detected',
+  'check.claudeNotFound':
+    'Claude Code was not found. Install it, then run StudioForge doctor. Mock mode remains available.',
+  'check.rojoDetected': 'Rojo CLI detected',
+  'check.rojoNotFound': 'Rojo CLI not found; install Rojo 7 and ensure rojo is on PATH',
+  'check.studioMcpDetected': 'Official Studio MCP launcher detected',
 } as const;
 
 export type TranslationKey = keyof typeof en;
@@ -740,6 +760,7 @@ export const ru: Record<TranslationKey, string> = {
   'state.unknown': 'Неизвестно',
   'state.playing': 'Игра',
   'state.editing': 'Редактор',
+  'state.warning': 'Требует внимания',
   'effort.low': 'Низкий',
   'effort.medium': 'Средний',
   'effort.high': 'Высокий',
@@ -755,6 +776,28 @@ export const ru: Record<TranslationKey, string> = {
   'project.folderLabel': 'Папка проекта',
   'project.folderHint': 'Абсолютный путь, напр. D:\\Roblox\\my-game',
   'wizard.canContinue': 'Можно продолжить — недостающие инструменты укажете позже в Настройках.',
+  'check.claude': 'Claude Code',
+  'check.git': 'Git',
+  'check.openrouter': 'OpenRouter',
+  'check.rojo': 'Rojo',
+  'check.studioMcp': 'Roblox Studio MCP',
+  'check.database': 'База данных',
+  'check.dataDirectory': 'Каталог данных',
+  'check.gitHelp': 'Установите Git или укажите путь к его исполняемому файлу в Настройках.',
+  'check.claudeHelp':
+    'Выполните `claude auth status`, затем при необходимости авторизуйтесь в Claude Code.',
+  'check.rojoHelp': 'Установите Rojo 7 из официальной документации Rojo.',
+  'check.studioMcpHelp':
+    'Обновите Roblox Studio, откройте настройки Assistant и включите Studio как MCP server.',
+  'check.openrouterHelp':
+    'Добавьте свой API-ключ OpenRouter в Настройках и нажмите «Проверить соединение».',
+  'check.claudeDetected': 'Claude Code обнаружен',
+  'check.claudeNotFound':
+    'Claude Code не найден. Установите его, затем запустите проверку StudioForge. Демо-режим остаётся доступным.',
+  'check.rojoDetected': 'Rojo CLI обнаружен',
+  'check.rojoNotFound':
+    'Rojo CLI не найден; установите Rojo 7 и убедитесь, что rojo доступен в PATH',
+  'check.studioMcpDetected': 'Обнаружен официальный лаунчер Studio MCP',
 };
 
 export type Locale = 'en' | 'ru';

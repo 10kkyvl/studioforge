@@ -111,7 +111,7 @@
     min-width: 0;
     padding: 9px;
     border: 1px solid var(--line);
-    border-radius: 7px;
+    border-radius: var(--r-sm);
     background: var(--surface-2);
     color: var(--text);
     font: inherit;
@@ -119,25 +119,25 @@
   .capability-hint {
     margin: 0;
     color: var(--muted);
-    font-size: 0.7rem;
+    font-size: var(--fs-xs);
   }
   .free-warning {
     margin: 0;
     color: var(--yellow);
-    font-size: 0.7rem;
+    font-size: var(--fs-xs);
     line-height: 1.4;
   }
   .compatibility-warning {
     display: flex;
     gap: 7px;
     color: var(--yellow);
-    font-size: 0.7rem;
+    font-size: var(--fs-xs);
     line-height: 1.4;
   }
   .incompatible-warning {
     margin: 0;
     color: var(--danger);
-    font-size: 0.7rem;
+    font-size: var(--fs-xs);
     line-height: 1.4;
   }
 </style>

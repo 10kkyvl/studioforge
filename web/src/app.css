@@ -75,6 +75,17 @@ body {
   --shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
   --shadow-soft: 0 8px 28px rgba(0, 0, 0, 0.16);
   --focus: color-mix(in srgb, var(--accent) 32%, transparent);
+  --fs-2xs: 0.68rem;
+  --fs-xs: 0.73rem;
+  --fs-sm: 0.8rem;
+  --fs-md: 0.875rem;
+  --fs-lg: 0.95rem;
+  --fs-xl: 1.05rem;
+  --fs-2xl: 1.18rem;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
 }
 html[data-theme='light'] {
   --bg: #f4f6f9;
@@ -142,6 +153,7 @@ button:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
+summary:focus-visible,
 [role='button']:focus-visible,
 [tabindex]:focus-visible {
   outline: 2px solid var(--accent);
@@ -184,7 +196,12 @@ code {
   height: 100dvh;
   overflow: hidden;
   background:
-    radial-gradient(circle at 75% -20%, rgba(69, 115, 185, 0.12), transparent 35%), var(--bg);
+    radial-gradient(
+      circle at 75% -20%,
+      color-mix(in srgb, var(--accent) 12%, transparent),
+      transparent 35%
+    ),
+    var(--bg);
 }
 .sidebar {
   height: 100%;
@@ -209,11 +226,15 @@ code {
   width: 38px;
   height: 38px;
   border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line));
-  border-radius: 11px;
-  background: linear-gradient(145deg, rgba(118, 169, 255, 0.2), rgba(159, 122, 234, 0.13));
+  border-radius: var(--r-lg);
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--accent) 20%, transparent),
+    color-mix(in srgb, var(--accent-2) 13%, transparent)
+  );
   color: var(--accent);
-  font-size: 0.8rem;
-  font-weight: 850;
+  font-size: var(--fs-sm);
+  font-weight: 800;
   letter-spacing: 0.08em;
   box-shadow: inset 0 1px rgba(255, 255, 255, 0.12);
 }
@@ -221,13 +242,17 @@ code {
   display: block;
   letter-spacing: -0.02em;
 }
+.brand > div:last-child {
+  min-width: 0;
+  flex: 1;
+}
 .brand small {
   display: block;
-  max-width: 152px;
+  max-width: 176px;
   margin-top: 3px;
   color: var(--muted);
-  font-size: 0.67rem;
-  line-height: 1.25;
+  font-size: var(--fs-2xs);
+  line-height: 1.35;
 }
 .sidebar nav {
   display: flex;
@@ -237,8 +262,8 @@ code {
 .nav-group-label {
   margin: 14px 10px 4px;
   color: var(--muted);
-  font-size: 0.68rem;
-  font-weight: 750;
+  font-size: var(--fs-2xs);
+  font-weight: 700;
   letter-spacing: 0.13em;
   text-transform: uppercase;
 }
@@ -252,19 +277,23 @@ code {
   width: 100%;
   padding: 9px 10px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--r-md);
   background: transparent;
   color: var(--muted);
   cursor: pointer;
   text-align: left;
-  font-size: 0.85rem;
+  font-size: var(--fs-md);
 }
 .sidebar nav button:hover {
   background: var(--surface-2);
   color: var(--text);
 }
 .sidebar nav button.active {
-  background: linear-gradient(90deg, rgba(118, 169, 255, 0.15), rgba(118, 169, 255, 0.06));
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--accent) 15%, transparent),
+    color-mix(in srgb, var(--accent) 6%, transparent)
+  );
   color: var(--text);
   box-shadow: inset 2px 0 var(--accent);
 }
@@ -275,26 +304,50 @@ code {
   border-radius: 999px;
   background: var(--red);
   color: white;
-  font-size: 0.68rem;
+  font-size: var(--fs-2xs);
   text-align: center;
 }
 .sidebar-footer {
   display: flex;
-  align-items: center;
-  gap: 7px;
+  flex-direction: column;
+  gap: 4px;
   margin-top: auto;
   padding: 12px 10px;
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
+  min-width: 0;
+}
+.sidebar-footer-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  overflow: hidden;
+}
+.sidebar-footer-status {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .sidebar-footer code {
-  margin-left: auto;
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-footer .chip {
+  flex: none;
 }
 .presence {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: var(--muted);
+  flex: none;
+  transition:
+    background-color 200ms ease,
+    color 200ms ease;
 }
 .presence.online {
   background: var(--green);
@@ -329,7 +382,7 @@ code {
   align-items: center;
   gap: 10px;
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: 0.09em;
 }
@@ -337,7 +390,7 @@ code {
   max-width: 260px;
   padding: 7px 28px 7px 10px;
   border: 1px solid var(--line);
-  border-radius: 7px;
+  border-radius: var(--r-sm);
   background: var(--surface);
   color: var(--text);
   text-transform: none;
@@ -355,7 +408,7 @@ code {
   justify-content: center;
   gap: 7px;
   border: 1px solid var(--line);
-  border-radius: 7px;
+  border-radius: var(--r-sm);
   background: var(--surface);
   cursor: pointer;
 }
@@ -367,7 +420,7 @@ code {
 .locale-button {
   height: 34px;
   padding: 0 10px;
-  font-size: 0.75rem;
+  font-size: var(--fs-xs);
 }
 .content {
   flex: 1;
@@ -389,6 +442,25 @@ code {
 .content.chat .page-heading {
   flex: none;
 }
+.view-transition {
+  animation: fade-rise 180ms ease-out;
+}
+.content.chat .view-transition {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+@keyframes fade-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
 .page-heading {
   display: flex;
   justify-content: space-between;
@@ -405,12 +477,13 @@ code {
 .page-heading p {
   margin: 0;
   color: var(--muted);
-  font-size: 0.9rem;
+  font-size: var(--fs-md);
+  line-height: 1.45;
 }
 .page-heading .eyebrow {
   color: var(--accent);
-  font-size: 0.68rem;
-  font-weight: 750;
+  font-size: var(--fs-2xs);
+  font-weight: 700;
   letter-spacing: 0.13em;
   text-transform: uppercase;
 }
@@ -421,13 +494,13 @@ code {
   justify-content: center;
   gap: 8px;
   border: 1px solid color-mix(in srgb, var(--accent) 70%, var(--line));
-  border-radius: 8px;
+  border-radius: var(--r-md);
   background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 85%, white), var(--accent));
   color: var(--accent-contrast);
   padding: 9px 14px;
-  font-weight: 750;
+  font-weight: 700;
   cursor: pointer;
-  box-shadow: 0 5px 18px rgba(80, 135, 220, 0.18);
+  box-shadow: 0 5px 18px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 button:disabled {
   opacity: 0.45;
@@ -446,7 +519,7 @@ button:disabled {
   width: min(420px, 100%);
   padding: 9px 12px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   background: var(--surface);
   color: var(--muted);
 }
@@ -459,7 +532,7 @@ button:disabled {
 }
 .metric {
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: var(--fs-sm);
 }
 .project-grid {
   display: grid;
@@ -468,9 +541,9 @@ button:disabled {
 }
 .project-card {
   min-width: 0;
-  padding: 19px;
+  padding: 16px;
   border: 1px solid var(--line);
-  border-radius: 13px;
+  border-radius: var(--r-lg);
   background: linear-gradient(
     145deg,
     var(--surface),
@@ -504,7 +577,7 @@ button:disabled {
   place-items: center;
   width: 42px;
   height: 42px;
-  border-radius: 10px;
+  border-radius: var(--r-lg);
   background: var(--surface-3);
   color: var(--accent);
 }
@@ -518,7 +591,7 @@ button:disabled {
   border-radius: 999px;
   background: var(--surface-2);
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: var(--fs-2xs);
 }
 .card-title {
   display: block;
@@ -530,13 +603,13 @@ button:disabled {
 }
 .project-card h2 {
   margin: 17px 0 6px;
-  font-size: 1.04rem;
+  font-size: var(--fs-xl);
 }
 .project-card > p {
   height: 42px;
   margin: 0;
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: var(--fs-sm);
   line-height: 1.55;
   overflow: hidden;
 }
@@ -554,7 +627,7 @@ button:disabled {
   display: flex;
   justify-content: space-between;
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: var(--fs-xs);
 }
 .budget strong {
   color: var(--text);
@@ -576,7 +649,7 @@ button:disabled {
   padding-top: 12px;
   border-top: 1px solid var(--line);
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: var(--fs-xs);
 }
 .project-card footer > span {
   display: flex;
@@ -584,23 +657,23 @@ button:disabled {
   gap: 6px;
 }
 .run-button {
-  padding: 6px 9px;
+  padding: 6px 10px;
   border-color: var(--line);
   background: var(--surface-2);
   color: var(--text);
   box-shadow: none;
-  font-size: 0.7rem;
+  font-size: var(--fs-xs);
 }
 .table-wrap {
   overflow: auto;
   border: 1px solid var(--line);
-  border-radius: 11px;
+  border-radius: var(--r-lg);
   background: var(--surface);
 }
 table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.79rem;
+  font-size: var(--fs-sm);
 }
 th,
 td {
@@ -612,7 +685,7 @@ td {
 th {
   background: var(--surface-2);
   color: var(--muted);
-  font-size: 0.67rem;
+  font-size: var(--fs-2xs);
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
@@ -624,9 +697,12 @@ tbody tr:last-child td {
   padding: 4px 8px;
   border: 1px solid var(--line);
   border-radius: 999px;
-  font-size: 0.68rem;
+  font-size: var(--fs-2xs);
   background: var(--surface-2);
   color: var(--muted);
+  transition:
+    background-color 200ms ease,
+    color 200ms ease;
 }
 .status-running,
 .status-completed {
@@ -647,19 +723,19 @@ tbody tr:last-child td {
   display: flex;
   gap: 6px;
 }
-.row-actions button,
-.settings-card footer button,
-.wizard footer button,
-.project-modal footer button {
+.row-actions button:not(.primary),
+.settings-card footer button:not(.primary),
+.wizard footer button:not(.primary),
+.project-modal footer button:not(.primary) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 9px;
+  padding: 6px 10px;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   background: var(--surface-2);
   cursor: pointer;
-  font-size: 0.72rem;
+  font-size: var(--fs-xs);
 }
 .row-actions .danger,
 .danger {
@@ -669,6 +745,7 @@ tbody tr:last-child td {
   text-align: center;
   color: var(--muted);
   padding: 40px;
+  font-size: var(--fs-sm);
 }
 .overview-grid {
   display: grid;
@@ -680,16 +757,16 @@ tbody tr:last-child td {
   flex-direction: column;
   gap: 13px;
   min-height: 150px;
-  padding: 19px;
+  padding: 16px;
   border: 1px solid var(--line);
-  border-radius: 11px;
+  border-radius: var(--r-lg);
   background: var(--surface);
   color: var(--accent);
 }
 .panel span {
   margin-top: auto;
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: var(--fs-xs);
 }
 .panel strong {
   color: var(--text);
@@ -700,17 +777,18 @@ tbody tr:last-child td {
 .panel-hint {
   margin: 0;
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: var(--fs-2xs);
+  line-height: 1.45;
 }
 .log-lines {
   margin: 0;
   max-height: 110px;
   overflow-y: auto;
   padding: 8px;
-  border-radius: 8px;
-  background: var(--surface-2, rgba(255, 255, 255, 0.05));
+  border-radius: var(--r-md);
+  background: var(--surface-2);
   color: var(--muted);
-  font-size: 0.65rem;
+  font-size: var(--fs-2xs);
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
@@ -730,7 +808,7 @@ tbody tr:last-child td {
   place-items: center;
   width: 62px;
   height: 62px;
-  border-radius: 14px;
+  border-radius: var(--r-xl);
   background: var(--surface-3);
 }
 .hero-panel span {
@@ -742,7 +820,8 @@ tbody tr:last-child td {
 .hero-panel p {
   margin: 0;
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: var(--fs-xs);
+  line-height: 1.45;
 }
 .budget-panel {
   grid-column: span 2;
@@ -757,11 +836,18 @@ tbody tr:last-child td {
 .agent-card,
 .studio-card,
 .settings-card {
-  padding: 18px;
+  padding: 16px;
   border: 1px solid var(--line);
-  border-radius: 11px;
+  border-radius: var(--r-lg);
   background: var(--surface);
   box-shadow: var(--shadow-soft);
+  transition: border-color 140ms ease;
+}
+.agent-card:hover,
+.studio-card:hover,
+.settings-card:hover,
+.task-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 18%, var(--line));
 }
 .agent-card {
   display: grid;
@@ -773,7 +859,7 @@ tbody tr:last-child td {
   place-items: center;
   width: 42px;
   height: 42px;
-  border-radius: 10px;
+  border-radius: var(--r-lg);
   background: var(--surface-3);
   color: var(--accent);
 }
@@ -781,12 +867,13 @@ tbody tr:last-child td {
 .studio-card h2,
 .settings-card h2 {
   margin: 0;
-  font-size: 0.95rem;
+  font-size: var(--fs-lg);
 }
 .agent-card p {
   margin: 4px 0;
   color: var(--muted);
-  font-size: 0.76rem;
+  font-size: var(--fs-xs);
+  line-height: 1.45;
 }
 .agent-card dl {
   grid-column: 1/-1;
@@ -800,7 +887,7 @@ tbody tr:last-child td {
   gap: 10px;
   padding: 8px 0;
   border-top: 1px solid var(--line);
-  font-size: 0.73rem;
+  font-size: var(--fs-xs);
 }
 .agent-card dt,
 .studio-card dt,
@@ -821,9 +908,9 @@ tbody tr:last-child td {
 }
 .kanban-column {
   min-height: 420px;
-  padding: 10px;
+  padding: 12px;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--r-lg);
   background: color-mix(in srgb, var(--surface) 70%, transparent);
 }
 .kanban-column > header {
@@ -834,43 +921,44 @@ tbody tr:last-child td {
 }
 .kanban-column h2 {
   margin: 0;
-  font-size: 0.76rem;
+  font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: 0.07em;
 }
 .kanban-column header span {
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: var(--fs-xs);
 }
 .task-card {
   position: relative;
   margin-bottom: 9px;
-  padding: 13px;
+  padding: 12px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   background: var(--surface);
+  transition: border-color 140ms ease;
 }
 .task-card .priority {
   color: var(--accent);
-  font-size: 0.64rem;
-  font-weight: 750;
+  font-size: var(--fs-2xs);
+  font-weight: 700;
 }
 .task-card h3 {
   margin: 7px 0;
-  font-size: 0.82rem;
+  font-size: var(--fs-sm);
 }
 .task-card p,
 .task-card small {
   display: block;
   margin: 0 0 8px;
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: var(--fs-xs);
   line-height: 1.45;
 }
 .task-card code {
   display: block;
   padding: 6px;
-  border-radius: 5px;
+  border-radius: var(--r-sm);
   background: var(--surface-2);
   color: var(--yellow);
 }
@@ -879,7 +967,7 @@ tbody tr:last-child td {
   grid-template-columns: 320px minmax(0, 1fr);
   min-height: 570px;
   border: 1px solid var(--line);
-  border-radius: 11px;
+  border-radius: var(--r-lg);
   overflow: hidden;
   background: var(--surface);
 }
@@ -912,7 +1000,7 @@ tbody tr:last-child td {
 .run-list small {
   display: block;
   overflow: hidden;
-  font-size: 0.73rem;
+  font-size: var(--fs-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -922,13 +1010,16 @@ tbody tr:last-child td {
 }
 .run-list time {
   color: var(--muted);
-  font-size: 0.6rem;
+  font-size: var(--fs-2xs);
 }
 .status-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: var(--muted);
+  transition:
+    background-color 200ms ease,
+    color 200ms ease;
 }
 .status-dot.status-running,
 .status-dot.status-completed {
@@ -959,7 +1050,7 @@ tbody tr:last-child td {
 }
 .event-panel h2 {
   margin: 0;
-  font-size: 0.87rem;
+  font-size: var(--fs-md);
 }
 .event-log {
   height: 520px;
@@ -974,7 +1065,7 @@ tbody tr:last-child td {
   padding: 9px 0;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
   font-family: 'Cascadia Code', Consolas, monospace;
-  font-size: 0.7rem;
+  font-size: var(--fs-xs);
 }
 .event time {
   color: var(--muted);
@@ -1006,6 +1097,9 @@ tbody tr:last-child td {
   height: 9px;
   border-radius: 50%;
   background: var(--muted);
+  transition:
+    background-color 200ms ease,
+    color 200ms ease;
 }
 .studio-light.active {
   background: var(--green);
@@ -1017,14 +1111,14 @@ tbody tr:last-child td {
   gap: 7px;
   margin-top: 12px;
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: var(--fs-xs);
 }
 .studio-card select,
 .project-modal input,
 .project-modal textarea {
   padding: 8px;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   background: var(--surface-2);
   color: var(--text);
 }
@@ -1043,7 +1137,7 @@ tbody tr:last-child td {
 .settings-card header p {
   margin: 4px 0 0;
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: var(--fs-xs);
   line-height: 1.4;
 }
 .appearance-card {
@@ -1065,8 +1159,8 @@ tbody tr:last-child td {
   align-items: center;
   gap: 8px;
   color: var(--text);
-  font-size: 0.76rem;
-  font-weight: 650;
+  font-size: var(--fs-xs);
+  font-weight: 600;
 }
 .preference-label svg {
   color: var(--muted);
@@ -1074,7 +1168,7 @@ tbody tr:last-child td {
 .segmented {
   display: flex;
   padding: 3px;
-  border-radius: 8px;
+  border-radius: var(--r-md);
   background: var(--surface-2);
   border: 1px solid color-mix(in srgb, var(--line) 75%, transparent);
 }
@@ -1082,7 +1176,7 @@ tbody tr:last-child td {
   flex: 1;
   padding: 8px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   background: transparent;
   color: var(--muted);
   cursor: pointer;
@@ -1095,7 +1189,7 @@ tbody tr:last-child td {
 .segmented button.active {
   background: var(--surface-3);
   color: var(--text);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 1px 4px color-mix(in srgb, black 18%, transparent);
 }
 .diagnostics-card {
   grid-column: 1/-1;
@@ -1109,7 +1203,8 @@ tbody tr:last-child td {
 .integration-settings header p {
   margin: 4px 0 0;
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: var(--fs-xs);
+  line-height: 1.45;
 }
 .settings-fields,
 .agent-editor {
@@ -1124,7 +1219,7 @@ tbody tr:last-child td {
   flex-direction: column;
   gap: 6px;
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: var(--fs-xs);
 }
 .settings-fields input,
 .settings-fields select,
@@ -1133,7 +1228,7 @@ tbody tr:last-child td {
   min-width: 0;
   padding: 9px;
   border: 1px solid var(--line);
-  border-radius: 7px;
+  border-radius: var(--r-sm);
   background: var(--surface-2);
   color: var(--text);
 }
@@ -1166,10 +1261,10 @@ tbody tr:last-child td {
   gap: 5px;
   padding: 0 10px;
   border: 1px solid var(--line);
-  border-radius: 7px;
+  border-radius: var(--r-sm);
   background: var(--surface-2);
   color: var(--text);
-  font-size: 0.72rem;
+  font-size: var(--fs-xs);
   cursor: pointer;
   white-space: nowrap;
 }
@@ -1184,7 +1279,7 @@ tbody tr:last-child td {
   gap: 6px;
   margin: 0;
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: var(--fs-xs);
   min-width: 0;
 }
 .path-status code {
@@ -1195,22 +1290,27 @@ tbody tr:last-child td {
   background: color-mix(in srgb, var(--danger) 18%, transparent);
 }
 .path-status.alternative {
-  opacity: 0.75;
+  color: color-mix(in srgb, var(--muted) 75%, transparent);
 }
 .path-status .link {
   padding: 0;
   border: 0;
   background: none;
   color: var(--accent, inherit);
-  font-size: 0.7rem;
+  font-size: var(--fs-xs);
   text-decoration: underline;
   cursor: pointer;
 }
 .path-hint {
   margin: 0;
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: var(--fs-2xs);
   font-style: italic;
+}
+.wizard-hint {
+  margin: 14px 24px 0;
+  color: var(--muted);
+  font-size: var(--fs-xs);
 }
 .or-state-row {
   display: flex;
@@ -1235,11 +1335,11 @@ tbody tr:last-child td {
 }
 .or-source {
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: var(--fs-xs);
 }
 .or-test-result {
   margin: 6px 0 0;
-  font-size: 0.72rem;
+  font-size: var(--fs-xs);
 }
 .or-test-result[data-ok='true'] {
   color: var(--green);
@@ -1250,7 +1350,7 @@ tbody tr:last-child td {
 .or-notice {
   margin: 6px 0 0;
   color: var(--accent);
-  font-size: 0.72rem;
+  font-size: var(--fs-xs);
 }
 .or-key-form {
   display: flex;
@@ -1262,7 +1362,7 @@ tbody tr:last-child td {
   min-width: 0;
   padding: 9px;
   border: 1px solid var(--line);
-  border-radius: 7px;
+  border-radius: var(--r-sm);
   background: var(--surface-2);
   color: var(--text);
   font: inherit;
@@ -1272,7 +1372,7 @@ tbody tr:last-child td {
   align-items: center;
   gap: 6px;
   color: var(--text);
-  font-size: 0.78rem;
+  font-size: var(--fs-sm);
   cursor: pointer;
   list-style: none;
 }
@@ -1295,26 +1395,32 @@ tbody tr:last-child td {
 }
 .diagnostics-card h3 {
   margin: 20px 0 10px;
-  font-size: 0.8rem;
+  font-size: var(--fs-sm);
 }
 .dependency {
   display: grid;
   gap: 6px;
   padding: 11px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   background: var(--surface-2);
 }
 .dependency > div {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   gap: 8px;
+}
+.dependency > div .chip {
+  flex: none;
+  white-space: nowrap;
 }
 .dependency p,
 .dependency small {
   margin: 0;
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: var(--fs-xs);
+  line-height: 1.45;
 }
 .dependency[data-status='ok'] {
   border-color: color-mix(in srgb, var(--green) 35%, var(--line));
@@ -1329,7 +1435,7 @@ tbody tr:last-child td {
 .dependency .help {
   margin: 0;
   color: var(--text);
-  font-size: 0.7rem;
+  font-size: var(--fs-xs);
 }
 .settings-card footer {
   display: flex;
@@ -1341,7 +1447,7 @@ tbody tr:last-child td {
   margin-bottom: 14px;
   padding: 16px;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--r-lg);
   background: var(--surface);
 }
 .agent-card .agent-editor {
@@ -1368,10 +1474,16 @@ tbody tr:last-child td {
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 10px;
   grid-column: 1/-1;
   min-height: 180px;
+  padding: 24px;
   color: var(--muted);
+  font-size: var(--fs-sm);
   text-align: center;
+}
+.empty > button {
+  margin-top: 2px;
 }
 .toast {
   position: fixed;
@@ -1384,10 +1496,10 @@ tbody tr:last-child td {
   max-width: 500px;
   padding: 11px 13px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   background: var(--surface-2);
   box-shadow: var(--shadow);
-  font-size: 0.78rem;
+  font-size: var(--fs-sm);
 }
 .toast button {
   display: grid;
@@ -1403,13 +1515,13 @@ tbody tr:last-child td {
 .toast button.toast-retry {
   display: inline-flex;
   flex: none;
-  padding: 3px 12px;
+  padding: 6px 10px;
   border: 1px solid var(--red);
   border-radius: 999px;
   background: transparent;
   color: var(--red);
   font: inherit;
-  font-size: 0.72rem;
+  font-size: var(--fs-xs);
   cursor: pointer;
 }
 .toast button.toast-retry:hover {
@@ -1449,7 +1561,7 @@ tbody tr:last-child td {
   max-height: 90vh;
   overflow: auto;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--r-xl);
   background: var(--surface);
   color: var(--text);
   box-shadow: var(--shadow);
@@ -1467,7 +1579,7 @@ tbody tr:last-child td {
 .wizard header p {
   margin: 6px 0 0;
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: var(--fs-sm);
 }
 .checks {
   padding: 8px 24px;
@@ -1497,7 +1609,8 @@ tbody tr:last-child td {
 .checks p {
   margin: 3px 0;
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: var(--fs-xs);
+  line-height: 1.45;
 }
 .checks code {
   color: var(--muted);
@@ -1517,9 +1630,9 @@ tbody tr:last-child td {
   margin: 14px 24px 0;
   padding: 10px;
   border: 1px solid color-mix(in srgb, var(--yellow) 35%, var(--line));
-  border-radius: 7px;
+  border-radius: var(--r-sm);
   color: var(--yellow);
-  font-size: 0.75rem;
+  font-size: var(--fs-xs);
 }
 .project-modal {
   position: static;
@@ -1539,7 +1652,7 @@ tbody tr:last-child td {
   gap: 7px;
   margin: 16px 22px;
   color: var(--muted);
-  font-size: 0.76rem;
+  font-size: var(--fs-xs);
 }
 .project-modal .checkbox {
   flex-direction: row;
@@ -1581,9 +1694,7 @@ tbody tr:last-child td {
   }
   .brand > div:last-child,
   .sidebar nav span,
-  .sidebar-footer span,
-  .sidebar-footer code,
-  .sidebar-footer .chip,
+  .sidebar-footer-line,
   .nav-group-label {
     display: none;
   }

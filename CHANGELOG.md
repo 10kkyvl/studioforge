@@ -8,6 +8,51 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ## [Unreleased]
 
+## [0.5.0-beta.4] - 2026-07-24
+
+### Fixed
+
+- The embedded web UI was served with no `Cache-Control` header at all, so a browser could keep
+  showing a stale, pre-update UI after the app itself had been upgraded. `index.html` and the SPA
+  fallback now send `no-cache` (revalidated on every load), while hashed `/_app/immutable/` assets send
+  `public, max-age=31536000, immutable` (`internal/api/api.go`'s `static` handler, covered by two new
+  tests, `TestStaticIndexAndFallbackUseNoCacheHeader` and `TestStaticImmutableAssetUsesLongLivedCacheHeader`,
+  in `internal/api/api_test.go`).
+- Settings' integration status chips stretched to the full row height under the default flex
+  `align-items`, which drew the pill's border radius as a clipped, oval-looking circle around the
+  status word. They're now compact pills sized to their content (`web/src/app.css`'s `.dependency`).
+- The bottom of Settings leaked untranslated backend text: the database diagnostic showed the raw word
+  "ok", dependency card titles showed raw ids like "git"/"openrouter", the "warning" status word was
+  untranslated, and static English remediation/detail sentences from the backend ("Rojo CLI not
+  found...", "Add your OpenRouter API key...") now display-map to Russian; dynamic values such as
+  version numbers are left as-is (`SettingsView.svelte`, `web/src/lib/i18n.ts`).
+- The sidebar footer's connection status, demo-mode chip, and version number could collide into
+  overlapping/wrapping lines in the narrow sidebar. It's now a clean two-line layout with ellipsis and
+  hover tooltips on truncated text (`web/src/routes/+page.svelte`, `web/src/app.css`'s
+  `.sidebar-footer*`).
+- The first-run wizard showed raw check ids ("database", "dataDirectory") instead of localized names
+  and had a cramped hint below the checklist; also found and fixed a CSS specificity bug where
+  `.wizard footer button` overrode `.primary`, making enabled primary buttons in the wizard, the New
+  Project dialog, and Settings footers all look disabled (`FirstRunWizard.svelte`,
+  `web/src/lib/i18n.ts`, `web/src/app.css`).
+- The chat header could overflow with long Russian badge text; badges now wrap and ellipsize with
+  tooltips, composer controls sit on one baseline, and RunsView's hardcoded color fallbacks that no
+  longer matched the active palette were removed (`ChatView.svelte`, `RunsView.svelte`).
+
+### Changed
+
+- Typography consolidated from roughly 25 ad-hoc font sizes to a 7-step `--fs-*` scale (nothing below
+  `0.68rem`), font weights limited to 600/700/800, and line-heights added to multi-line text; border
+  radii consolidated to 4 `--r-*` tokens; card and button padding unified; muted text no longer
+  double-dimmed by layering `opacity` on top of `var(--muted)` (`web/src/app.css` and the view
+  stylesheets it touches).
+- Hardcoded accent `rgba(...)` colors replaced with `color-mix()` against theme tokens; a consistent
+  quiet hover state on cards; a 180ms fade-rise transition when switching views; an entrance animation
+  for the slash-command menu; transitions on status dots and badges — `prefers-reduced-motion` still
+  disables all of it (`web/src/app.css`, `+page.svelte`, `ChatView.svelte`).
+- The sidebar brand tagline no longer wraps onto three cramped lines (`web/src/app.css`'s
+  `.brand small`).
+
 ## [0.5.0-beta.3] - 2026-07-24
 
 ### Changed
