@@ -31,7 +31,7 @@ body:
     attributes:
       label: Version
       description: Output of `studioforge --version`.
-      placeholder: v0.5.0-rc.1 (abc123456789, 2026-07-24T00:00:00Z)
+      placeholder: v0.5.0-rc.2 (abc123456789, 2026-07-24T00:00:00Z)
     validations:
       required: true
 

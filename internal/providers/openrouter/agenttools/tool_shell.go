@@ -16,11 +16,65 @@ import (
 	"github.com/10kkyvl/studioforge/internal/processes"
 )
 
+// runCommandAllowlist names the executables a workspace-write run may start.
+// npx is deliberately absent: fetching and running an arbitrary package is not
+// meaningfully different from running an arbitrary command, which is what the
+// danger-full-access profile is for.
+//
+// This allowlist raises the bar on the obvious escapes below; it is not a
+// sandbox. A profile that can both write files and run a build tool can always
+// arrange to execute code (a test file, an npm script, a Makefile recipe) —
+// see docs/SECURITY.md, which states this plainly rather than implying the
+// allowlist contains what a build tool can do.
 var runCommandAllowlist = map[string]bool{
 	"git": true, "go": true, "gofmt": true, "goimports": true,
-	"npm": true, "npx": true, "pnpm": true, "yarn": true, "node": true,
+	"npm": true, "pnpm": true, "yarn": true, "node": true,
 	"rojo": true, "python": true, "python3": true, "pytest": true,
 	"make": true, "cargo": true,
+}
+
+// inlineEvalFlags turn an allowlisted interpreter into "run this source text",
+// which is the one escape worth refusing outright: `node -e`, `python -c` and
+// their long forms are arbitrary code with no file on disk and no build step
+// in between.
+var inlineEvalFlags = map[string]bool{
+	"-e": true, "--eval": true, "-c": true, "--command": true,
+	"-p": true, "--print": true,
+}
+
+// interpreterCommands are the allowlisted executables that accept the inline
+// eval flags above.
+var interpreterCommands = map[string]bool{
+	"node": true, "python": true, "python3": true,
+}
+
+// refusedSubcommands are allowlisted executables paired with a subcommand that
+// compiles and runs caller-supplied source in one step. `go build`/`go test`
+// stay available; `go run <anything>` is the direct equivalent of an inline
+// eval and is refused with it.
+var refusedSubcommands = map[string]string{"go": "run"}
+
+// checkWorkspaceCommand applies the workspace-write restrictions to an already
+// tokenized command line. An empty return means the command may run.
+func checkWorkspaceCommand(exe string, argv []string) string {
+	base := strings.ToLower(filepath.Base(exe))
+	base = strings.TrimSuffix(base, ".exe")
+	base = strings.TrimSuffix(base, ".cmd")
+	base = strings.TrimSuffix(base, ".bat")
+	if !runCommandAllowlist[base] {
+		return fmt.Sprintf("command not allowed in workspace-write profile: %s (use danger-full-access for arbitrary commands)", base)
+	}
+	if interpreterCommands[base] {
+		for _, arg := range argv {
+			if inlineEvalFlags[strings.ToLower(arg)] {
+				return fmt.Sprintf("inline code execution (%s %s) is not allowed in workspace-write profile; write the code to a file in the project and run that instead, or use danger-full-access", base, arg)
+			}
+		}
+	}
+	if refused, ok := refusedSubcommands[base]; ok && len(argv) > 0 && strings.ToLower(argv[0]) == refused {
+		return fmt.Sprintf("%s %s is not allowed in workspace-write profile; use danger-full-access for it", base, refused)
+	}
+	return ""
 }
 
 type runCommandArgs struct {
@@ -61,12 +115,8 @@ func (s *ToolSet) runCommandTool() Tool {
 				exe, argv = tokens[0], tokens[1:]
 			}
 			if !a.Shell && s.profile != ProfileDanger {
-				base := strings.ToLower(filepath.Base(exe))
-				base = strings.TrimSuffix(base, ".exe")
-				base = strings.TrimSuffix(base, ".cmd")
-				base = strings.TrimSuffix(base, ".bat")
-				if !runCommandAllowlist[base] {
-					return errResult("command not allowed in workspace-write profile: %s (use danger-full-access for arbitrary commands)", base)
+				if refusal := checkWorkspaceCommand(exe, argv); refusal != "" {
+					return errResult("%s", refusal)
 				}
 			}
 			id := fmt.Sprintf("%s-cmd-%d", opts.RunID, s.cmdSeq.Add(1))
@@ -139,7 +189,7 @@ func runAndCollect(ctx context.Context, proc *processes.Process, maxOutputBytes 
 				} else {
 					text := line.Text
 					if len(text) > remaining {
-						text = text[:remaining]
+						text = truncateBytes(text, remaining)
 						truncated = true
 					}
 					buf.WriteString(text)

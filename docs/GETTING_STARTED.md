@@ -1,6 +1,6 @@
 # Getting started with StudioForge
 
-StudioForge is a public **beta** (currently preparing the v0.5.0-rc.1 release candidate). This
+StudioForge is a public **beta** (current release candidate: v0.5.0-rc.2). This
 guide gets you from a clean checkout (or a downloaded package) to a running daemon, a registered
 project, and your first agent run.
 

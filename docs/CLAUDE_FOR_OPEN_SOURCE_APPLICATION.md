@@ -12,7 +12,7 @@ submission time.
 
 ```
 StudioForge has been shipping regular tagged pre-releases since its first alpha and is now a public
-beta, heading toward a v0.5.0-rc.1 release candidate. It has no accumulated reach metrics —
+beta, at the v0.5.0-rc.2 release candidate. It has no accumulated reach metrics —
 no meaningful star count, download count, or contributor history yet — and this answer does not
 lean on any of that, because there isn't any to report honestly.
 
@@ -72,7 +72,7 @@ consume real, sustained usage rather than occasional code generation:
 - Diagnosing and fixing synchronization failures between StudioForge, Rojo, and Roblox Studio.
 - Preparing and maintaining documentation as functionality changes.
 - Reviewing community issues and pull requests once the project is public.
-- Shipping regular tagged pre-releases as fixes and features land, on the way to v0.5.0-rc.1.
+- Shipping regular tagged pre-releases as fixes and features land; v0.5.0-rc.2 is the current one.
 
 The specific reason this needs a higher-tier plan rather than a lighter one is architectural: every
 StudioForge run execs a real `claude` subprocess and inherits the operator's own Claude Code
@@ -110,7 +110,7 @@ adapter or another Studio capability without reworking the domain layer.
 
 It was released early, as a public beta, specifically to develop it against real-world feedback
 rather than in isolation. The current state is labeled honestly throughout the documentation as a
-public beta heading toward a v0.5.0-rc.1 release candidate. Project memory, the task dependency
+public beta at the v0.5.0-rc.2 release candidate. Project memory, the task dependency
 graph, git status/diff/rollback endpoints, and Rojo live-sync session control are all wired into
 the running UI and API today — project memory auto-collects from completed runs and injects into
 future run context, task dependencies are created and validated as a DAG (though not yet enforced

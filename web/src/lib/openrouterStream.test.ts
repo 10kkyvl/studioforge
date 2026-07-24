@@ -45,6 +45,33 @@ describe('aggregateOpenRouterMessages', () => {
     ]);
   });
 
+  it('drops the text of a failed attempt when the request is retried', () => {
+    const reset: RunEvent = {
+      ...event(0, 'openrouter.message.partial', '', 1),
+      payload: { text: '', turn: 1, reset: true },
+    };
+    const result = aggregateOpenRouterMessages([
+      event(0, 'openrouter.message.partial', 'Half an ans', 1),
+      reset,
+      event(0, 'openrouter.message.partial', 'The complete', 1),
+      event(0, 'openrouter.message.partial', ' answer', 1),
+    ]);
+    expect(result).toHaveLength(1);
+    expect((result[0].payload as { text: string }).text).toBe('The complete answer');
+  });
+
+  it('starts empty when a reset is the first event seen for a turn', () => {
+    const reset: RunEvent = {
+      ...event(0, 'openrouter.message.partial', '', 1),
+      payload: { text: '', turn: 1, reset: true },
+    };
+    const result = aggregateOpenRouterMessages([
+      reset,
+      event(0, 'openrouter.message.partial', 'Retried', 1),
+    ]);
+    expect((result[0].payload as { text: string }).text).toBe('Retried');
+  });
+
   it('aggregates NVIDIA-compatible streaming events', () => {
     const result = aggregateOpenRouterMessages([
       event(0, 'nvidia.message.partial', 'Hello', 1),

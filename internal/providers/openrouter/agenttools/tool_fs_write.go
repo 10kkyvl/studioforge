@@ -109,6 +109,7 @@ type applyPatchArgs struct {
 type preparedEdit struct {
 	resolved string
 	content  string
+	original []byte
 }
 
 func applyPatchTool(opts Options) Tool {
@@ -148,7 +149,7 @@ func applyPatchTool(opts Options) Tool {
 					if rerr != nil {
 						return errResult("edit %d (%s): read file: %v", i, e.Path, rerr)
 					}
-					p = &preparedEdit{resolved: resolved, content: string(data)}
+					p = &preparedEdit{resolved: resolved, content: string(data), original: data}
 					byPath[key] = p
 					order = append(order, key)
 				}
@@ -158,10 +159,18 @@ func applyPatchTool(opts Options) Tool {
 				}
 				p.content = updated
 			}
-			for _, key := range order {
+			// All or nothing, as the tool description promises: a write that
+			// fails partway through rolls every already-written file back to the
+			// bytes it was read with, so the model's "the patch did not apply"
+			// result matches what is actually on disk.
+			for i, key := range order {
 				p := byPath[key]
 				if err := atomicWriteFile(p.resolved, []byte(p.content)); err != nil {
-					return errResult("apply patch: write %s: %v", p.resolved, err)
+					restored, rollbackErr := rollbackEdits(byPath, order[:i])
+					if rollbackErr != nil {
+						return errResult("apply patch: write %s: %v; rolling back left %s changed: %v", p.resolved, err, restored, rollbackErr)
+					}
+					return errResult("apply patch: write %s: %v (no files were changed)", p.resolved, err)
 				}
 			}
 			changed := make([]string, 0, len(order))
@@ -176,6 +185,19 @@ func applyPatchTool(opts Options) Tool {
 			return Result{Content: "changed files: " + strings.Join(changed, ", ")}
 		},
 	}
+}
+
+// rollbackEdits restores the files apply_patch already wrote back to their
+// original bytes. It names the file it could not restore, so a rollback that
+// itself fails is reported precisely rather than as a bare "patch failed".
+func rollbackEdits(byPath map[string]*preparedEdit, written []string) (string, error) {
+	for _, key := range written {
+		p := byPath[key]
+		if err := atomicWriteFile(p.resolved, p.original); err != nil {
+			return p.resolved, err
+		}
+	}
+	return "", nil
 }
 
 type createDirArgs struct {

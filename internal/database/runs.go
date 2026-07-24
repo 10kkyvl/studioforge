@@ -13,16 +13,20 @@ import (
 	"github.com/10kkyvl/studioforge/internal/security"
 )
 
+// CreateRun inserts a run, or returns the run an earlier request with the same
+// idempotency key already created. The lookup below is only a fast path: two
+// concurrent submissions with the same key both miss it, so the insert itself
+// carries ON CONFLICT DO NOTHING against UNIQUE(project_id, idempotency_key)
+// and the loser re-reads the winner's row instead of failing the request with
+// a constraint violation.
 func (s *Store) CreateRun(ctx context.Context, run models.Run, idempotencyKey string) (models.Run, bool, error) {
 	if idempotencyKey != "" {
-		var existing string
-		err := s.db.SQL.QueryRowContext(ctx, "SELECT id FROM runs WHERE project_id=? AND idempotency_key=?", run.ProjectID, idempotencyKey).Scan(&existing)
-		if err == nil {
-			r, e := s.Run(ctx, existing)
-			return r, false, e
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
+		existing, found, err := s.runByIdempotencyKey(ctx, run.ProjectID, idempotencyKey)
+		if err != nil {
 			return models.Run{}, false, err
+		}
+		if found {
+			return existing, false, nil
 		}
 	}
 	if run.ID == "" {
@@ -39,11 +43,41 @@ func (s *Store) CreateRun(ctx context.Context, run models.Run, idempotencyKey st
 	if run.Validation == "" {
 		run.Validation = "none"
 	}
-	_, err := s.db.SQL.ExecContext(ctx, `INSERT INTO runs
+	result, err := s.db.SQL.ExecContext(ctx, `INSERT INTO runs
 (id,project_id,task_id,agent_id,provider,model_alias,provider_session_id,status,phase,required_resource,error,prompt_snapshot,base_commit,result_commit,cost,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,idempotency_key,thread_id,validation,parent_run_id,correction_depth,created_at,updated_at)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, run.ID, run.ProjectID, nullText(run.TaskID), run.AgentID, run.Provider, run.ModelAlias, run.ProviderSession, run.Status, run.Phase, run.RequiredResource, run.Error, run.PromptSnapshot, run.BaseCommit, run.ResultCommit, run.Cost, run.InputTokens, run.OutputTokens, run.CacheReadTokens, run.CacheCreationTokens, nullText(idempotencyKey), nullText(run.ThreadID), run.Validation, nullText(run.ParentRunID), run.CorrectionDepth, formatTime(now), formatTime(now))
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(project_id,idempotency_key) DO NOTHING`, run.ID, run.ProjectID, nullText(run.TaskID), run.AgentID, run.Provider, run.ModelAlias, run.ProviderSession, run.Status, run.Phase, run.RequiredResource, run.Error, run.PromptSnapshot, run.BaseCommit, run.ResultCommit, run.Cost, run.InputTokens, run.OutputTokens, run.CacheReadTokens, run.CacheCreationTokens, nullText(idempotencyKey), nullText(run.ThreadID), run.Validation, nullText(run.ParentRunID), run.CorrectionDepth, formatTime(now), formatTime(now))
 	if err != nil {
 		return models.Run{}, false, fmt.Errorf("create run: %w", err)
+	}
+	if inserted, _ := result.RowsAffected(); inserted == 0 {
+		// The conflict target above only matches a non-NULL idempotency key, so
+		// reaching here means a concurrent submission won the race with this
+		// exact key. Return its run rather than a constraint error.
+		existing, found, lookupErr := s.runByIdempotencyKey(ctx, run.ProjectID, idempotencyKey)
+		if lookupErr != nil {
+			return models.Run{}, false, lookupErr
+		}
+		if !found {
+			return models.Run{}, false, fmt.Errorf("create run: insert was skipped but no run holds idempotency key %q", idempotencyKey)
+		}
+		return existing, false, nil
+	}
+	return run, true, nil
+}
+
+func (s *Store) runByIdempotencyKey(ctx context.Context, projectID, idempotencyKey string) (models.Run, bool, error) {
+	var id string
+	err := s.db.SQL.QueryRowContext(ctx, "SELECT id FROM runs WHERE project_id=? AND idempotency_key=?", projectID, idempotencyKey).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return models.Run{}, false, nil
+	}
+	if err != nil {
+		return models.Run{}, false, err
+	}
+	run, err := s.Run(ctx, id)
+	if err != nil {
+		return models.Run{}, false, err
 	}
 	return run, true, nil
 }

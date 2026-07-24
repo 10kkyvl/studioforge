@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/10kkyvl/studioforge/internal/processes"
 )
 
 const protocolVersion = "2025-06-18"
@@ -103,6 +105,12 @@ func NewStdioTransport(ctx context.Context, launch LaunchConfig) (*StdioTranspor
 	// is unbounded, and it runs while a scheduler slot and a project write lease
 	// are held.
 	cmd.WaitDelay = 5 * time.Second
+	// The grandchild above also has to actually die when this transport closes.
+	// ConfigureTree puts the launcher in its own process group (POSIX) / job
+	// object (Windows) so Close can take the whole tree down instead of only
+	// the launcher, which used to leave a StudioMCP.exe running after every
+	// probe — and the badge probes regularly.
+	processes.ConfigureTree(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("Studio MCP stdin: %w", err)
@@ -303,11 +311,21 @@ func (t *StdioTransport) transportError() error {
 	return errors.New(message)
 }
 
+// closeGrace is how long the launcher gets to exit on its own after its stdin
+// is closed, before the whole process tree is force-killed. It only has to
+// cover a clean MCP shutdown, not any real work.
+const closeGrace = 2 * time.Second
+
 func (t *StdioTransport) Close() error {
 	_ = t.stdin.Close()
 	if t.cmd != nil && t.cmd.Process != nil {
-		_ = t.cmd.Process.Kill()
+		reaped := make(chan struct{})
+		// TerminateTree signals politely, then force-kills the launcher and
+		// everything below it — on Windows that grandchild StudioMCP.exe — once
+		// the grace period elapses. Killing only cmd.Process left it running.
+		_ = processes.TerminateTree(t.cmd, reaped, closeGrace)
 		_ = t.cmd.Wait()
+		close(reaped)
 	}
 	select {
 	case <-t.done:

@@ -110,6 +110,11 @@ type ChatRequest struct {
 type Delta struct {
 	Text      string
 	Reasoning bool
+	// Restart marks the start of a retried attempt after an earlier attempt had
+	// already streamed text. Everything the sink received for this request so
+	// far is about to be sent again from the beginning, so a consumer that
+	// accumulates deltas must drop what it has rather than append to it.
+	Restart bool
 }
 
 type Sink func(Delta)
