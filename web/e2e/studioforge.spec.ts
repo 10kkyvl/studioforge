@@ -1,71 +1,21 @@
 import { expect, test } from '@playwright/test';
-import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { createServer } from 'node:net';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { startDaemon, stopDaemon, type DaemonHandle } from './helpers';
 
-let daemon: ChildProcessWithoutNullStreams;
+let handle: DaemonHandle;
 let baseURL = '';
 let bootstrap = '';
 let dataDir = '';
-let binary = '';
-
-function freePort(): Promise<number> {
-  return new Promise((resolvePort, reject) => {
-    const server = createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      if (!address || typeof address === 'string') return reject(new Error('No TCP address'));
-      server.close(() => resolvePort(address.port));
-    });
-  });
-}
 
 test.beforeAll(async () => {
-  const root = resolve(process.cwd(), '..');
-  const buildDir = mkdtempSync(join(tmpdir(), 'studioforge-e2e-build-'));
-  dataDir = mkdtempSync(join(tmpdir(), 'studioforge-e2e-data-'));
-  mkdirSync(buildDir, { recursive: true });
-  binary = join(buildDir, process.platform === 'win32' ? 'studioforge.exe' : 'studioforge');
-  execFileSync('go', ['build', '-o', binary, './cmd/studioforge'], { cwd: root, stdio: 'inherit' });
-  const port = await freePort();
-  daemon = spawn(binary, ['--mock', '--no-open', '--port', String(port), '--data-dir', dataDir], {
-    cwd: root,
-  });
-  await new Promise<void>((resolveReady, reject) => {
-    let output = '';
-    const timeout = setTimeout(
-      () => reject(new Error(`Daemon startup timed out: ${output}`)),
-      20_000,
-    );
-    daemon.stdout.on('data', (chunk) => {
-      output += chunk.toString();
-      baseURL = output.match(/STUDIOFORGE_URL=(.+)/)?.[1]?.trim() ?? baseURL;
-      bootstrap = output.match(/STUDIOFORGE_BOOTSTRAP=(.+)/)?.[1]?.trim() ?? bootstrap;
-      if (baseURL && bootstrap) {
-        clearTimeout(timeout);
-        resolveReady();
-      }
-    });
-    daemon.once('exit', (code) => {
-      clearTimeout(timeout);
-      reject(new Error(`Daemon exited early with ${code}: ${output}`));
-    });
-  });
+  handle = await startDaemon();
+  baseURL = handle.baseURL;
+  bootstrap = handle.bootstrap;
+  dataDir = handle.dataDir;
 });
 
 test.afterAll(async () => {
-  if (daemon && !daemon.killed) {
-    daemon.kill();
-    await new Promise((resolveExit) => {
-      daemon.once('exit', resolveExit);
-      setTimeout(resolveExit, 3_000);
-    });
-  }
-  if (dataDir) rmSync(dataDir, { recursive: true, force: true });
-  if (binary) rmSync(resolve(binary, '..'), { recursive: true, force: true });
+  await stopDaemon(handle);
 });
 
 test('first run, locale, projects, live run, and core navigation', async ({ page }) => {
@@ -76,8 +26,34 @@ test('first run, locale, projects, live run, and core navigation', async ({ page
   await page.goto(`${baseURL}/#bootstrap=${encodeURIComponent(bootstrap)}`);
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
-  const finishEnglish = page.getByRole('button', { name: 'Open dashboard', exact: true });
-  const finishRussian = page.getByRole('button', { name: 'Открыть панель', exact: true });
+
+  await dialog.locator('[data-check="studioMcp"]').getByRole('button').click();
+  await expect(
+    page
+      .getByRole('heading', { name: 'Settings', exact: true })
+      .or(page.getByRole('heading', { name: 'Настройки', exact: true })),
+  ).toBeVisible();
+  const resumeSetup = page
+    .getByRole('button', { name: 'Finish setup', exact: true })
+    .or(page.getByRole('button', { name: 'Завершить настройку', exact: true }));
+  await expect(resumeSetup).toBeVisible();
+  await resumeSetup.click();
+  await expect(dialog).toBeVisible();
+
+  await dialog
+    .getByRole('button', { name: 'Recheck', exact: true })
+    .or(dialog.getByRole('button', { name: 'Проверить снова', exact: true }))
+    .click();
+  await expect(dialog).toBeVisible();
+
+  const finishEnglish = dialog.getByRole('button', {
+    name: 'Continue in limited mode',
+    exact: true,
+  });
+  const finishRussian = dialog.getByRole('button', {
+    name: 'Продолжить в ограниченном режиме',
+    exact: true,
+  });
   if (await finishEnglish.isVisible()) await finishEnglish.click();
   else await finishRussian.click();
   await expect(dialog).toBeHidden();
@@ -88,7 +64,7 @@ test('first run, locale, projects, live run, and core navigation', async ({ page
     await expect(page.getByRole('heading', { name, exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'New project', exact: true }).click();
   await page.getByLabel('Project name').fill('Fresh Project');
-  await page.getByLabel('Canonical path').fill(join(dataDir, 'fresh-project'));
+  await page.getByLabel('Project folder').fill(join(dataDir, 'fresh-project'));
   await page.getByLabel('Description').fill('Created by the browser regression test.');
   await page.getByRole('button', { name: 'Register project', exact: true }).click();
   // Registering a project drops the operator straight into its chat, so the
@@ -107,14 +83,12 @@ test('first run, locale, projects, live run, and core navigation', async ({ page
   // reached through navigation here rather than asserting that dead path works.
   await page.getByRole('button', { name: 'Runs', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Runs', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Global activity', exact: true }).click();
+  await page.getByRole('button', { name: 'Activity', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Global activity', exact: true })).toBeVisible();
-  // The seeded tasks belong to a demo project, and registering Fresh Project
-  // switched the selection to it.
+  await page.getByRole('button', { name: 'Tasks', exact: true }).click();
   await page
     .getByRole('combobox', { name: 'Project', exact: true })
     .selectOption({ label: 'Skyline Obby' });
-  await page.getByRole('button', { name: 'Tasks', exact: true }).click();
   await expect(page.getByTestId('tasks-view')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Task DAG', exact: true })).toBeVisible();
   await expect(
@@ -122,10 +96,10 @@ test('first run, locale, projects, live run, and core navigation', async ({ page
   ).toBeVisible();
   await page.getByRole('button', { name: 'Studio sessions', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Studio sessions', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Team builder', exact: true }).click();
   await page
     .getByRole('combobox', { name: 'Project', exact: true })
     .selectOption({ label: 'Fresh Project' });
-  await page.getByRole('button', { name: 'Team builder', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Default Agent', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Add agent', exact: true }).click();
   const agentForm = page.locator('form.create-agent');

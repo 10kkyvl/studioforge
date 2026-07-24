@@ -173,6 +173,7 @@ func Run(ctx context.Context, opts config.Options) error {
 	rojoManager := rojo.New(supervisor, setting("rojo_path", ""))
 	doctor := &diagnostics.Doctor{DB: db, DataDir: dataDir, SafeMode: opts.SafeMode, MockMode: opts.MockMode, Claude: claudeProvider, Rojo: rojoManager, MCPOverride: setting("studio_mcp_path", ""), GitOverride: setting("git_path", "")}
 	doctor.OpenRouterKeyState = func(ctx context.Context) string { return string(credManager.Status(ctx).State) }
+	doctor.NVIDIAKeyState = func(ctx context.Context) string { return string(nvidiaCredManager.Status(ctx).State) }
 	// rojoManager.Start puts its process on the same supervisor every other
 	// child process runs under, so the shutdown sequence below
 	// (supervisor.Close) already stops a live sync session and frees its port

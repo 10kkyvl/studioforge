@@ -36,7 +36,8 @@ type Doctor struct {
 	OpenRouterCatalog  interface {
 		Models(context.Context) ([]catalog.Model, catalog.Source, error)
 	}
-	mu sync.RWMutex
+	NVIDIAKeyState func(context.Context) string
+	mu             sync.RWMutex
 }
 
 func (d *Doctor) SetMCPOverride(path string) {
@@ -101,6 +102,9 @@ func (d *Doctor) Run(ctx context.Context) models.Diagnostics {
 	if d.OpenRouterKeyState != nil {
 		report.Dependencies["openrouter"] = d.openrouterCheck(ctx)
 	}
+	if d.NVIDIAKeyState != nil {
+		report.Dependencies["nvidia"] = d.nvidiaCheck(ctx)
+	}
 	testPath := filepath.Join(d.DataDir, "runtime", "doctor-write-test")
 	writeErr := os.MkdirAll(filepath.Dir(testPath), 0o700)
 	if writeErr == nil {
@@ -115,17 +119,22 @@ func (d *Doctor) Run(ctx context.Context) models.Diagnostics {
 	return report
 }
 
-func (d *Doctor) openrouterCheck(ctx context.Context) models.Check {
-	keyState := d.OpenRouterKeyState(ctx)
-	status := "missing"
+func keyStateStatus(keyState string) string {
 	switch keyState {
 	case "configured":
-		status = "ok"
+		return "ok"
 	case "unverified":
-		status = "warning"
+		return "warning"
 	case "invalid":
-		status = "error"
+		return "error"
+	default:
+		return "missing"
 	}
+}
+
+func (d *Doctor) openrouterCheck(ctx context.Context) models.Check {
+	keyState := d.OpenRouterKeyState(ctx)
+	status := keyStateStatus(keyState)
 	var message strings.Builder
 	message.WriteString("API key: " + keyState)
 	if d.OpenRouterCatalog != nil {
@@ -147,6 +156,13 @@ func (d *Doctor) openrouterCheck(ctx context.Context) models.Check {
 		}
 	}
 	return models.Check{Name: "OpenRouter", Status: status, Message: message.String(), Help: "Add your OpenRouter API key in Settings and click Test connection."}
+}
+
+func (d *Doctor) nvidiaCheck(ctx context.Context) models.Check {
+	keyState := d.NVIDIAKeyState(ctx)
+	status := keyStateStatus(keyState)
+	message := "API key: " + keyState
+	return models.Check{Name: "NVIDIA NIM", Status: status, Message: message, Help: "Add your NVIDIA API key in Settings and click Test connection."}
 }
 
 func executableCheck(ctx context.Context, name string, args []string, help string) models.Check {
