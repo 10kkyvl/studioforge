@@ -26,6 +26,7 @@
     friendlyError,
     getSnapshot,
     post,
+    setCloudPlace,
     updateTask,
   } from '$lib/api';
   import { loadProject, loadView, saveProject, saveView } from '$lib/session';
@@ -483,6 +484,17 @@
       await refresh();
     });
   }
+  // Records the name an open Studio reports as the project's roblox.com place,
+  // which is what lets a run recognise a place opened from Roblox rather than
+  // from the project's own build. Taking the name from the listing rather than
+  // asking the operator to type it is what keeps it matching exactly.
+  async function recogniseStudio(projectId: string, placeName: string) {
+    if (!projectId) return;
+    await action(`studio-recognise-${projectId}`, async () => {
+      await setCloudPlace(projectId, placeName);
+      await refresh();
+    });
+  }
   async function resolveDecision(decisionId: string, approve: boolean) {
     await action(`decision-${decisionId}`, async () => {
       await post(`/decisions/${decisionId}/resolve`, { approve });
@@ -753,6 +765,7 @@
                 {projects}
                 {projectName}
                 onBind={bindStudio}
+                onRecognise={recogniseStudio}
                 detected={studioSessionsDetected}
                 onRefresh={refreshStudioSessions}
                 busy={busy === 'studio-sessions-refresh'}

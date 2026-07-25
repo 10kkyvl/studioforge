@@ -8,6 +8,69 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ## [Unreleased]
 
+### Added
+
+- **A project edited on roblox.com can now be reached by a run.** Studio identifies a window by the
+  one name `list_roblox_studios` reports for it, and that name is not always a file name: a place
+  opened from a local build reports the build's file name, while a place opened from roblox.com —
+  Team Create included — reports the place's display name and no file name at all. Matching only on
+  the built file name meant a Team Create project was refused permanently, with the right place open
+  the whole time and no action available that could satisfy the check. `mcp.Place` now carries both
+  names a project may be recognised by, and an instance matching either one is its own. The
+  roblox.com name is recorded per project — **Studio sessions → Recognise the project by this name**
+  takes it straight from the listing, so it matches exactly what the launcher reports, and
+  `GET`/`POST /api/v1/projects/{id}/cloud-place` expose it directly. Clearing it returns the project
+  to matching on its built file alone. An instance that is still mid-registration reports no name and
+  matches neither (`internal/roblox/mcp/provisioner.go`, `internal/roblox/mcp/live.go`,
+  `internal/api/api.go`, `internal/app/app.go`, `web/src/lib/components/views/StudiosView.svelte`).
+
+### Fixed
+
+- **Auto-open no longer opens the wrong window for a project hosted on Roblox.** StudioForge launches
+  Studio with `-task EditFile -localPlaceFile`, which opens a local build; a Team Create place is
+  reachable only by being opened from Roblox. With no Studio open, a project carrying a roblox.com
+  place name would have had its local build built and launched — a second, unrelated window in front
+  of an operator whose collaborators are in the hosted place. That path is now refused with a notice
+  naming what to open instead, and a mismatch notice for such a project no longer advises letting
+  StudioForge open the place automatically, which was advice it could not act on
+  (`internal/roblox/mcp/provisioner.go`).
+- **A run started moments after Studio opened is no longer told another MCP client owns Studio.**
+  The plugin attaches to a freshly spawned launcher in two steps, and only the first reports an
+  error: before the plugin dials the WS host the listing fails with `Not connected to the WS host`,
+  but once it has dialled and not yet registered its window the listing *succeeds* and returns an
+  empty list. Only the erroring step was waited out, so the probe stopped at the second one and took
+  an empty list as final — and an empty list with a Studio process running is reported as another MCP
+  client holding the connection. The run lost every Studio tool and the operator was sent to close a
+  client that did not exist. Both steps now count as "not attached yet" and are waited out together,
+  while an empty list with no Studio process stays the silent, immediate "Studio closed" answer as
+  before. The notice for a genuine timeout no longer asserts the cause it cannot observe, naming both
+  a competing MCP client and a disabled Studio MCP plugin (`internal/roblox/mcp/provisioner.go`,
+  `internal/roblox/mcp/live.go`).
+- **A turn no longer gets refused with "found (unnamed)" over a place mismatch that never happened.**
+  Registration lands in pieces: Studio lists an instance's ID before filling in the place it holds, so
+  a listing taken during that gap carries an instance whose name is empty. That is not an empty list,
+  so it sailed past the attach wait, failed the place comparison, and came back as "the open Studio
+  does not hold this project's place (expected …, found (unnamed))" — with the right place open the
+  whole time and the operator sent to open a place that was already in front of them. An unnamed
+  listing now counts as a registration still in progress and is waited out like an empty one. A place
+  that genuinely differs is not mid-registration — its name is there on the first listing — so real
+  mismatches are still reported at once, and still name what is open. Every launcher connection runs
+  this handshake for itself and each turn spawns new ones, which is why this surfaced a turn or two
+  in rather than on the first (`internal/roblox/mcp/provisioner.go`).
+- **A mid-registration refresh no longer blanks a Studio session's name.** `UpsertRealStudioSessions`
+  guarded an existing project binding against a refresh that resolved nothing, but wrote the incoming
+  name unconditionally — so a refresh landing in the same gap above replaced a good name with an
+  empty one in the Studio Sessions view until a later refresh happened to catch a complete listing. A
+  stored name now survives an empty one, for the same reason the binding does
+  (`internal/database/product.go`).
+- **The Studio badge, the Open Studio button and the sessions refresh stay responsive while Studio
+  registers nothing.** They share the probe with the run gate, and a Studio left open with its MCP
+  plugin disabled holds the unregistered state indefinitely — so the gate's attach window would have
+  been spent on every badge poll and every click. Those callers now probe on a short budget and let
+  the next poll correct a stale answer, while a run, which keeps whatever access the probe decides
+  for its whole length, still waits out the full window (`internal/roblox/mcp/provisioner.go`,
+  `internal/roblox/mcp/sessions.go`).
+
 ## [0.5.0-rc.2] - 2026-07-25
 
 ### Fixed

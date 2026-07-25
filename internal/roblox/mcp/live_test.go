@@ -149,7 +149,7 @@ func TestProvisionLiveGrantsAccessWhenDialSucceedsWithinTheTimeout(t *testing.T)
 }
 
 func TestProvisionLiveRefusesAmbiguousStudioSelection(t *testing.T) {
-	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "one"}, {ID: "two"}}})
+	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "one", Name: "A.rbxl"}, {ID: "two", Name: "B.rbxl"}}})
 	grant := p.ProvisionLive(context.Background(), "workspace-write", Target{})
 	if grant.Client != nil {
 		grant.Release()
@@ -172,6 +172,8 @@ func TestProvisionLiveMissingLauncherIsNotAFailure(t *testing.T) {
 func TestProvisionLiveExplainsAStudioHeldByAnotherClient(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{instances: nil})
 	p.Running = func(context.Context) bool { return true }
+	p.attachWindow = 100 * time.Millisecond
+	p.retryEvery = 10 * time.Millisecond
 	grant := p.ProvisionLive(context.Background(), "workspace-write", Target{})
 	if grant.Client != nil {
 		grant.Release()
@@ -180,6 +182,23 @@ func TestProvisionLiveExplainsAStudioHeldByAnotherClient(t *testing.T) {
 	if !strings.Contains(grant.Notice, "another MCP client") {
 		t.Errorf("notice must name the cause the operator can act on, got %q", grant.Notice)
 	}
+}
+
+// ProvisionLive shares the attach wait with Provision, so the stage where the
+// listing succeeds with an empty list has to be waited out here too — this is
+// the OpenRouter/NVIDIA gate, and it is consulted once per turn.
+func TestProvisionLiveWaitsForStudioToRegisterItsPlace(t *testing.T) {
+	p := newProvisioner(t, &registeringTransport{
+		studioTransport: studioTransport{instances: []Instance{{ID: "one", Name: "Place.rbxl"}}},
+		empty:           2,
+	})
+	p.Running = func(context.Context) bool { return true }
+	p.retryEvery = 10 * time.Millisecond
+	grant := p.ProvisionLive(context.Background(), "workspace-write", Target{})
+	if grant.Client == nil {
+		t.Fatalf("Studio withheld though the place registered after a retry: %q", grant.Notice)
+	}
+	grant.Release()
 }
 
 func TestProvisionLiveRefusesUnknownProfile(t *testing.T) {
@@ -199,7 +218,7 @@ func TestProvisionLiveOpensTheProjectsPlaceWhenNoneIsOpen(t *testing.T) {
 	p := newProvisioner(t, transport)
 	opened := false
 	grant := p.ProvisionLive(context.Background(), "workspace-write", Target{
-		PlaceName: "my-game-a1b2c3d4.rbxl",
+		Place: Place{FileName: "my-game-a1b2c3d4.rbxl"},
 		Open: func(context.Context) error {
 			opened = true
 			transport.open()

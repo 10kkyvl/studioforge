@@ -127,6 +127,13 @@ plugin loading or dynamic linking.
 - `internal/roblox/studio` — `studio.go`: `Opener.OpenProject` builds a project's Rojo place file and
   launches Roblox Studio on it; `PlaceName` derives the place's file name from the project name and ID,
   which is how an already-open Studio window is later recognized as belonging to a given project.
+  That file name is not the only way a window identifies itself: `list_roblox_studios` reports one name
+  per instance and nothing else (no place or universe ID), and a place opened from roblox.com — Team
+  Create included — carries its display name there instead of any file name. `mcp.Place` therefore holds
+  both names a project may be recognised by, the built file's and the roblox.com place's, the latter
+  stored per project under the `studio_cloud_place` setting (`api.CloudPlaceSettingKey`). A project with
+  a cloud name set is never auto-opened: building and launching its local file would put a second,
+  unrelated window in front of an operator whose collaborators are in the Roblox-hosted place.
 
 ### Rojo
 

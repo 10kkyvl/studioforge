@@ -39,6 +39,12 @@ func (s *Store) ListStudioSessions(ctx context.Context) ([]models.StudioSession,
 // be empty, leaving it unbound for a manual pick). An instance from a previous
 // pass that is absent here is deleted outright: its Studio closed, so nothing
 // keeps a stale row around to bind against later. Mock rows are never touched.
+//
+// A name already stored survives an empty one for the same reason the binding
+// does. Studio registers an instance's ID before the place it holds, so a
+// refresh can catch it mid-registration and report it nameless; letting that
+// through blanked a good name in the Studio Sessions view until the next
+// refresh happened to land on a complete listing.
 func (s *Store) UpsertRealStudioSessions(ctx context.Context, sessions []models.StudioSession) error {
 	tx, err := s.db.SQL.BeginTx(ctx, nil)
 	if err != nil {
@@ -75,7 +81,7 @@ func (s *Store) UpsertRealStudioSessions(ctx context.Context, sessions []models.
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO studio_sessions(id,project_id,instance_id,name,place_id,game_id,active,play_state,mock,last_seen_at)
 VALUES(?,?,?,?,?,?,?,?,0,?)
-ON CONFLICT(instance_id) DO UPDATE SET project_id=excluded.project_id,name=excluded.name,active=excluded.active,play_state=excluded.play_state,last_seen_at=excluded.last_seen_at`,
+ON CONFLICT(instance_id) DO UPDATE SET project_id=excluded.project_id,name=CASE WHEN excluded.name<>'' THEN excluded.name ELSE studio_sessions.name END,active=excluded.active,play_state=excluded.play_state,last_seen_at=excluded.last_seen_at`,
 			"live-"+session.InstanceID, nullText(projectID), session.InstanceID, session.Name, session.PlaceID, session.GameID, boolInt(session.Active), session.PlayState, now); err != nil {
 			return err
 		}

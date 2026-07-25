@@ -60,14 +60,24 @@ type Provisioner struct {
 }
 
 // The plugin dials the WS host a beat after the launcher spawns, so the first
-// listing on a fresh launcher routinely fails. attachWait bounds how long a
-// probe waits for the attach; past it a running Studio whose plugin never
-// showed up means another client holds the WS host.
+// listings on a fresh launcher routinely come back without a place. attachWait
+// bounds how long a probe waits for the attach; past it a running Studio that
+// registered nothing is out of reach for this run either way.
 const attachWait = 8 * time.Second
 
-// errWSHostUnreachable means Studio is running but its plugin never attached to
-// our launcher within the attach window — the signature of a WS host held by
-// another MCP client.
+// glanceAttachWait is the same wait for callers a person is watching rather
+// than a run: the chat badge polls Status, the Open Studio button blocks on
+// CheckOpen, and the sessions list refreshes on demand. Those must answer
+// within a glance, and a Studio that registers nothing holds that state for as
+// long as it stays open — a plugin left disabled holds it indefinitely — so
+// spending the run gate's window on every poll would stall the UI outright.
+// Giving up early costs a glance only the freshest answer, which the next poll
+// or click corrects; a run that gives up early loses every Studio tool for its
+// whole length, which is why the gate waits longer.
+const glanceAttachWait = 1500 * time.Millisecond
+
+// errWSHostUnreachable means Studio is running but never registered a place
+// with our launcher within the attach window.
 var errWSHostUnreachable = errors.New("Studio MCP plugin never attached to the launcher")
 
 // notConnected recognises the launcher's tool error for a missing plugin
@@ -84,9 +94,12 @@ func (p *Provisioner) blocked(ctx context.Context) bool {
 }
 
 // hostTakenNotice explains the one failure that looks like every other: the
-// launcher connected, so nothing errored, yet Studio is unreachable because a
-// different MCP client holds the host slot.
-const hostTakenNotice = "Studio MCP withheld: Roblox Studio is running, but another MCP client already holds its connection — Roblox grants it to one client at a time. Close the other client (Claude Desktop, Claude Code, Cursor or another editor with the Roblox Studio MCP server enabled), or turn its Roblox MCP server off, then start the run again."
+// launcher connected, so nothing errored, yet Studio registered no place with
+// it. Which cause produced that cannot be read off the wire, so the notice
+// states what was observed and names both, rather than asserting the one that
+// is only usually right — an operator sent to close a second MCP client that
+// does not exist has nothing left to try.
+const hostTakenNotice = "Studio MCP withheld: Roblox Studio is running, but it registered no open place with the MCP launcher. Either another MCP client already holds Studio's connection — Roblox grants it to one client at a time — or this Studio's MCP plugin is not enabled. Close the other client (Claude Desktop, Claude Code, Cursor or another editor with the Roblox Studio MCP server enabled), or enable the MCP plugin in Studio, then start the run again."
 
 func (p *Provisioner) timeout() time.Duration {
 	if p.Timeout > 0 {
@@ -102,17 +115,62 @@ func (p *Provisioner) dial(ctx context.Context, launch LaunchConfig) (Transport,
 	return NewStdioTransport(ctx, launch)
 }
 
-// Target names the project a run is for. PlaceName is the file name that
-// project's place is built under, which is how an open Studio is recognised as
-// holding this project rather than another — an instance reports its place's
-// file name and nothing else about which project it belongs to. Open, when set,
-// builds and launches that place.
+// Place is how an open Studio is recognised as holding a project's place. The
+// launcher reports one name per instance and nothing else about which project
+// it belongs to, and what that name is depends on where the place was opened
+// from: a local file reports the file's name, while a place opened from
+// roblox.com — Team Create included — reports the place's display name. A
+// project is therefore recognised by whichever of these its operator works in.
+type Place struct {
+	// FileName is the place file StudioForge builds this project to.
+	FileName string
+	// CloudName is the display name of the roblox.com place this project is
+	// edited as, empty for a project that only opens its built file.
+	CloudName string
+}
+
+// Named reports whether the place carries anything to match an instance on. An
+// unnamed place cannot be recognised, so callers fall back to the older rule of
+// taking a single open Studio to be the right one.
+func (p Place) Named() bool { return p.FileName != "" || p.CloudName != "" }
+
+// Cloud reports whether this project is edited as a roblox.com place rather
+// than as its own built file.
+func (p Place) Cloud() bool { return p.CloudName != "" }
+
+// matches reports whether an instance reporting name holds this place. The
+// comparison is case-insensitive because Windows file names are. An instance
+// that reports no name at all is mid-registration, not a match.
+func (p Place) matches(name string) bool {
+	if name == "" {
+		return false
+	}
+	return (p.FileName != "" && strings.EqualFold(name, p.FileName)) ||
+		(p.CloudName != "" && strings.EqualFold(name, p.CloudName))
+}
+
+// String names the place the way a notice should state it, so an operator
+// reading a refusal sees what was actually looked for.
+func (p Place) String() string {
+	switch {
+	case p.FileName != "" && p.CloudName != "":
+		return fmt.Sprintf("%s or the roblox.com place %q", p.FileName, p.CloudName)
+	case p.CloudName != "":
+		return fmt.Sprintf("the roblox.com place %q", p.CloudName)
+	default:
+		return p.FileName
+	}
+}
+
+// Target names the project a run is for. Place is how an open Studio is
+// recognised as holding this project rather than another. Open, when set,
+// builds and launches the project's own place file.
 //
 // A zero Target falls back to the older rule, where a single open Studio is
 // taken to be the right one.
 type Target struct {
-	PlaceName string
-	Open      func(context.Context) error
+	Place Place
+	Open  func(context.Context) error
 }
 
 // openWait bounds how long a run waits for a Studio it asked for. Studio builds
@@ -178,19 +236,19 @@ func (p *Provisioner) Provision(ctx context.Context, runID, permissionProfile st
 func (p *Provisioner) selectForTarget(ctx context.Context, launch LaunchConfig, target Target, instances []Instance, state string) ([]Instance, string, string) {
 	// Without an expected place name nothing can be matched, so fall back to the
 	// older rule: one open Studio is unambiguous, several cannot be pinned.
-	if target.PlaceName == "" {
+	if !target.Place.Named() {
 		if len(instances) > 1 {
 			return nil, "", fmt.Sprintf("Studio MCP withheld: %d Studio instances are open and StudioForge cannot pin one for the agent's own MCP connection; leave a single Studio open", len(instances))
 		}
 		return instances, state, ""
 	}
 
-	matched := matching(instances, target.PlaceName)
+	matched := matching(instances, target.Place)
 	switch {
 	case len(matched) == 1:
 		return matched, state, ""
 	case len(matched) > 1:
-		return nil, "", ambiguousMatchNotice(len(matched), target.PlaceName)
+		return nil, "", ambiguousMatchNotice(len(matched), target.Place)
 	}
 
 	// Nothing of this project's is open. Some OTHER Studio instance being open
@@ -199,11 +257,21 @@ func (p *Provisioner) selectForTarget(ctx context.Context, launch LaunchConfig, 
 	// project wants, so this withholds even when auto-open is on — the same
 	// notice the no-match/auto-open-off case already gave, now covering both.
 	if len(instances) > 0 {
-		return nil, "", mismatchNotice(instances, target.PlaceName)
+		return nil, "", mismatchNotice(instances, target.Place)
 	}
 
 	if p.blocked(ctx) {
 		return nil, "", hostTakenNotice
+	}
+
+	// A project edited on roblox.com has no local build worth opening: the place
+	// the operator and their collaborators work in lives on Roblox, and Studio
+	// can only reach it by being opened from there. Building the project's own
+	// file and launching that would put a second, unrelated window in front of
+	// them — the very pile-on the branch above refuses — so this says what is
+	// missing instead of opening the wrong thing.
+	if target.Place.Cloud() {
+		return nil, "", cloudPlaceNotice(target.Place)
 	}
 
 	// Opening is the whole point of the setting, so a run that wanted Studio
@@ -215,12 +283,12 @@ func (p *Provisioner) selectForTarget(ctx context.Context, launch LaunchConfig, 
 	if err := target.Open(ctx); err != nil {
 		return nil, "", "Studio MCP withheld: opening this project's place failed: " + err.Error()
 	}
-	opened, state, err := p.waitForPlace(ctx, launch, target.PlaceName)
+	opened, state, err := p.waitForPlace(ctx, launch, target.Place)
 	if err != nil {
 		return nil, "", "Studio MCP withheld: " + err.Error()
 	}
 	if len(opened) != 1 {
-		return nil, "", fmt.Sprintf("Studio MCP withheld: %s did not finish opening within %s; the run continues without Studio", target.PlaceName, openWait)
+		return nil, "", fmt.Sprintf("Studio MCP withheld: %s did not finish opening within %s; the run continues without Studio", target.Place, openWait)
 	}
 	return opened, state, ""
 }
@@ -229,13 +297,12 @@ func (p *Provisioner) autoOpen() bool {
 	return p.AutoOpen == nil || p.AutoOpen()
 }
 
-// matching returns the instances holding the named place. Studio reports the
-// file name it opened, so this is a plain comparison — case-insensitively,
-// because Windows paths are.
-func matching(instances []Instance, placeName string) []Instance {
+// matching returns the instances holding the given place, by whichever of its
+// names the launcher reports.
+func matching(instances []Instance, place Place) []Instance {
 	var out []Instance
 	for _, instance := range instances {
-		if strings.EqualFold(instance.Name, placeName) {
+		if place.matches(instance.Name) {
 			out = append(out, instance)
 		}
 	}
@@ -243,19 +310,33 @@ func matching(instances []Instance, placeName string) []Instance {
 }
 
 // ambiguousMatchNotice explains a refusal when more than one open instance
-// holds the same expected place. PlaceName is meant to be unique per project,
-// so this should not happen in practice, but it is still refused rather than
+// holds the same expected place. A place is meant to be unique per project, so
+// this should not happen in practice, but it is still refused rather than
 // picked from arbitrarily.
-func ambiguousMatchNotice(count int, placeName string) string {
-	return fmt.Sprintf("Studio MCP withheld: %d Studio instances hold %s and StudioForge cannot pin one for the agent's own MCP connection; leave a single one open", count, placeName)
+func ambiguousMatchNotice(count int, place Place) string {
+	return fmt.Sprintf("Studio MCP withheld: %d Studio instances hold %s and StudioForge cannot pin one for the agent's own MCP connection; leave a single one open", count, place)
 }
 
 // mismatchNotice explains a refusal when Studio instances are open but none of
 // them hold the expected place, naming what is actually open next to what was
 // expected — an operator who opened the project's original .rbxl instead of
 // its built place, say, can see exactly why from this alone.
-func mismatchNotice(instances []Instance, placeName string) string {
-	return fmt.Sprintf("Studio MCP withheld: the open Studio does not hold this project's place (expected %s, found %s); open the project's place, or close the others and let StudioForge open it automatically", placeName, strings.Join(instanceNames(instances), ", "))
+func mismatchNotice(instances []Instance, place Place) string {
+	advice := "open the project's place, or close the others and let StudioForge open it automatically"
+	if place.Cloud() {
+		// Telling someone working on roblox.com to let StudioForge open the
+		// place sends them to a local build their collaborators are not in.
+		advice = fmt.Sprintf("open %q from roblox.com, or correct the project's cloud place name", place.CloudName)
+	}
+	return fmt.Sprintf("Studio MCP withheld: the open Studio does not hold this project's place (expected %s, found %s); %s", place, strings.Join(instanceNames(instances), ", "), advice)
+}
+
+// cloudPlaceNotice explains a refusal when a project is edited as a roblox.com
+// place and no Studio is open at all. Auto-open cannot help here — it builds
+// and launches a local file, which is not the place being collaborated on — so
+// the only way forward is for someone to open it from Roblox.
+func cloudPlaceNotice(place Place) string {
+	return fmt.Sprintf("Studio MCP withheld: no Studio holds %s, and StudioForge cannot open a roblox.com place itself; open it from Roblox and the run will find it", place)
 }
 
 func instanceNames(instances []Instance) []string {
@@ -287,15 +368,15 @@ type OpenCheck struct {
 	Notice string
 }
 
-// CheckOpen reports whether launching Studio for placeName is safe, already
+// CheckOpen reports whether launching Studio for place is safe, already
 // done, or refused, without opening anything itself. A probe that cannot be
 // completed — including an absent launcher — fails open (Open: true), the
 // same posture every other probe in this package takes for a machine that
 // simply has no Studio MCP configured; the launch attempt that follows a
 // true Open still goes through the Opener's own in-flight guard, so a probe
 // failure here does not risk a duplicate launch.
-func (p *Provisioner) CheckOpen(ctx context.Context, placeName string) OpenCheck {
-	if placeName == "" {
+func (p *Provisioner) CheckOpen(ctx context.Context, place Place) OpenCheck {
+	if !place.Named() {
 		return OpenCheck{Open: true}
 	}
 	override := ""
@@ -306,7 +387,14 @@ func (p *Provisioner) CheckOpen(ctx context.Context, placeName string) OpenCheck
 	if err != nil {
 		return OpenCheck{Open: true}
 	}
-	instances, _, err := p.probe(ctx, launch)
+	instances, _, err := p.glance(ctx, launch)
+	// A Studio that ran out the attach window without registering a place is a
+	// refusal, not an inconclusive probe: launching another window on top of it
+	// is exactly what this check exists to prevent. Provision and Status single
+	// this error out for the same reason; failing open on it would relaunch.
+	if errors.Is(err, errWSHostUnreachable) {
+		return OpenCheck{Notice: hostTakenNotice}
+	}
 	if err != nil {
 		return OpenCheck{Open: true}
 	}
@@ -319,17 +407,17 @@ func (p *Provisioner) CheckOpen(ctx context.Context, placeName string) OpenCheck
 	// Any match at all — even the ambiguous case of two instances somehow
 	// reporting this project's place — means something already holds it, so a
 	// launch would only add another window rather than resolve anything.
-	if matched := matching(instances, placeName); len(matched) > 0 {
+	if matched := matching(instances, place); len(matched) > 0 {
 		return OpenCheck{Matched: true}
 	}
-	return OpenCheck{Notice: mismatchNotice(instances, placeName)}
+	return OpenCheck{Notice: mismatchNotice(instances, place)}
 }
 
 // waitForPlace polls for a Studio holding the named place over a single
 // launcher connection. Re-probing would spawn a launcher process per attempt,
 // and each of those competes for the WS host port that decides who is told
 // about Studio's tools.
-func (p *Provisioner) waitForPlace(ctx context.Context, launch LaunchConfig, placeName string) ([]Instance, string, error) {
+func (p *Provisioner) waitForPlace(ctx context.Context, launch LaunchConfig, place Place) ([]Instance, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, openWait)
 	defer cancel()
 	transport, err := p.dial(ctx, launch)
@@ -344,7 +432,7 @@ func (p *Provisioner) waitForPlace(ctx context.Context, launch LaunchConfig, pla
 	for {
 		instances, err := client.ListStudios(ctx)
 		if err == nil {
-			if matched := matching(instances, placeName); len(matched) > 0 {
+			if matched := matching(instances, place); len(matched) > 0 {
 				state := ""
 				if raw, callErr := client.Call(ctx, "get_studio_state", nil); callErr == nil {
 					state = studioStateText(raw)
@@ -405,7 +493,7 @@ type Status struct {
 // project in hand can be told.
 //
 // It spawns the launcher, so callers should cache it rather than poll it.
-func (p *Provisioner) Status(ctx context.Context, placeName string) (Status, error) {
+func (p *Provisioner) Status(ctx context.Context, place Place) (Status, error) {
 	override := ""
 	if p.Override != nil {
 		override = p.Override()
@@ -414,7 +502,7 @@ func (p *Provisioner) Status(ctx context.Context, placeName string) (Status, err
 	if err != nil {
 		return Status{}, nil
 	}
-	instances, _, err := p.probe(ctx, launch)
+	instances, _, err := p.glance(ctx, launch)
 	if errors.Is(err, errWSHostUnreachable) {
 		return Status{Blocked: true}, nil
 	}
@@ -425,8 +513,8 @@ func (p *Provisioner) Status(ctx context.Context, placeName string) (Status, err
 	if len(instances) == 0 {
 		status.Blocked = p.blocked(ctx)
 	}
-	if placeName != "" {
-		status.Matched = len(matching(instances, placeName))
+	if place.Named() {
+		status.Matched = len(matching(instances, place))
 	}
 	return status, nil
 }
@@ -443,18 +531,128 @@ func (p *Provisioner) CountOpen(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, nil
 	}
-	instances, _, err := p.probe(ctx, launch)
+	instances, _, err := p.glance(ctx, launch)
 	if err != nil {
 		return 0, err
 	}
 	return len(instances), nil
 }
 
+func (p *Provisioner) attachWindowOr() time.Duration {
+	if p.attachWindow > 0 {
+		return p.attachWindow
+	}
+	return attachWait
+}
+
+// glanceWindow is the attach budget for a caller a person is waiting on. The
+// test seam overrides both windows, so a test that shrinks the wait shrinks it
+// on every path rather than only the one it named.
+func (p *Provisioner) glanceWindow() time.Duration {
+	if p.attachWindow > 0 {
+		return p.attachWindow
+	}
+	return glanceAttachWait
+}
+
+func (p *Provisioner) retryInterval() time.Duration {
+	if p.retryEvery > 0 {
+		return p.retryEvery
+	}
+	return time.Second
+}
+
+// anyNamed reports whether the listing carries a place name yet. A registration
+// lands in pieces, so an instance can be listed with its ID before Studio has
+// filled in the place it holds.
+func anyNamed(instances []Instance) bool {
+	for _, instance := range instances {
+		if instance.Name != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// awaitAttach lists Studio instances over an already-dialled launcher, waiting
+// out the attach before believing the answer.
+//
+// The attach lands in three steps and only the first one errors. Until the
+// plugin dials the WS host the listing fails outright ("Not connected to the WS
+// host"); once it has dialled but registered nothing, the listing *succeeds*
+// and returns an empty list; and once the instance is registered but its place
+// is not, the listing carries an instance whose Name is still empty. Every
+// launcher process runs this handshake for itself, and the gate, the badge, the
+// sessions refresh and the agent's own shim each spawn their own — so a Studio
+// that has been open for an hour still replays all three per connection, which
+// is why this surfaces after a turn or two rather than only on the first.
+//
+// Believing any single step let a half-finished registration through as final.
+// An empty list with a Studio process running is what Provision turns into
+// hostTakenNotice, so a run started a beat too early was told another MCP client
+// owned Studio when nothing did. A named-less instance is worse: it is not
+// empty, so it reaches matching(), fails the place comparison, and comes back as
+// "the open Studio does not hold this project's place … found (unnamed)" — a
+// refusal naming a place mismatch that never happened.
+//
+// So all three steps count as "not attached yet" and are waited out together.
+// An unfinished listing only becomes an answer when no Studio process exists,
+// which is the ordinary "Studio closed" case and must stay silent and immediate.
+//
+// A genuine mismatch is untouched: a different place that is really open is not
+// mid-registration, so its name is already there on the first listing and this
+// returns at once, leaving mismatchNotice to say what is open.
+func (p *Provisioner) awaitAttach(ctx context.Context, client *Client, window time.Duration) ([]Instance, error) {
+	var attach <-chan time.Time
+	for {
+		instances, err := client.ListStudios(ctx)
+		switch {
+		case err != nil && !notConnected(err):
+			return nil, err
+		case err == nil && anyNamed(instances):
+			return instances, nil
+		}
+		if attach == nil {
+			// Whether a Studio process exists is settled once, on the first
+			// unattached answer, and reused for the rest of the wait. Asking
+			// again per iteration read the process table once a second, and
+			// IsRunning reports any failure to ask as "not running" — so a
+			// single hiccup part-way through collapsed the wait back into the
+			// silent "no Studio" answer it exists to avoid. A Studio that starts
+			// or stops inside the window is not worth that.
+			if !p.blocked(ctx) {
+				return nil, nil
+			}
+			attach = time.After(window)
+		}
+		select {
+		case <-time.After(p.retryInterval()):
+		case <-attach:
+			return nil, errWSHostUnreachable
+		case <-ctx.Done():
+			return nil, errWSHostUnreachable
+		}
+	}
+}
+
 // probe opens one launcher connection and reports the open Studio instances and,
 // when exactly one is open, a snapshot of its place (via get_studio_state) so
 // the run's prompt can carry the current state instead of the agent re-exploring
 // it. The snapshot is best-effort: any failure yields an empty string.
+// It waits out the full attach window, which is what a run wants: the agent
+// keeps whatever Studio access this decides for its whole length.
 func (p *Provisioner) probe(ctx context.Context, launch LaunchConfig) ([]Instance, string, error) {
+	return p.probeWithin(ctx, launch, p.attachWindowOr())
+}
+
+// glance is probe on the shorter budget, for the badge, the buttons and the
+// sessions list — callers that are asked again shortly and must not make a
+// person wait out a Studio that may never register.
+func (p *Provisioner) glance(ctx context.Context, launch LaunchConfig) ([]Instance, string, error) {
+	return p.probeWithin(ctx, launch, p.glanceWindow())
+}
+
+func (p *Provisioner) probeWithin(ctx context.Context, launch LaunchConfig, window time.Duration) ([]Instance, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, p.timeout())
 	defer cancel()
 	transport, err := p.dial(ctx, launch)
@@ -468,34 +666,7 @@ func (p *Provisioner) probe(ctx context.Context, launch LaunchConfig) ([]Instanc
 	// zero tools for as long as it lives, yet its calls still succeed through
 	// the host. Asking anyway would also cost ten seconds per probe, because the
 	// launcher waits that long for a push that never comes.
-	var attach <-chan time.Time
-	instances, err := client.ListStudios(ctx)
-	for notConnected(err) {
-		// No Studio process means no plugin will ever attach: the ordinary
-		// "Studio closed" case, silent and without sitting out the window.
-		if !p.blocked(ctx) {
-			return nil, "", nil
-		}
-		if attach == nil {
-			window := p.attachWindow
-			if window <= 0 {
-				window = attachWait
-			}
-			attach = time.After(window)
-		}
-		retry := p.retryEvery
-		if retry <= 0 {
-			retry = time.Second
-		}
-		select {
-		case <-time.After(retry):
-		case <-attach:
-			return nil, "", errWSHostUnreachable
-		case <-ctx.Done():
-			return nil, "", errWSHostUnreachable
-		}
-		instances, err = client.ListStudios(ctx)
-	}
+	instances, err := p.awaitAttach(ctx, client, window)
 	if err != nil {
 		if IsMethodNotFound(err) {
 			return nil, "", fmt.Errorf("Studio MCP exposes no instance listing; update Roblox Studio")

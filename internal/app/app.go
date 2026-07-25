@@ -22,6 +22,7 @@ import (
 	"github.com/10kkyvl/studioforge/internal/events"
 	"github.com/10kkyvl/studioforge/internal/gitops"
 	"github.com/10kkyvl/studioforge/internal/memory"
+	"github.com/10kkyvl/studioforge/internal/models"
 	"github.com/10kkyvl/studioforge/internal/platform"
 	"github.com/10kkyvl/studioforge/internal/processes"
 	"github.com/10kkyvl/studioforge/internal/projects"
@@ -236,6 +237,24 @@ func Run(ctx context.Context, opts config.Options) error {
 		},
 		Running: studio.IsRunning,
 	}
+	// studioPlace is how every Studio entry point below recognises the open
+	// instance that belongs to a project: the file name its place is built to,
+	// plus — for a project edited on roblox.com rather than as a local build —
+	// the display name that place carries there, which is the only name the
+	// launcher reports for it.
+	studioPlace := func(ctx context.Context, project models.Project) mcp.Place {
+		cloudName, _, err := store.ProjectSetting(ctx, project.ID, api.CloudPlaceSettingKey)
+		if err != nil {
+			// A settings read that failed says nothing about the project being a
+			// cloud one, and refusing Studio over it would be worse than matching
+			// on the built file alone.
+			cloudName = ""
+		}
+		return mcp.Place{
+			FileName:  studio.PlaceName(project.Name, project.ID),
+			CloudName: cloudName,
+		}
+	}
 	// studioTarget tells the provisioner which open Studio belongs to this run's
 	// project, and how to open it when none does. Every project used to build to
 	// the same place file name, so an agent could be handed a Studio holding a
@@ -249,7 +268,7 @@ func Run(ctx context.Context, opts config.Options) error {
 			return mcp.Target{}
 		}
 		return mcp.Target{
-			PlaceName: studio.PlaceName(project.Name, project.ID),
+			Place: studioPlace(ctx, project),
 			Open: func(ctx context.Context) error {
 				_, err := studioOpener.OpenProject(ctx, project.Path, project.Name, project.ID)
 				return err
@@ -261,13 +280,13 @@ func Run(ctx context.Context, opts config.Options) error {
 	// tools. A short cache keeps the badge live without putting a running agent's
 	// connection at risk.
 	studioStatus := cachedStudioStatus(func(ctx context.Context, projectID string) (api.StudioStatus, error) {
-		placeName := ""
+		place := mcp.Place{}
 		if projectID != "" {
 			if project, err := store.Project(ctx, projectID); err == nil {
-				placeName = studio.PlaceName(project.Name, project.ID)
+				place = studioPlace(ctx, project)
 			}
 		}
-		status, err := studioProvisioner.Status(ctx, placeName)
+		status, err := studioProvisioner.Status(ctx, place)
 		return api.StudioStatus{Open: status.Open, Matched: status.Matched, Blocked: status.Blocked}, err
 	})
 	// studioOpenCheck gives the manual "Open Studio" button the same
@@ -280,7 +299,7 @@ func Run(ctx context.Context, opts config.Options) error {
 		if err != nil {
 			return api.StudioOpenCheck{}, err
 		}
-		check := studioProvisioner.CheckOpen(ctx, studio.PlaceName(project.Name, project.ID))
+		check := studioProvisioner.CheckOpen(ctx, studioPlace(ctx, project))
 		return api.StudioOpenCheck{
 			Open:    check.Open,
 			Matched: check.Matched,

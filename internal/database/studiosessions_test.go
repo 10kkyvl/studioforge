@@ -39,6 +39,31 @@ func TestUpsertRealStudioSessionsInsertsNewInstances(t *testing.T) {
 // A refresh must never silently undo an operator's own choice: once a session
 // is bound, only an explicit BindStudio call may change it, not the next
 // discovery pass — even one that resolved a different project for it.
+// Studio registers an instance's ID before the place it holds, so a refresh can
+// catch it mid-registration and report it nameless. Letting that overwrite the
+// stored name blanked the Studio Sessions view until a later refresh happened to
+// land on a complete listing.
+func TestUpsertRealStudioSessionsKeepsANameAgainstANamelessRefresh(t *testing.T) {
+	_, store := testDB(t)
+	ctx := context.Background()
+	if err := store.UpsertRealStudioSessions(ctx, []models.StudioSession{{InstanceID: "inst-1", Name: "A.rbxl"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertRealStudioSessions(ctx, []models.StudioSession{{InstanceID: "inst-1", Name: ""}}); err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := store.ListStudioSessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions=%d, want 1", len(sessions))
+	}
+	if sessions[0].Name != "A.rbxl" {
+		t.Errorf("name=%q, want the stored name kept against a mid-registration blank", sessions[0].Name)
+	}
+}
+
 func TestUpsertRealStudioSessionsPreservesAnExistingManualBinding(t *testing.T) {
 	_, store := testDB(t)
 	ctx := context.Background()

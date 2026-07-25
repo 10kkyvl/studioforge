@@ -84,7 +84,7 @@ func TestProvisionGrantsAccessForASingleStudio(t *testing.T) {
 // StudioForge cannot pin the instance on the agent's own MCP connection, so
 // more than one open Studio must mean no access rather than a coin flip.
 func TestProvisionRefusesAmbiguousStudioSelection(t *testing.T) {
-	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "one"}, {ID: "two"}}})
+	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "one", Name: "A.rbxl"}, {ID: "two", Name: "B.rbxl"}}})
 	grant := p.Provision(context.Background(), "run-1", "workspace-write", Target{})
 	if grant.ConfigPath != "" {
 		t.Fatal("two open Studios must not receive access")
@@ -118,6 +118,8 @@ func TestProvisionWithoutStudioIsNotAFailure(t *testing.T) {
 func TestProvisionExplainsAStudioHeldByAnotherClient(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{instances: nil})
 	p.Running = func(context.Context) bool { return true }
+	p.attachWindow = 100 * time.Millisecond
+	p.retryEvery = 10 * time.Millisecond
 	grant := p.Provision(context.Background(), "run-1", "workspace-write", Target{})
 	if grant.ConfigPath != "" {
 		t.Fatal("a Studio held by another client must not receive access")
@@ -142,7 +144,9 @@ func TestProvisionStaysSilentWhenNoStudioProcessRuns(t *testing.T) {
 func TestStatusReportsAHeldConnectionAsBlocked(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{instances: nil})
 	p.Running = func(context.Context) bool { return true }
-	status, err := p.Status(context.Background(), "")
+	p.attachWindow = 100 * time.Millisecond
+	p.retryEvery = 10 * time.Millisecond
+	status, err := p.Status(context.Background(), Place{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +177,7 @@ func TestProvisionSurfacesLauncherErrors(t *testing.T) {
 
 // A read-only agent must not be handed the tools that rewrite the place.
 func TestProvisionScopesToolsToTheProfile(t *testing.T) {
-	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "one"}}})
+	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "one", Name: "Place.rbxl"}}})
 	grant := p.Provision(context.Background(), "run-1", "read-only", Target{})
 	if grant.ConfigPath == "" {
 		t.Fatalf("read-only should still get access, notice=%q", grant.Notice)
@@ -249,13 +253,164 @@ func TestProvisionStaysSilentWhenNotConnectedAndStudioClosed(t *testing.T) {
 	}
 }
 
+// registeringTransport reproduces the second half of the attach. Once the
+// plugin has dialled the WS host the listing stops erroring, but Studio has not
+// registered its window yet, so it succeeds with an empty list — the launcher
+// answers `{"studios":[]}` for a beat before the place shows up.
+type registeringTransport struct {
+	studioTransport
+	empty int // successful-but-empty listings before the place registers
+}
+
+func (r *registeringTransport) Call(ctx context.Context, name string, args map[string]any) (json.RawMessage, error) {
+	if name == "list_roblox_studios" && r.empty != 0 {
+		if r.empty > 0 {
+			r.empty--
+		}
+		return json.RawMessage(`{"content":[{"type":"text","text":"{\"studios\":[]}"}]}`), nil
+	}
+	return r.studioTransport.Call(ctx, name, args)
+}
+
+// Only the first half of the attach reports an error; the half where the host is
+// up but the place has not registered answers successfully with an empty list.
+// Stopping there handed an empty list back as final, and an empty list with
+// Studio running is reported as another MCP client holding the connection — so
+// a run started a beat early was refused Studio and told to close a client that
+// did not exist.
+func TestProbeWaitsForStudioToRegisterItsPlace(t *testing.T) {
+	p := newProvisioner(t, &registeringTransport{
+		studioTransport: studioTransport{instances: []Instance{{ID: "one", Name: "Place.rbxl"}}},
+		empty:           2,
+	})
+	p.Running = func(context.Context) bool { return true }
+	p.retryEvery = 10 * time.Millisecond
+	grant := p.Provision(context.Background(), "run-registering", "workspace-write", Target{})
+	if grant.ConfigPath == "" {
+		t.Fatalf("Studio withheld though the place registered after a retry: %q", grant.Notice)
+	}
+}
+
+// A place that never registers while Studio runs is still refused, so waiting
+// out the attach cannot turn a genuine refusal into an unbounded wait.
+func TestProvisionExplainsAPlaceThatNeverRegisters(t *testing.T) {
+	p := newProvisioner(t, &registeringTransport{empty: -1})
+	p.Running = func(context.Context) bool { return true }
+	p.attachWindow = 100 * time.Millisecond
+	p.retryEvery = 10 * time.Millisecond
+	grant := p.Provision(context.Background(), "run-unregistered", "workspace-write", Target{})
+	if grant.ConfigPath != "" {
+		t.Fatal("a Studio that registered no place must not receive access")
+	}
+	if !strings.Contains(grant.Notice, "another MCP client") {
+		t.Errorf("notice must name a cause the operator can act on, got %q", grant.Notice)
+	}
+}
+
+// The same empty listing with no Studio process is the ordinary "Studio closed"
+// case. It must stay silent and answer at once rather than sit out the window
+// that now covers empty listings too.
+func TestProvisionStaysSilentWhenListEmptyAndStudioClosed(t *testing.T) {
+	p := newProvisioner(t, &registeringTransport{empty: -1})
+	p.Running = func(context.Context) bool { return false }
+	start := time.Now()
+	grant := p.Provision(context.Background(), "run-empty-closed", "workspace-write", Target{})
+	if grant.ConfigPath != "" || grant.Notice != "" {
+		t.Errorf("a closed Studio must stay silent, got path=%q notice=%q", grant.ConfigPath, grant.Notice)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Error("a closed Studio must not wait out the attach window")
+	}
+}
+
+// namelessTransport reproduces the last step of the attach: the instance is
+// registered and listed, but Studio has not filled in the place it holds, so
+// the name comes back empty.
+type namelessTransport struct {
+	studioTransport
+	nameless int // listings carrying an unnamed instance before the place lands
+}
+
+func (n *namelessTransport) Call(ctx context.Context, name string, args map[string]any) (json.RawMessage, error) {
+	if name == "list_roblox_studios" && n.nameless != 0 {
+		if n.nameless > 0 {
+			n.nameless--
+		}
+		return json.RawMessage(`{"content":[{"type":"text","text":"{\"studios\":[{\"id\":\"one\",\"name\":\"\"}]}"}]}`), nil
+	}
+	return n.studioTransport.Call(ctx, name, args)
+}
+
+// An instance listed before its place name lands is not an empty list, so it
+// sailed past the attach wait and into matching() — where it failed the place
+// comparison and came back as "the open Studio does not hold this project's
+// place … found (unnamed)", refusing the run over a mismatch that never was.
+func TestProbeWaitsForStudioToNameItsPlace(t *testing.T) {
+	p := newProvisioner(t, &namelessTransport{
+		studioTransport: studioTransport{instances: []Instance{{ID: "one", Name: "Place.rbxl"}}},
+		nameless:        2,
+	})
+	p.Running = func(context.Context) bool { return true }
+	p.retryEvery = 10 * time.Millisecond
+	grant := p.Provision(context.Background(), "run-nameless", "workspace-write", Target{Place: Place{FileName: "Place.rbxl"}})
+	if grant.ConfigPath == "" {
+		t.Fatalf("Studio withheld though the place was named after a retry: %q", grant.Notice)
+	}
+}
+
+// A different place that is genuinely open is not mid-registration: its name is
+// there on the first listing, so the mismatch must still be reported at once and
+// still say what is actually open.
+func TestProvisionReportsAGenuineMismatchWithoutWaiting(t *testing.T) {
+	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "one", Name: "Other.rbxl"}}})
+	p.Running = func(context.Context) bool { return true }
+	start := time.Now()
+	grant := p.Provision(context.Background(), "run-mismatch", "workspace-write", Target{Place: Place{FileName: "Place.rbxl"}})
+	if grant.ConfigPath != "" {
+		t.Fatal("a Studio holding a different place must not receive access")
+	}
+	if !strings.Contains(grant.Notice, "Other.rbxl") {
+		t.Errorf("notice must name what is actually open, got %q", grant.Notice)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("a genuine mismatch waited %s; it is not a registration in progress", elapsed)
+	}
+}
+
+// Waiting out the attach is right for a run, which keeps whatever access this
+// decides for its whole length, but the badge polls Status every few seconds
+// and the Open Studio button blocks on CheckOpen. A Studio that registers
+// nothing holds that state for as long as it stays open, so spending the run
+// gate's window on those would stall the UI on every poll and every click.
+// This runs on the production constants deliberately: seeding attachWindow
+// would override the very budget under test.
+func TestGlancingCallersDoNotWaitOutTheRunGateWindow(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		call func(*Provisioner)
+	}{
+		{"Status", func(p *Provisioner) { _, _ = p.Status(context.Background(), Place{}) }},
+		{"CheckOpen", func(p *Provisioner) { _ = p.CheckOpen(context.Background(), Place{FileName: "Place.rbxl"}) }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := newProvisioner(t, &registeringTransport{empty: -1})
+			p.Running = func(context.Context) bool { return true }
+			start := time.Now()
+			c.call(p)
+			if elapsed := time.Since(start); elapsed >= attachWait {
+				t.Errorf("%s took %s, the run gate's whole %s window; a glance must give up sooner", c.name, elapsed, attachWait)
+			}
+		})
+	}
+}
+
 // The badge must show the held connection, not an error.
 func TestStatusReportsAnUnattachedPluginAsBlocked(t *testing.T) {
 	p := newProvisioner(t, &attachingTransport{failures: -1})
 	p.Running = func(context.Context) bool { return true }
 	p.attachWindow = 100 * time.Millisecond
 	p.retryEvery = 10 * time.Millisecond
-	status, err := p.Status(context.Background(), "")
+	status, err := p.Status(context.Background(), Place{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +530,7 @@ func TestProvisionPicksTheStudioHoldingThisProjectsPlace(t *testing.T) {
 		{ID: "other", Name: "someone-elses-b2c3d4e5.rbxl"},
 		{ID: "mine", Name: "my-game-a1b2c3d4.rbxl"},
 	}})
-	grant := p.Provision(context.Background(), "run-match", "workspace-write", Target{PlaceName: "my-game-a1b2c3d4.rbxl"})
+	grant := p.Provision(context.Background(), "run-match", "workspace-write", Target{Place: Place{FileName: "my-game-a1b2c3d4.rbxl"}})
 	if grant.ConfigPath == "" {
 		t.Fatalf("the project's own Studio was refused: %q", grant.Notice)
 	}
@@ -386,7 +541,7 @@ func TestProvisionPicksTheStudioHoldingThisProjectsPlace(t *testing.T) {
 func TestProvisionRefusesAnotherProjectsStudio(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "other", Name: "someone-elses-b2c3d4e5.rbxl"}}})
 	grant := p.Provision(context.Background(), "run-foreign", "workspace-write",
-		Target{PlaceName: "my-game-a1b2c3d4.rbxl"})
+		Target{Place: Place{FileName: "my-game-a1b2c3d4.rbxl"}})
 	if grant.ConfigPath != "" {
 		t.Fatal("granted access to another project's Studio")
 	}
@@ -400,7 +555,7 @@ func TestProvisionOpensTheProjectsPlaceWhenNoneIsOpen(t *testing.T) {
 	p := newProvisioner(t, transport)
 	opened := false
 	grant := p.Provision(context.Background(), "run-open", "workspace-write", Target{
-		PlaceName: "my-game-a1b2c3d4.rbxl",
+		Place: Place{FileName: "my-game-a1b2c3d4.rbxl"},
 		Open: func(context.Context) error {
 			opened = true
 			transport.open()
@@ -420,8 +575,8 @@ func TestProvisionLeavesStudioClosedWhenAutoOpenIsOff(t *testing.T) {
 	p := newProvisioner(t, transport)
 	p.AutoOpen = func() bool { return false }
 	grant := p.Provision(context.Background(), "run-manual", "workspace-write", Target{
-		PlaceName: "my-game-a1b2c3d4.rbxl",
-		Open:      func(context.Context) error { t.Fatal("opened Studio though auto-open is off"); return nil },
+		Place: Place{FileName: "my-game-a1b2c3d4.rbxl"},
+		Open:  func(context.Context) error { t.Fatal("opened Studio though auto-open is off"); return nil },
 	})
 	if grant.ConfigPath != "" {
 		t.Fatal("granted access with no Studio open")
@@ -432,8 +587,8 @@ func TestProvisionLeavesStudioClosedWhenAutoOpenIsOff(t *testing.T) {
 func TestProvisionReportsAFailedOpen(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{})
 	grant := p.Provision(context.Background(), "run-openfail", "workspace-write", Target{
-		PlaceName: "my-game-a1b2c3d4.rbxl",
-		Open:      func(context.Context) error { return errors.New("rojo build failed") },
+		Place: Place{FileName: "my-game-a1b2c3d4.rbxl"},
+		Open:  func(context.Context) error { return errors.New("rojo build failed") },
 	})
 	if !strings.Contains(grant.Notice, "rojo build failed") {
 		t.Fatalf("notice=%q, want the underlying failure", grant.Notice)
@@ -447,8 +602,8 @@ func TestProvisionNeverAutoOpensWhileAnotherInstanceIsOpen(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "other", Name: "someone-elses-b2c3d4e5.rbxl"}}})
 	opened := 0
 	grant := p.Provision(context.Background(), "run-noauto", "workspace-write", Target{
-		PlaceName: "my-game-a1b2c3d4.rbxl",
-		Open:      func(context.Context) error { opened++; return nil },
+		Place: Place{FileName: "my-game-a1b2c3d4.rbxl"},
+		Open:  func(context.Context) error { opened++; return nil },
 	})
 	if opened != 0 {
 		t.Fatalf("Studio was opened though another instance is already up, opened=%d", opened)
@@ -472,7 +627,7 @@ func TestProvisionOpensExactlyOnceWhenNothingIsOpen(t *testing.T) {
 	p := newProvisioner(t, transport)
 	opens := 0
 	grant := p.Provision(context.Background(), "run-open-once", "workspace-write", Target{
-		PlaceName: "my-game-a1b2c3d4.rbxl",
+		Place: Place{FileName: "my-game-a1b2c3d4.rbxl"},
 		Open: func(context.Context) error {
 			opens++
 			transport.open()
@@ -496,7 +651,7 @@ func TestProvisionRefusesAmbiguousTargetMatch(t *testing.T) {
 		{ID: "one", Name: "my-game-a1b2c3d4.rbxl"},
 		{ID: "two", Name: "my-game-a1b2c3d4.rbxl"},
 	}})
-	grant := p.Provision(context.Background(), "run-ambiguous-target", "workspace-write", Target{PlaceName: "my-game-a1b2c3d4.rbxl"})
+	grant := p.Provision(context.Background(), "run-ambiguous-target", "workspace-write", Target{Place: Place{FileName: "my-game-a1b2c3d4.rbxl"}})
 	if grant.ConfigPath != "" {
 		t.Fatal("two instances holding the same place must not receive access")
 	}
@@ -507,7 +662,7 @@ func TestProvisionRefusesAmbiguousTargetMatch(t *testing.T) {
 
 func TestCheckOpenReportsSafeWhenNothingIsOpen(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{instances: nil})
-	check := p.CheckOpen(context.Background(), "my-game-a1b2c3d4.rbxl")
+	check := p.CheckOpen(context.Background(), Place{FileName: "my-game-a1b2c3d4.rbxl"})
 	if !check.Open || check.Matched || check.Notice != "" {
 		t.Fatalf("check=%+v, want Open=true only", check)
 	}
@@ -515,7 +670,7 @@ func TestCheckOpenReportsSafeWhenNothingIsOpen(t *testing.T) {
 
 func TestCheckOpenReportsMatchedWhenThisProjectsPlaceIsAlreadyOpen(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "mine", Name: "my-game-a1b2c3d4.rbxl"}}})
-	check := p.CheckOpen(context.Background(), "my-game-a1b2c3d4.rbxl")
+	check := p.CheckOpen(context.Background(), Place{FileName: "my-game-a1b2c3d4.rbxl"})
 	if check.Open || !check.Matched || check.Notice != "" {
 		t.Fatalf("check=%+v, want Matched=true only", check)
 	}
@@ -523,7 +678,7 @@ func TestCheckOpenReportsMatchedWhenThisProjectsPlaceIsAlreadyOpen(t *testing.T)
 
 func TestCheckOpenRefusesWhenOtherInstancesAreOpen(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "other", Name: "someone-elses-b2c3d4e5.rbxl"}}})
-	check := p.CheckOpen(context.Background(), "my-game-a1b2c3d4.rbxl")
+	check := p.CheckOpen(context.Background(), Place{FileName: "my-game-a1b2c3d4.rbxl"})
 	if check.Open || check.Matched {
 		t.Fatalf("check=%+v, want neither Open nor Matched", check)
 	}
@@ -540,7 +695,7 @@ func TestCheckOpenTreatsAnAmbiguousMatchAsAlreadyOpenRatherThanLaunching(t *test
 		{ID: "one", Name: "my-game-a1b2c3d4.rbxl"},
 		{ID: "two", Name: "my-game-a1b2c3d4.rbxl"},
 	}})
-	check := p.CheckOpen(context.Background(), "my-game-a1b2c3d4.rbxl")
+	check := p.CheckOpen(context.Background(), Place{FileName: "my-game-a1b2c3d4.rbxl"})
 	if check.Open {
 		t.Fatal("an ambiguous match must never be reported as safe to launch")
 	}
@@ -552,7 +707,7 @@ func TestCheckOpenTreatsAnAmbiguousMatchAsAlreadyOpenRatherThanLaunching(t *test
 func TestCheckOpenFailsOpenWithNoLauncherConfigured(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{})
 	p.Override = func() string { return filepath.Join(t.TempDir(), "absent") }
-	check := p.CheckOpen(context.Background(), "my-game-a1b2c3d4.rbxl")
+	check := p.CheckOpen(context.Background(), Place{FileName: "my-game-a1b2c3d4.rbxl"})
 	if !check.Open {
 		t.Fatalf("check=%+v, want Open=true when there is nothing to probe", check)
 	}
@@ -560,7 +715,7 @@ func TestCheckOpenFailsOpenWithNoLauncherConfigured(t *testing.T) {
 
 func TestCheckOpenIgnoresAnEmptyPlaceName(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "one", Name: "whatever.rbxl"}}})
-	check := p.CheckOpen(context.Background(), "")
+	check := p.CheckOpen(context.Background(), Place{})
 	if !check.Open {
 		t.Fatalf("check=%+v, want Open=true with no place to check against", check)
 	}
@@ -574,9 +729,11 @@ func TestCheckOpenIgnoresAnEmptyPlaceName(t *testing.T) {
 func TestProvisionDoesNotAutoOpenOverAStudioHiddenByAnotherClient(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{instances: nil})
 	p.Running = func(context.Context) bool { return true }
+	p.attachWindow = 100 * time.Millisecond
+	p.retryEvery = 10 * time.Millisecond
 	grant := p.Provision(context.Background(), "run-host-taken", "workspace-write", Target{
-		PlaceName: "my-game-a1b2c3d4.rbxl",
-		Open:      func(context.Context) error { t.Fatal("launched a duplicate Studio over a host-taken one"); return nil },
+		Place: Place{FileName: "my-game-a1b2c3d4.rbxl"},
+		Open:  func(context.Context) error { t.Fatal("launched a duplicate Studio over a host-taken one"); return nil },
 	})
 	if grant.ConfigPath != "" {
 		t.Fatal("granted access though the WS host is owned by another client")
@@ -589,7 +746,9 @@ func TestProvisionDoesNotAutoOpenOverAStudioHiddenByAnotherClient(t *testing.T) 
 func TestCheckOpenRefusesToLaunchOverAStudioHiddenByAnotherClient(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{instances: nil})
 	p.Running = func(context.Context) bool { return true }
-	check := p.CheckOpen(context.Background(), "my-game-a1b2c3d4.rbxl")
+	p.attachWindow = 100 * time.Millisecond
+	p.retryEvery = 10 * time.Millisecond
+	check := p.CheckOpen(context.Background(), Place{FileName: "my-game-a1b2c3d4.rbxl"})
 	if check.Open || check.Matched {
 		t.Fatalf("check=%+v, want a refusal, not a launch", check)
 	}
@@ -601,7 +760,7 @@ func TestCheckOpenRefusesToLaunchOverAStudioHiddenByAnotherClient(t *testing.T) 
 func TestCheckOpenStillReportsSafeWhenNoStudioProcessRuns(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{instances: nil})
 	p.Running = func(context.Context) bool { return false }
-	check := p.CheckOpen(context.Background(), "my-game-a1b2c3d4.rbxl")
+	check := p.CheckOpen(context.Background(), Place{FileName: "my-game-a1b2c3d4.rbxl"})
 	if !check.Open || check.Matched || check.Notice != "" {
 		t.Fatalf("check=%+v, want Open=true only", check)
 	}
@@ -611,8 +770,87 @@ func TestCheckOpenStillReportsSafeWhenNoStudioProcessRuns(t *testing.T) {
 func TestProvisionMatchesPlaceNamesCaseInsensitively(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "mine", Name: "My-Game-A1B2C3D4.rbxl"}}})
 	grant := p.Provision(context.Background(), "run-case", "workspace-write",
-		Target{PlaceName: "my-game-a1b2c3d4.rbxl"})
+		Target{Place: Place{FileName: "my-game-a1b2c3d4.rbxl"}})
 	if grant.ConfigPath == "" {
 		t.Fatalf("case difference refused the project's own Studio: %q", grant.Notice)
+	}
+}
+
+// A place opened from roblox.com carries no local file, so the launcher reports
+// it by the display name it has on Roblox. Matching only on the built file name
+// refused such an instance permanently: the operator had the right place open
+// the whole time, and no amount of reopening could ever satisfy the check.
+func TestProvisionMatchesACloudPlaceByItsDisplayName(t *testing.T) {
+	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "cloud", Name: "Asmr RNG"}}})
+	grant := p.Provision(context.Background(), "run-cloud", "workspace-write", Target{
+		Place: Place{FileName: "asmr-rng-b27c0859.rbxl", CloudName: "Asmr RNG"},
+	})
+	if grant.ConfigPath == "" {
+		t.Fatalf("the project's own Team Create Studio was refused: %q", grant.Notice)
+	}
+}
+
+// A project edited on roblox.com is still recognised by its built file, for the
+// operator who opens the local build instead.
+func TestProvisionStillMatchesTheBuiltFileForACloudProject(t *testing.T) {
+	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "local", Name: "asmr-rng-b27c0859.rbxl"}}})
+	grant := p.Provision(context.Background(), "run-cloud-local", "workspace-write", Target{
+		Place: Place{FileName: "asmr-rng-b27c0859.rbxl", CloudName: "Asmr RNG"},
+	})
+	if grant.ConfigPath == "" {
+		t.Fatalf("the project's built place was refused: %q", grant.Notice)
+	}
+}
+
+// The cloud name must not become a wildcard: another project's Studio is still
+// another project's.
+func TestProvisionRefusesAnUnrelatedStudioForACloudProject(t *testing.T) {
+	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "other", Name: "someone-elses-b2c3d4e5.rbxl"}}})
+	grant := p.Provision(context.Background(), "run-cloud-foreign", "workspace-write", Target{
+		Place: Place{FileName: "asmr-rng-b27c0859.rbxl", CloudName: "Asmr RNG"},
+	})
+	if grant.ConfigPath != "" {
+		t.Fatal("granted access to an unrelated Studio")
+	}
+	// The refusal has to send the operator to Roblox; telling someone working in
+	// Team Create to let StudioForge open the place points them at a local build
+	// their collaborators are not in.
+	if !strings.Contains(grant.Notice, "roblox.com") {
+		t.Fatalf("notice=%q, want it to name where the place actually lives", grant.Notice)
+	}
+	if strings.Contains(grant.Notice, "let StudioForge open it automatically") {
+		t.Fatalf("notice=%q, want no advice to auto-open a local build", grant.Notice)
+	}
+}
+
+// Auto-open builds the project's own file and launches that. For a project
+// edited on roblox.com this would put a second, unrelated window in front of
+// the operator instead of the place their collaborators are in.
+func TestProvisionNeverAutoOpensACloudPlace(t *testing.T) {
+	transport := &openingTransport{place: "asmr-rng-b27c0859.rbxl"}
+	p := newProvisioner(t, transport)
+	opened := 0
+	grant := p.Provision(context.Background(), "run-cloud-autoopen", "workspace-write", Target{
+		Place: Place{FileName: "asmr-rng-b27c0859.rbxl", CloudName: "Asmr RNG"},
+		Open:  func(context.Context) error { opened++; transport.open(); return nil },
+	})
+	if opened != 0 {
+		t.Fatalf("a roblox.com place cannot be opened from a local build, opened=%d", opened)
+	}
+	if grant.ConfigPath != "" {
+		t.Fatal("granted access though no Studio holds this project's place")
+	}
+	if !strings.Contains(grant.Notice, "open it from Roblox") {
+		t.Fatalf("notice=%q, want the way forward stated", grant.Notice)
+	}
+}
+
+// An instance still mid-registration reports no name at all. A cloud name must
+// not turn that into a match, or a run would be handed whichever Studio the
+// launcher happened to be registering.
+func TestProvisionDoesNotMatchAnUnnamedInstanceOnACloudName(t *testing.T) {
+	place := Place{FileName: "asmr-rng-b27c0859.rbxl", CloudName: "Asmr RNG"}
+	if place.matches("") {
+		t.Fatal("an unnamed instance was taken to hold this project's place")
 	}
 }
