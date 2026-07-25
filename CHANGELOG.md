@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ## [Unreleased]
 
+## [0.5.0-rc.3] - 2026-07-25
+
 ### Added
 
 - **A project edited on roblox.com can now be reached by a run.** Studio identifies a window by the
