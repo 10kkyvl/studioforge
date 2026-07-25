@@ -89,6 +89,11 @@ type ValidationResult struct {
 	// Notice explains an Inconclusive result in terms an operator can act on
 	// (Studio closed mid-playtest, no single instance, malformed responses).
 	Notice string
+	// Window is how long Play mode actually ran, after defaulting. It travels
+	// with the result because the correction run that a failure schedules has to
+	// describe the method that produced the finding, and by then the request
+	// that set it is long gone.
+	Window time.Duration
 }
 
 // Validate runs one automated playtest: enter Play mode, capture a
@@ -171,7 +176,7 @@ func (p *Provisioner) Validate(ctx context.Context, req ValidateRequest) Validat
 	}
 
 	outcome, errs := classifyConsole(console.String())
-	result := ValidationResult{Outcome: outcome, Console: console.String(), Errors: errs, Screenshot: screenshot}
+	result := ValidationResult{Outcome: outcome, Console: console.String(), Errors: errs, Screenshot: screenshot, Window: window}
 	if outcome == ValidationInconclusive {
 		result.Notice = "playtest produced no console signal"
 	}

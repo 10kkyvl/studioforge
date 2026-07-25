@@ -187,10 +187,18 @@ plugin loading or dynamic linking.
   interface declared in `internal/api`, keeping `internal/api` free of a direct import of
   `internal/memory`'s concrete `*Store`.
 - `internal/prompts` — `HouseRules` and `ForRun` (in `houserules.go`) build the system prompt every
-  run actually receives: the standing house rules, the project's static `.agent/*` context, the
-  agent's own stored system prompt, and now a "Relevant project memory" block when
-  `internal/memory.Store.Search` returns results for the project (see the memory bullet in the
-  component map below). The earlier structured, multi-section `Assemble`/`Input` template (with its
+  run actually receives. `ForRun` takes a `Spec` and emits its parts from the most stable to the most
+  volatile — house rules, question rules, the agent's own stored system prompt, the project's static
+  `.agent/*` context, the Roblox interface rules when the run needs them, then a "Relevant project
+  memory" block when `internal/memory.Store.Search` returns results for the project (see the memory
+  bullet in the component map below). That order is the point: prompt caching is a prefix match, so
+  memory travels as its own `Spec` field rather than something callers concatenate into the project
+  context, where it used to sit ahead of everything stable. `StudioSection` (in `studio.go`) is the
+  one part not composed here — it is built from the run's actual Studio grant, which does not exist
+  until the run starts, so the scheduler and the in-process agent loop append it (see step 7 of the
+  run lifecycle). `ui.go` holds the compact interface rules, `TaskTouchesUI` which decides whether a
+  run carries them, and the embedded fuller reference StudioForge writes into a project as
+  `.agent/roblox-ui.md`. The earlier structured, multi-section `Assemble`/`Input` template (with its
   own memory/blackboard/playtest/review sections) was deleted along with its dead
   `DecisionRequest`/`PlaytestResult`/`ReviewResult` result types — it never had a caller outside its
   own test.
@@ -415,13 +423,21 @@ correction lineage.
    (`resources.Manager.Acquire`) on `project:<id>:write` — this is the "one writer per project" rule.
 5. **Prompt assembly (as actually wired)** — before submission, `api.createRun` already built the system
    prompt via `prompts.ForRun`: the standing `prompts.HouseRules` (answer in the operator's language;
-   the subject is the Roblox project, never StudioForge itself; prefer the Studio MCP tools over
-   hand-written Luau; and the `studioforge-question` convention for asking a closed question), then the
-   project's two static `.agent/*` context files (`projects.LoadContext`) if present, then a
-   "Relevant project memory" block when `internal/memory.Store.Search` (limit 5, by project and the
-   incoming prompt text) returns anything for this project, then the agent's stored `SystemPrompt`.
-   Subagents forwarded to an orchestrator carry the same house rules. A memory-search failure is
-   logged and non-fatal — the run proceeds without the block.
+   the subject is the Roblox project, never StudioForge itself; and how much to write and how far to
+   go beyond what was asked), then how this run can put a closed question to the operator — the
+   `studioforge_question` tool on OpenRouter and NVIDIA, the `studioforge-question` text fence
+   everywhere else — then the agent's stored `SystemPrompt`, then the project's two static `.agent/*`
+   context files (`projects.LoadContext`) if present, then the compact Roblox interface rules when
+   `prompts.TaskTouchesUI` matches the task text, then a "Relevant project memory" block when
+   `internal/memory.Store.Search` (limit 5, by project and the incoming prompt text) returns anything
+   for this project. The order runs from what never changes to what changes on every run, so a prefix
+   cache can cover as much of it as possible; memory is its own parameter rather than something
+   callers fold into the project context, where it used to sit ahead of everything stable. Nothing
+   here mentions Studio — that part is composed later, from the grant (step 7). Subagents forwarded to
+   an orchestrator carry the same house rules and the project's context, but no question rules: a
+   subagent's turn ends inside its parent's run and the operator's answer resumes the parent, so a
+   subagent could never receive one. A memory-search failure is logged and non-fatal — the run
+   proceeds without the block.
 6. **Git checkpoint** — for Claude runs not in `plan` mode, `gitcheckpoint.Checkpoint` runs
    `git add -A && git commit` in the project root before the provider starts, so the operator has a
    revert point. This is best-effort: a non-git project or an empty diff is a silent no-op and never fails
@@ -432,7 +448,13 @@ correction lineage.
    hook (`mcp.Provisioner.Provision`) runs the fail-closed Studio access check described above and, if
    granted, returns either a config path and allowed-tools list (Claude) or a live client handle and
    allowed-tools list (OpenRouter); a snapshot of the open place's state is also prepended to the prompt
-   so the agent does not have to re-explore it.
+   so the agent does not have to re-explore it. This is also where the Studio half of the system prompt
+   is composed, because it is the first point at which the grant exists: `prompts.StudioSection` turns
+   the grant's own allowlist into rules that name only the tools this run may actually call, appended
+   after everything step 5 built (`withStudioRules` on the Claude path, a second system message inside
+   the agent loop on the OpenRouter and NVIDIA path). A run with no grant carries no Studio section at
+   all; a run whose grant was withheld with a reason carries one line saying so, so the agent describes
+   the Studio-side work instead of attempting it.
 8. **Provider start** — the scheduler calls `provider.Start` (or `.Resume`, if the thread has a prior
    session ID). For Claude this execs the `claude` binary with arguments built from the run request
    (model, effort, permission mode, MCP config path, allowed tools, subagents) and a minimized
@@ -461,6 +483,17 @@ sub-agent, not the run. Consumers deciding whether a run has ended must therefor
 message carries a `studioforge-question` fenced block (step 5 above) — ends the live stream the same
 way: the run's process has already exited, even though the thread stays resumable and picks up the
 same session once the operator answers.
+
+Two things now write that fence, and the run event's raw type is what tells them apart afterwards. A
+model writing it into its own message is the original path, and still the only one Claude and the mock
+provider have. On OpenRouter and NVIDIA the agent instead calls the `studioforge_question` tool, whose
+arguments are checked against the same contract before anything is shown; StudioForge then writes the
+fence itself from the validated arguments and ends the turn. The model never formats anything, so a
+question that would have been dropped — a sentence before the fence, a different info-string, JSON
+that is nearly right — comes back as a tool error the agent can retry instead. Everything downstream
+of the fence is deliberately unchanged, which is why a question asked either way parks the run and
+renders identically, live and after a page reload. Stuck-run escalation writes the same fence by hand
+under raw type `scheduler.stuck` and is unaffected by any of this.
 
 ## Configuration flow
 

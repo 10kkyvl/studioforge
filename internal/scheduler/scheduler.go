@@ -15,6 +15,7 @@ import (
 	"github.com/10kkyvl/studioforge/internal/gitcheckpoint"
 	"github.com/10kkyvl/studioforge/internal/memory"
 	"github.com/10kkyvl/studioforge/internal/models"
+	"github.com/10kkyvl/studioforge/internal/prompts"
 	"github.com/10kkyvl/studioforge/internal/providers"
 	"github.com/10kkyvl/studioforge/internal/resources"
 )
@@ -216,6 +217,29 @@ type MCPGrant struct {
 	Release      func()
 }
 
+// withStudioRules appends the Studio half of the system prompt, composed from
+// the access this run actually got. An empty section — no grant and nothing to
+// explain — leaves the prompt exactly as it was built.
+//
+// The grant is the only Roblox-shaped thing that reaches here, and it is already
+// stated in MCP terms (tool names and a notice), so this stays as
+// provider-neutral as the rest of the package: it hands the prompt layer a list
+// of tool names and a reason, and knows nothing about what any of them do.
+func withStudioRules(systemPrompt string, grant MCPGrant) string {
+	section := prompts.StudioSection(prompts.StudioAccess{
+		Granted: grant.ConfigPath != "",
+		Tools:   grant.AllowedTools,
+		Notice:  grant.Notice,
+	})
+	if section == "" {
+		return systemPrompt
+	}
+	if strings.TrimSpace(systemPrompt) == "" {
+		return section
+	}
+	return systemPrompt + "\n\n" + section
+}
+
 // MCPProvisioner decides a job's MCP access. It is deliberately stated in
 // MCP terms rather than Roblox terms so the scheduler stays provider-neutral;
 // the Studio-specific implementation is supplied at app construction.
@@ -249,6 +273,11 @@ type ValidationResult struct {
 	Errors     []string
 	Screenshot string
 	Notice     string
+	// Window is how long the playtest actually held Play mode. A correction run
+	// is told this, because "no other errors appeared" means something quite
+	// different after thirty seconds than after five minutes, and the agent
+	// cannot otherwise know which it is looking at.
+	Window time.Duration
 }
 
 // MCPValidator runs a job's post-completion Studio playtest validation.
@@ -504,7 +533,13 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 	if grant.Context != "" {
 		prompt = "Current Roblox Studio place state (do not re-list it, build on it):\n" + grant.Context + "\n\n" + prompt
 	}
-	req := providers.RunRequest{RunID: j.RunID, ProjectID: j.ProjectID, AgentID: j.AgentID, ThreadID: j.ThreadID, WorkingDirectory: j.WorkingDirectory, Prompt: prompt, SystemPrompt: j.SystemPrompt, Mode: j.Mode, Model: j.Model, Effort: j.Effort, PermissionProfile: j.PermissionProfile, MaxBudget: j.MaxBudget, AllowUnverifiedModel: j.AllowUnverifiedModel, Scenario: j.Scenario, MCPConfigPath: grant.ConfigPath, AllowedTools: grant.AllowedTools, Subagents: j.Subagents, Attachments: j.Attachments}
+	// The Studio rules are composed here rather than alongside the rest of the
+	// system prompt because this is the first point at which the grant exists:
+	// the prompt was built when the run was submitted, and everything between
+	// then and now — the queue wait, the writer lease — happens before anything
+	// knows whether Studio would be available. Composing them from the grant is
+	// what stops a run being told about tools it does not have.
+	req := providers.RunRequest{RunID: j.RunID, ProjectID: j.ProjectID, AgentID: j.AgentID, ThreadID: j.ThreadID, WorkingDirectory: j.WorkingDirectory, Prompt: prompt, SystemPrompt: withStudioRules(j.SystemPrompt, grant), Mode: j.Mode, Model: j.Model, Effort: j.Effort, PermissionProfile: j.PermissionProfile, MaxBudget: j.MaxBudget, AllowUnverifiedModel: j.AllowUnverifiedModel, Scenario: j.Scenario, MCPConfigPath: grant.ConfigPath, AllowedTools: grant.AllowedTools, Subagents: j.Subagents, Attachments: j.Attachments}
 	resumeSession := j.ResumeSessionID
 	if j.ResumeThread && j.ThreadID != "" {
 		resumeSession, err = m.store.ThreadSessionBefore(ctx, j.ThreadID, j.RunID)
@@ -883,21 +918,75 @@ func (m *Manager) proposeCorrectionDecision(j *Job, sessionID string, validation
 	propose(context.Background(), j.RunID, j.ProjectID, summary, strings.Join(validation.Errors, "\n"), correction)
 }
 
-// correctionPrompt folds a failed validation's console errors and screenshot
-// reference into the instruction a correction run receives.
+// maxCorrectionErrorLines bounds how many console error lines a correction
+// prompt carries. The classifier is substring matching over every console poll
+// in the window with no de-duplication, so one real Luau error can arrive as a
+// dozen near-identical lines; past the first handful they stop telling the agent
+// anything new and start crowding out the instruction around them. The count
+// that was found is still stated, so a truncated list never reads as the whole
+// picture.
+const maxCorrectionErrorLines = 12
+
+// correctionPrompt is the instruction a correction run receives after a
+// playtest found a problem.
+//
+// It states the method as well as the finding. The validation loop knows how the
+// evidence was produced — a fixed Play-mode window, no player input, the console
+// read throughout — and an agent that is not told any of it cannot judge what
+// the absence of other errors means, or that a gameplay bug was never in scope
+// to be caught. It also says that the correction is itself playtested, so a fix
+// that does not hold comes back, and it gives the agent somewhere to go when the
+// finding is not real: the classifier is a substring match over console text and
+// does produce false positives, and without a sanctioned way to say so the only
+// path forward is to change something it does not believe in.
 func correctionPrompt(validation ValidationResult) string {
 	var b strings.Builder
-	b.WriteString("An automated Studio playtest ran after your last change and found a problem. Fix it, then report back.\n")
+	b.WriteString("An automated Studio playtest ran after your last change and found a problem.\n\n")
+	b.WriteString("How it ran: StudioForge entered Play mode")
+	if validation.Window > 0 {
+		fmt.Fprintf(&b, " for %s", formatWindow(validation.Window))
+	}
+	b.WriteString(", captured one screenshot, read the console throughout, then left Play mode. No player input was sent — nothing moved, clicked or touched anything. So this covers what runs on its own at startup, and says nothing either way about gameplay that needs a player.\n")
 	if len(validation.Errors) > 0 {
-		b.WriteString("\nConsole errors observed during Play mode:\n")
-		for _, line := range validation.Errors {
-			b.WriteString("- " + line + "\n")
+		shown := validation.Errors
+		b.WriteString("\nConsole lines classified as errors")
+		if len(shown) > maxCorrectionErrorLines {
+			shown = shown[:maxCorrectionErrorLines]
+			fmt.Fprintf(&b, " (%d found, first %d shown)", len(validation.Errors), len(shown))
+		}
+		b.WriteString(":\n")
+		for _, line := range shown {
+			fmt.Fprintf(&b, "- %s\n", line)
 		}
 	}
 	if validation.Screenshot != "" {
-		b.WriteString("\nA screenshot was captured during the playtest: " + validation.Screenshot + "\n")
+		fmt.Fprintf(&b, "\nA screenshot was captured during the playtest: %s\n", validation.Screenshot)
 	}
+	b.WriteString("\nWork it in this order:\n")
+	b.WriteString("1. Identify which of the changes you just made causes this. You are resuming the same session, so that history is yours to read.\n")
+	b.WriteString("2. Fix the cause, not the symptom. Silencing the line that prints leaves the defect in place.\n")
+	b.WriteString("3. Confirm the fix against the same signal that caught it — the console, in Play mode — rather than reasoning that it should now work.\n")
+	b.WriteString("\nThis correction is playtested the same way when you finish, so a fix that does not hold will come back to you.\n")
+	b.WriteString("\nThese lines are classified by substring matching, not by understanding, so some of them are ordinary output that happens to read like an error. If that is what you are looking at — the line does not reproduce, or it names something working as intended — say so plainly and explain why, and change nothing. That is a valid outcome and a more useful one than an edit you do not believe in.\n")
 	return b.String()
+}
+
+// formatWindow states a playtest window the way the prompt should read it:
+// whole seconds up to a minute, then minutes, never Go's "1m30s".
+func formatWindow(d time.Duration) string {
+	seconds := int(d.Round(time.Second) / time.Second)
+	if seconds < 60 {
+		return fmt.Sprintf("%d seconds", seconds)
+	}
+	minutes, remainder := seconds/60, seconds%60
+	unit := "minutes"
+	if minutes == 1 {
+		unit = "minute"
+	}
+	if remainder == 0 {
+		return fmt.Sprintf("%d %s", minutes, unit)
+	}
+	return fmt.Sprintf("%d %s %d seconds", minutes, unit, remainder)
 }
 func firstLine(s string) string {
 	if idx := strings.IndexAny(s, "\r\n"); idx >= 0 {
@@ -1020,6 +1109,16 @@ func (m *Manager) emitEvent(ctx context.Context, e *execution, event providers.E
 	// is flagged so its final transition lands on waiting_decision instead
 	// of completed. Streaming delta chunks are skipped: a question fence
 	// that has not fully arrived yet must never be matched early.
+	//
+	// Two things now write that fence, and the run event's raw type is what
+	// tells them apart afterwards. A model writing it by hand is the original
+	// path and still the only one Claude has. A provider carrying the
+	// studioforge_question tool writes it from validated tool arguments
+	// instead, so the model never formats anything and a malformed question is
+	// a tool error it can retry rather than a card that silently never renders
+	// — but the fence, the detection here, and everything downstream of it stay
+	// exactly the same, which is why a question asked either way survives a
+	// page reload identically.
 	if event.Type == "message" && isFullyBufferedMessage(event.RawType) {
 		if block, ok := detectQuestion(messageText(event.Payload)); ok {
 			m.mu.Lock()

@@ -170,8 +170,9 @@ internal/
   platform/                 data dir, single-instance lock, browser launch, secret store, toolpath
   portable/                 export/import archive format
   processes/                subprocess supervisor, minimal-environment allowlist
-  projects/                 path guard, fingerprint, scaffold, static context loader
-  prompts/                  house rules + per-run system prompt assembly (wired: called on every run)
+  projects/                 path guard, fingerprint, scaffold, static context loader, shipped reference docs
+  prompts/                  house rules, per-run system prompt assembly, grant-derived Studio rules,
+                            Roblox interface rules + reference (wired: called on every run)
   providers/                Provider interface + claudecode, openrouter, mock adapters
   resources/                atomic resource lease manager
   roblox/

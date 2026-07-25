@@ -47,6 +47,10 @@ func NewToolSet(profile Profile, opts Options) (*ToolSet, error) {
 
 	s := &ToolSet{profile: profile, opts: opts, tools: map[string]Tool{}}
 	s.register(readOnlyTools(opts)...)
+	// Asking the operator a question is registered for every profile: it changes
+	// nothing in the project, and a read-only run reaches a fork in the road as
+	// readily as any other.
+	s.register(questionTool(opts.Ask))
 	if needsSupervisor {
 		s.register(writeTools(opts)...)
 		s.register(s.runCommandTool())

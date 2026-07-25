@@ -127,6 +127,40 @@ accepts no instance-selection argument — not an arbitrary limitation.
 
 ---
 
+## Open Studio opens an empty place, with the right name, after you worked in Team Create
+
+**Cause:** **Open Studio** can only ever launch a *local* build. It starts Studio with
+`-task EditFile -localPlaceFile <path>` (`studio.LaunchPlace`), where the path is always this
+project's own `.studioforge/<name>-<id>.rbxl`. That file name is derived from the project's name and
+ID and never changes between launches, so the window that opens carries exactly the name and digits
+you expect.
+
+A place edited through **Team Create** — anything opened from roblox.com, which is the only way two
+people can edit one place at the same time — lives on Roblox's servers, not in that local file.
+StudioForge cannot open a roblox.com place at all (`cloudPlaceNotice` in
+`internal/roblox/mcp/provisioner.go`), and it never writes your Team Create work into the local
+build. Meanwhile the local build is deliberately never rebuilt once it exists: `studio.OpenProject`
+opens an existing place byte-for-byte as saved, precisely so that generated meshes, terrain and
+hand-built instances are not destroyed by an implicit rebuild.
+
+So nothing was overwritten and nothing was lost. There are two unrelated places — the hosted one you
+and your collaborator worked in, and the local build, which still holds only the scaffold it was
+created with. **Open Studio** can only reach the second one.
+
+**Fix:**
+- If you edit together with someone, that is Team Create: open the place from roblox.com or from
+  Studio's own recent-places list, not with StudioForge's **Open Studio** button.
+- Record the place's display name once — **Studio sessions → Recognise the project by this name**, or
+  `POST /api/v1/projects/{id}/cloud-place`. A roblox.com place reports no file name at all, only a
+  display name, so this is what lets a run recognise your Team Create session and get Studio access.
+  It does not make **Open Studio** able to open the hosted place; nothing does, by design. Open it
+  yourself and the run will find it.
+- Do not expect live Studio edits to appear in the project's files or in its local `.rbxl` afterwards.
+  Only an explicit Save inside Studio writes to a file, and Rojo live-sync pushes files *into* Studio,
+  never the other way round.
+
+---
+
 ## Studio MCP launcher not detected
 
 **Cause:** StudioForge looks for Roblox's official launcher at a fixed platform path (or your

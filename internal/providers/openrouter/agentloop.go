@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/10kkyvl/studioforge/internal/gitops"
+	"github.com/10kkyvl/studioforge/internal/prompts"
 	"github.com/10kkyvl/studioforge/internal/providers"
 	"github.com/10kkyvl/studioforge/internal/providers/openrouter/agenttools"
 	"github.com/10kkyvl/studioforge/internal/providers/openrouter/mcpbridge"
@@ -342,12 +344,32 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, priorM
 		return
 	}
 
+	// askedQuestion records that the operator has been asked something during
+	// this turn. The tool handler runs inside the tool loop, so it cannot end
+	// the turn itself; it raises this and the loop stops after the current batch
+	// of tool calls has been answered.
+	var askedQuestion atomic.Bool
 	toolset, err := agenttools.NewToolSet(resolveProfile(req.PermissionProfile), agenttools.Options{
 		Workspace:  ws,
 		Git:        gitops.New(),
 		Supervisor: p.sup,
 		ProjectID:  req.ProjectID,
 		RunID:      req.RunID,
+		// The question travels as an ordinary message carrying the fence
+		// StudioForge writes from the validated arguments — the model never
+		// formats it, but everything that already handles a question (the
+		// scheduler's detection, the parking in waiting_decision, the card the
+		// browser draws live and again after a reload) works on it unchanged.
+		// The raw type is what records that this one came from the tool rather
+		// than from a model writing the fence itself.
+		Ask: func(askCtx context.Context, question agenttools.Question) error {
+			emit(askCtx, h, sessionID, providers.Event{
+				Type: "message", RawType: rawType("question"),
+				Payload: map[string]any{"text": question.Fence()},
+			})
+			askedQuestion.Store(true)
+			return nil
+		},
 	})
 	if err != nil {
 		emit(ctx, h, sessionID, providers.Event{Type: "error", RawType: rawType("tools"), Payload: map[string]any{"message": err.Error()}, Error: err.Error()})
@@ -357,6 +379,13 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, priorM
 
 	router := &toolRouter{local: toolset}
 	studioContext := ""
+	// studioRules is the Studio half of the system prompt. It is composed here,
+	// not where the rest of the prompt was built, because this is the first
+	// point the grant exists — a run submitted minutes ago cannot know whether
+	// Studio would still be there by the time it started. Composed from the
+	// grant, it names only tools this run may actually call, and says nothing
+	// at all when there is no Studio.
+	studioRules := ""
 	p.mu.Lock()
 	connector := p.connector
 	convStore := p.store
@@ -373,6 +402,11 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, priorM
 			}
 			studioContext = grant.Context
 		}
+		studioRules = prompts.StudioSection(prompts.StudioAccess{
+			Granted: grant.Client != nil,
+			Tools:   grant.AllowedTools,
+			Notice:  grant.Notice,
+		})
 	}
 
 	threadID := req.ThreadID
@@ -384,6 +418,9 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, priorM
 	} else {
 		if req.SystemPrompt != "" {
 			messages = append(messages, orclient.Message{Role: "system", Content: req.SystemPrompt})
+		}
+		if studioRules != "" {
+			messages = append(messages, orclient.Message{Role: "system", Content: studioRules})
 		}
 		if studioContext != "" {
 			messages = append(messages, orclient.Message{Role: "system", Content: "Current Roblox Studio state:\n" + studioContext})
@@ -658,6 +695,15 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, priorM
 
 		if persist {
 			persistTurn(ctx, convStore, threadID, req.RunID, assistantMsg, turnToolResults)
+		}
+		// A question was put to the operator, so this turn is over whatever else
+		// the model asked for: the run parks in waiting_decision and resumes with
+		// the answer as its next message. Ending here rather than letting the
+		// loop take another turn is what stops the agent from answering its own
+		// question and carrying on.
+		if askedQuestion.Load() {
+			finish(h, providers.Result{SessionID: sessionID, Cost: cost, Usage: usage, ExitCode: 0})
+			return
 		}
 		if latestStudioImage != "" {
 			messages = append(messages, orclient.Message{Role: "user", Content: []orclient.ContentPart{

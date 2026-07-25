@@ -558,6 +558,7 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, 500, "scaffold_failed", "Project directory could not be prepared with its Rojo skeleton", err)
 		return
 	}
+	s.ensureUIReference(root)
 	project, err := s.store.CreateProject(r.Context(), models.Project{ID: id, Name: name, Path: root, Fingerprint: projects.Fingerprint(root), Description: body.Description})
 	if err != nil {
 		writeError(w, r, 409, "project_conflict", "Unable to register project", err)
@@ -970,7 +971,23 @@ var testHookAfterInitialTaskReadinessCheck func()
 // provider's native mechanism. A non-orchestrator lead gets none. Delegated
 // work is forwarded to the operator too, so a subagent carries the same house
 // rules about language and scope as the orchestrator that spawned it.
-func subagentsFor(lead models.Agent, all []models.Agent) []providers.Subagent {
+//
+// Two things about a subagent's prompt are deliberate rather than incidental,
+// and both used to be one empty-string argument:
+//
+// A subagent gets the project's standing `.agent/*` context, because a subagent
+// asked to do project work with none of it either works blind or has to be told
+// the whole constitution inside the delegated message. It does not get the run's
+// memory selection: that is searched against the operator's own message, which
+// the subagent never sees, so it would be a per-run cost carrying entries chosen
+// for a question that was not put to it.
+//
+// A subagent gets no question rules at all. A question is delivered by ending a
+// turn and parking the run in waiting_decision, and the operator's answer
+// resumes the parent's session — the subagent that asked is gone by then and
+// never receives it. Describing that mechanism to a subagent would be
+// advertising a capability it does not have.
+func subagentsFor(lead models.Agent, all []models.Agent, projectContext string) []providers.Subagent {
 	if !strings.Contains(strings.ToLower(lead.Role), "orchestrator") {
 		return nil
 	}
@@ -979,9 +996,48 @@ func subagentsFor(lead models.Agent, all []models.Agent) []providers.Subagent {
 		if !candidate.Enabled || candidate.ID == lead.ID {
 			continue
 		}
-		subagents = append(subagents, providers.Subagent{Name: candidate.Name, Description: candidate.Role, Prompt: prompts.ForRun(candidate.SystemPrompt, "")})
+		prompt := prompts.ForRun(prompts.Spec{
+			Persona:        candidate.SystemPrompt,
+			ProjectContext: projectContext,
+			Questions:      prompts.NoQuestions,
+		})
+		subagents = append(subagents, providers.Subagent{Name: candidate.Name, Description: candidate.Role, Prompt: prompt})
 	}
 	return subagents
+}
+
+// ensureUIReference places StudioForge's Roblox interface reference in a project
+// so a run that needs it can open it. Best effort: the compact rules in the
+// system prompt stand on their own, so a read-only project directory costs the
+// agent the deeper reference rather than the run.
+func (s *Server) ensureUIReference(root string) {
+	if err := projects.EnsureReference(root, prompts.RobloxUIReferenceFile, prompts.RobloxUIReference); err != nil {
+		s.logger.Warn("write Roblox UI reference failed", "project_path", root, "error", err)
+	}
+}
+
+// questionChannelFor is how a run on this provider can put a closed question to
+// the operator, decided by what the provider actually carries.
+//
+// OpenRouter and NVIDIA run StudioForge's own in-process toolset, so
+// studioforge_question is always there: its arguments are schema-validated
+// before the operator sees them, and a malformed question comes back as a tool
+// error the agent can retry instead of a card that silently never renders.
+//
+// Claude reaches StudioForge's tools only through the MCP shim, which is a
+// separate process registered only on runs that were granted Studio, is never
+// told which run it serves, and has no route back to the daemon. Putting the
+// tool there needs a callback channel that does not exist, and would still cover
+// only the Claude runs that got Studio — so Claude keeps the text fence, which
+// always works, as its single path. The mock provider emits the fence by
+// construction in its scripted demo, so it stays on the fence too.
+func questionChannelFor(provider string) prompts.QuestionChannel {
+	switch provider {
+	case "openrouter", "nvidia":
+		return prompts.QuestionTool
+	default:
+		return prompts.QuestionFence
+	}
 }
 
 const checkpointLabel = "StudioForge checkpoint before agent run"
@@ -1187,17 +1243,36 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		stuckSettings = s.stuckSettings()
 	}
 	projectContext := projects.LoadContext(project.Path)
+	// Memory stays out of projectContext and travels as its own prompt part: it
+	// is selected per run by searching the operator's own message, so folding it
+	// in here would put the most volatile content in the prompt ahead of the
+	// parts that never change, and nothing behind it could ever be cached.
+	memory := ""
 	if s.memory != nil {
 		if entries, err := s.memory.Search(r.Context(), project.ID, body.Prompt, 5); err != nil {
 			s.logger.Warn("memory search failed", "project_id", project.ID, "error", err)
-		} else if block := memoryBlock(entries); block != "" {
-			projectContext = strings.TrimSpace(projectContext + "\n\n" + block)
+		} else {
+			memory = memoryBlock(entries)
 		}
 	}
-	subagents := subagentsFor(agent, enabled)
+	subagents := subagentsFor(agent, enabled, projectContext)
+	// A run whose task text is about an interface carries the compact interface
+	// rules, and the reference they point at is placed in the project now rather
+	// than at creation time — projects registered before StudioForge shipped that
+	// document would otherwise never get it.
+	touchesUI := prompts.TaskTouchesUI(body.Prompt)
+	if touchesUI {
+		s.ensureUIReference(project.Path)
+	}
 	// Carry the house rules and the project's standing context so the operator need
 	// not re-explain the project — or which language to answer in — on every message.
-	systemPrompt := prompts.ForRun(agent.SystemPrompt, projectContext)
+	systemPrompt := prompts.ForRun(prompts.Spec{
+		Persona:        agent.SystemPrompt,
+		ProjectContext: projectContext,
+		Memory:         memory,
+		Questions:      questionChannelFor(agent.Provider),
+		UI:             touchesUI,
+	})
 	checkpointHash, checkpointBranch := s.checkpointBeforeRun(project, agent.Provider, body.Mode)
 	if taskID != "" {
 		// Re-check right before submission, not just at the top of the
@@ -1249,9 +1324,12 @@ func stuckContinueSuppresses(prevEscalated bool, prompt string) bool {
 	return prevEscalated && strings.TrimSpace(prompt) == scheduler.StuckContinueLabel
 }
 
+// memoryBlock renders the entries a memory search selected for this run. It
+// emits the entries only: prompts.ForRun owns the heading and where the block
+// sits in the prompt, which is the point of memory being its own prompt part
+// rather than something concatenated in here.
 func memoryBlock(entries []memory.Entry) string {
 	var b strings.Builder
-	b.WriteString("## Relevant project memory\n\n")
 	found := false
 	for _, entry := range entries {
 		summary := strings.TrimSpace(entry.Summary)
@@ -1366,16 +1444,21 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 			stuckSettings = s.stuckSettings()
 		}
 		checkpointHash, checkpointBranch := s.checkpointBeforeRun(project, agent.Provider, "")
+		restartContext := projects.LoadContext(project.Path)
 		restarted, created, submitErr := s.scheduler.Submit(r.Context(), scheduler.Job{
 			ProjectID: run.ProjectID, AgentID: run.AgentID, TaskID: run.TaskID,
 			Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort,
 			PermissionProfile: agent.Permission, WorkingDirectory: project.Path,
-			Prompt:       "Restart the interrupted task. Inspect the previous failure and complete the task with verification.",
-			SystemPrompt: prompts.ForRun(agent.SystemPrompt, projects.LoadContext(project.Path)),
-			ThreadID:     run.ThreadID,
-			MaxBudget:    agent.Budget, AllowUnverifiedModel: agent.AllowUnverifiedModel,
+			Prompt: "Restart the interrupted task. Inspect the previous failure and complete the task with verification.",
+			SystemPrompt: prompts.ForRun(prompts.Spec{
+				Persona:        agent.SystemPrompt,
+				ProjectContext: restartContext,
+				Questions:      questionChannelFor(agent.Provider),
+			}),
+			ThreadID:  run.ThreadID,
+			MaxBudget: agent.Budget, AllowUnverifiedModel: agent.AllowUnverifiedModel,
 			Resources:        []string{"project:" + run.ProjectID + ":write"},
-			Subagents:        subagentsFor(*agent, agents),
+			Subagents:        subagentsFor(*agent, agents, restartContext),
 			ValidateAfterRun: agent.ValidateAfterRun, MaxCorrectionRuns: agent.MaxCorrectionRuns,
 			StuckDetectionEnabled: stuckSettings.Enabled && !agent.StuckDetectionDisabled,
 			StuckIdleSeconds:      stuckSettings.IdleSeconds, StuckRepetitionCap: stuckSettings.RepetitionCap,
@@ -1438,8 +1521,13 @@ func (s *Server) resumeRun(ctx context.Context, runID string) error {
 	if err := validateNVIDIAAgent(agent); err != nil {
 		return err
 	}
-	systemPrompt := prompts.ForRun(agent.SystemPrompt, projects.LoadContext(project.Path))
-	subagents := subagentsFor(*agent, enabled)
+	projectContext := projects.LoadContext(project.Path)
+	systemPrompt := prompts.ForRun(prompts.Spec{
+		Persona:        agent.SystemPrompt,
+		ProjectContext: projectContext,
+		Questions:      questionChannelFor(agent.Provider),
+	})
+	subagents := subagentsFor(*agent, enabled, projectContext)
 	stuckSettings := scheduler.StuckSettings{Enabled: true, IdleSeconds: 600, RepetitionCap: 6}
 	if s.stuckSettings != nil {
 		stuckSettings = s.stuckSettings()

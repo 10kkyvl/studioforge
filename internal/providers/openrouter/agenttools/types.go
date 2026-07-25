@@ -39,6 +39,10 @@ type Options struct {
 	MaxReadBytes   int
 	MaxOutputBytes int
 	CommandTimeout time.Duration
+	// Ask delivers a closed question to the operator. Left nil, the question
+	// tool is still registered but refuses, telling the agent to decide for
+	// itself rather than leaving it waiting for an answer that is not coming.
+	Ask AskOperator
 }
 
 type funcTool struct {

@@ -40,3 +40,31 @@ func Scaffold(root, name string) error {
 	}
 	return nil
 }
+
+// EnsureReference places a reference document StudioForge ships into a project,
+// so an agent can open it on demand whatever provider is running: Claude reads
+// it with its own tools, OpenRouter and NVIDIA through agenttools, which is
+// sandboxed to the project directory and could not reach it anywhere else.
+//
+// It is write-once. An operator who edits the file — or deletes it because their
+// game does not want those rules — keeps their version, because the whole point
+// of shipping it into the project rather than into the prompt is that it is
+// theirs to change. It is separate from Scaffold for the same reason it is
+// separate from LoadContext's two files: Scaffold bails out on a directory that
+// already has a manifest, and a project created before this document existed
+// still needs it.
+func EnsureReference(root, relative, body string) error {
+	path := filepath.Join(root, filepath.FromSlash(relative))
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect reference document: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create reference directory: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		return fmt.Errorf("write reference document: %w", err)
+	}
+	return nil
+}

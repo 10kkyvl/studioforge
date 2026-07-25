@@ -8,6 +8,72 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ## [Unreleased]
 
+### Added
+
+- **An agent on OpenRouter or NVIDIA now asks the operator a question with a tool instead of a text
+  convention.** `studioforge_question` takes the question and its 2–4 options as schema-validated
+  arguments, and StudioForge writes the fenced block itself from them. The model never formats
+  anything, so the failures the old convention had — a sentence before the fence, a different
+  info-string, JSON that is nearly right — become a tool error the agent can see and retry rather
+  than a question card that silently never renders. The turn ends where the question was asked, so
+  the agent cannot answer itself and carry on. Everything downstream is unchanged, so a question
+  asked this way parks the run and renders identically, live and after a page reload; the run
+  event's raw type records which path it came from. The tool is offered under every permission
+  profile, read-only included — asking changes nothing in the project. Claude keeps the text fence,
+  which always works (`internal/providers/openrouter/agenttools/tool_question.go`,
+  `internal/providers/openrouter/agentloop.go`, `internal/api/api.go`).
+- **An agent asked to build an interface now gets told how Roblox interfaces work.** Sizing in fixed
+  pixels, hand-placed positions, missing `AnchorPoint`, unconstrained `TextScaled` — none of these
+  produce an error, so the console stays clean, the playtest passes, and the operator finds out by
+  opening the game on a phone, which is where most Roblox sessions are. A run whose task text is
+  about interface work (matched in English and Russian) carries a compact set of rules, and the
+  fuller reference is written into the project as `.agent/roblox-ui.md`, where every provider can
+  read it and the operator can edit it. It is written once and never overwritten, and it is
+  deliberately not one of the files loaded into every prompt (`internal/prompts/ui.go`,
+  `internal/prompts/reference/roblox-ui.md`, `internal/projects/scaffold.go`).
+- **The house rules now say how much to write and how far to go beyond the request.** Current models
+  default to long narration between tool calls and to quietly widening a task — extra abstractions,
+  unrequested tidying — which costs more here than in a developer tool, because the audience is
+  Roblox creators rather than developers reading a build log (`internal/prompts/houserules.go`).
+
+### Changed
+
+- **The Studio tool rules are now built from the run's actual grant, instead of being sent on every
+  run.** Studio access is withheld often and by design — more than one Studio open, an ambiguous
+  place name, a missing launcher — and those runs were still carrying a page describing a dozen
+  Studio tools, as was every `read-only` run, which is denied most of them. A run with no Studio now
+  carries no Studio section at all; a run whose access was withheld with a reason carries one line
+  saying so, so the agent describes the Studio-side work instead of attempting it; and a run with a
+  grant is told only about the tools its own permission profile actually permits, derived from the
+  same allowlist the grant is built from rather than restated in prose. A `read-only` run's prompt
+  no longer names a single mutating tool (`internal/prompts/studio.go`,
+  `internal/scheduler/scheduler.go`, `internal/providers/openrouter/agentloop.go`).
+- **The system prompt's parts are ordered so that prompt caching is possible at all.** The memory
+  selection — searched fresh against the operator's own message, so different on almost every run —
+  was being concatenated into the project context, which put the most volatile content in the prompt
+  ahead of everything stable. Caching is a prefix match, so nothing behind it could ever be cached.
+  Memory is now its own parameter and the parts run from the most stable to the most volatile:
+  house rules, question rules, the agent's persona, the project's context files, the interface rules
+  when relevant, then memory. Two runs of the same agent on the same project now share a
+  byte-identical prompt up to whichever part first differs (`internal/prompts/houserules.go`,
+  `internal/api/api.go`).
+- **A correction run is now told how its finding was produced, not just what it was.** The prompt
+  states that an automated Play-mode session of the configured length ran with no player input and
+  the console was read throughout — so the agent can judge what the absence of other errors means,
+  and that a gameplay bug was never in scope to be caught. It asks for cause, fix and verification in
+  that order, says that the correction is itself playtested so a fix that does not hold will come
+  back, and — because the console classifier is substring matching and does produce false positives —
+  gives the agent a sanctioned way to report a finding as noise and change nothing, where previously
+  the only path forward was an edit it did not believe in. The error-line list is now bounded, with
+  the full count still stated (`internal/scheduler/scheduler.go`, `internal/roblox/mcp/validator.go`).
+- **A subagent now receives the project's standing context, and no longer the question protocol.**
+  Both used to follow from one empty-string argument. A subagent asked to do project work knew
+  nothing about the project unless the delegating message repeated the constitution; meanwhile it was
+  being taught to ask the operator a question it could never receive an answer to, because a
+  subagent's turn ends inside its parent's run and the operator's answer resumes the parent. It gets
+  the `.agent/*` files and not the run's memory selection, which was chosen against a message the
+  subagent never sees (`internal/api/api.go`).
+
 ## [0.5.0-rc.3] - 2026-07-25
 
 ### Added
