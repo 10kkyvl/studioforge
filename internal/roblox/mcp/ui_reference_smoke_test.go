@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -161,9 +162,20 @@ func TestRealStudioUIReferenceClaims(t *testing.T) {
 	if _, err := client.Discover(ctx); err != nil {
 		t.Fatal(err)
 	}
-	instances, err := client.ListStudios(ctx)
-	if err != nil {
-		t.Fatal(err)
+	// The plugin attaches to a freshly spawned launcher in two steps, so the
+	// first listing is routinely empty even with Studio open and registered.
+	// Asking once is how this smoke spent three runs reporting no Studio.
+	var instances []Instance
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		instances, err = client.ListStudios(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(instances) > 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
 	}
 	if len(instances) != 1 {
 		t.Skipf("want exactly one open Studio, got %d", len(instances))
@@ -171,7 +183,14 @@ func TestRealStudioUIReferenceClaims(t *testing.T) {
 	if err := client.SelectStudio(ctx, instances[0].ID); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := client.Call(ctx, "execute_luau", map[string]any{"command": uiReferenceProbe})
+	// The launcher's own schema for execute_luau: `code`, plus a required
+	// `datamodel_type` out of Edit/Client/Server. Edit is the one that needs no
+	// Play session, which is what this probe wants — it is checking layout
+	// arithmetic, not gameplay.
+	raw, err := client.Call(ctx, "execute_luau", map[string]any{
+		"code":           uiReferenceProbe,
+		"datamodel_type": "Edit",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,9 +210,15 @@ func TestRealStudioUIReferenceClaims(t *testing.T) {
 		t.Fatalf("the probe returned nothing usable: %q", text)
 	}
 	for key, want := range map[string]string{
+		// The reference tells an agent that the inset default is the one it
+		// usually wants, that a runtime-built ScreenGui vanishes on respawn
+		// unless ResetOnSpawn is turned off, and — because these two are not
+		// what a reader would guess — that ZIndexBehavior and SortOrder must be
+		// set explicitly rather than left alone.
 		"ScreenGui.IgnoreGuiInset": "false",
 		"ScreenGui.ResetOnSpawn":   "true",
-		"ScreenGui.ZIndexBehavior": "Sibling",
+		"ScreenGui.ZIndexBehavior": "Global",
+		"UIListLayout.SortOrder":   "Name",
 		"TextButton.Activated":     "true",
 		"UDim2.fromScale":          "true",
 		"UDim2.fromOffset":         "true",
@@ -210,4 +235,54 @@ func TestRealStudioUIReferenceClaims(t *testing.T) {
 			t.Errorf("%s does not exist in this Studio, but the reference tells an agent to use it", key)
 		}
 	}
+
+	number := func(key string) float64 {
+		t.Helper()
+		value, ok := facts[key]
+		if !ok {
+			t.Fatalf("the probe did not report %s", key)
+		}
+		parsed, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			t.Fatalf("%s = %q, which is not a number: %v", key, value, err)
+		}
+		return parsed
+	}
+
+	// Centring with AnchorPoint and Scale lands exactly on the middle at both
+	// shapes. This is the rule an offset computed from half the parent's width
+	// is supposed to replace.
+	for _, shape := range []string{"desktop", "phone"} {
+		for _, axis := range []string{"X", "Y"} {
+			if off := number(shape + ".centredOffset" + axis); off > 1 {
+				t.Errorf("%s: AnchorPoint centring is %v px off on %s", shape, off, axis)
+			}
+		}
+		// A square is a square at either shape, but only with the constraint.
+		if ratio := number(shape + ".lockedRatio"); ratio < 0.99 || ratio > 1.01 {
+			t.Errorf("%s: UIAspectRatioConstraint let the ratio drift to %v", shape, ratio)
+		}
+	}
+	// Without the constraint, the same declaration is a different shape on each
+	// screen — which is the reason the constraint is in the reference at all.
+	desktopFree, phoneFree := number("desktop.freeRatio"), number("phone.freeRatio")
+	if desktopFree/phoneFree < 2 {
+		t.Errorf("an unconstrained frame was expected to change shape sharply between screens, got %v and %v", desktopFree, phoneFree)
+	}
+	// TextScaled alone follows the screen; bounded by UITextSizeConstraint it
+	// does not.
+	if number("desktop.looseTextY") == number("phone.looseTextY") {
+		t.Error("TextScaled was expected to render at different sizes on the two screens")
+	}
+	if number("desktop.boundedTextY") != number("phone.boundedTextY") {
+		t.Errorf("UITextSizeConstraint did not hold text steady: %v vs %v", facts["desktop.boundedTextY"], facts["phone.boundedTextY"])
+	}
+	// The headline claim: a frame sized in pixels covers a tenth of a monitor
+	// and half a phone.
+	desktopFixed, phoneFixed := number("desktop.fixedFractionX"), number("phone.fixedFractionX")
+	if desktopFixed > 0.2 || phoneFixed < 0.4 {
+		t.Errorf("offset-only sizing: %.3f of the desktop width and %.3f of the phone width", desktopFixed, phoneFixed)
+	}
+	t.Logf("offset-only sizing covers %.1f%% of a 1920x1080 screen and %.1f%% of a 390x844 screen",
+		desktopFixed*100, phoneFixed*100)
 }

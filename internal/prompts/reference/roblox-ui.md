@@ -29,6 +29,10 @@ Use Scale for anything that should keep its proportions across screens. Keep
 Offset for things that genuinely are a fixed number of pixels: a border, padding,
 a stroke, a one-row-tall header.
 
+The difference is not subtle. A frame 200px wide covers a tenth of a 1920×1080
+monitor and just over half of a 390×844 phone — measured, not estimated. Sized in
+Scale it covers the same fraction of both.
+
 `UDim2.fromScale(x, y)` and `UDim2.fromOffset(x, y)` are clearer than
 `UDim2.new` when you only need one half.
 
@@ -65,8 +69,9 @@ is the thing these exist to replace.
   leftover space instead of every child being sized by hand.
 
 Set `SortOrder = Enum.SortOrder.LayoutOrder` explicitly on any list or grid
-layout and give each child a `LayoutOrder`. Do not rely on the default or on
-child names — renaming an element should not silently reorder the menu.
+layout and give each child a `LayoutOrder`. The default is
+`Enum.SortOrder.Name`, so without this your menu is ordered alphabetically by
+instance name and renaming an element silently reorders it.
 
 ```lua
 local list = Instance.new("UIListLayout")
@@ -121,11 +126,18 @@ persistent.
 
 ## Layering
 
-Within one `ScreenGui`, `ZIndex` orders elements. The default
-`ZIndexBehavior` is `Enum.ZIndexBehavior.Sibling`: an element is ordered against
-its own siblings, and a child can never draw beneath its own parent. If something
-refuses to come to the front, it is almost always because it is nested inside a
-container that is itself behind — raise the container, not the child.
+Within one `ScreenGui`, `ZIndex` orders elements, and `ZIndexBehavior` decides
+what that number is compared against. A `ScreenGui` from `Instance.new` starts as
+`Enum.ZIndexBehavior.Global`, where every descendant is ranked by its raw `ZIndex`
+across the whole tree regardless of nesting — so a child can punch out from behind
+its own parent, and one element's `ZIndex = 10` can jump in front of an unrelated
+panel somewhere else.
+
+Set `ZIndexBehavior = Enum.ZIndexBehavior.Sibling` on the `ScreenGui`. Under it an
+element is ordered only against its own siblings and a child never draws beneath
+its parent, which is what makes a panel and its contents move as one thing. If
+something then refuses to come to the front, it is because the container holding
+it is behind — raise the container, not the child.
 
 Between separate `ScreenGui`s, `DisplayOrder` decides: higher draws on top. Give
 a modal or a notification layer its own `ScreenGui` with a high `DisplayOrder`
