@@ -26,6 +26,76 @@ func (f *fakeOpener) OpenProject(_ context.Context, projectPath, name, id string
 	return f.place, f.err
 }
 
+// A project edited on roblox.com is recognised by the place's display name,
+// because that is the only name the launcher reports for such an instance.
+// Storing it is what lets a run reach a Team Create Studio at all.
+func TestSetAndGetCloudPlace(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	rec := postJSON(t, a, cookie, "/api/v1/projects/demo-obby/cloud-place", map[string]any{"cloudPlace": "Asmr RNG"})
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	getRec := getJSON(t, a, cookie, "/api/v1/projects/demo-obby/cloud-place")
+	if getRec.Code != 200 {
+		t.Fatalf("status=%d body=%s", getRec.Code, getRec.Body.String())
+	}
+	var body struct {
+		CloudPlace string `json:"cloudPlace"`
+	}
+	if err := json.Unmarshal(getRec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.CloudPlace != "Asmr RNG" {
+		t.Errorf("cloudPlace=%q want %q", body.CloudPlace, "Asmr RNG")
+	}
+}
+
+// Surrounding whitespace never survives a comparison against what the launcher
+// reports, so a pasted name with a stray space has to be stored trimmed or the
+// setting silently never matches.
+func TestSetCloudPlaceTrimsWhitespace(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	postJSON(t, a, cookie, "/api/v1/projects/demo-obby/cloud-place", map[string]any{"cloudPlace": "  Asmr RNG\n"})
+	stored, _, err := a.server.store.ProjectSetting(context.Background(), "demo-obby", CloudPlaceSettingKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored != "Asmr RNG" {
+		t.Errorf("stored=%q want %q", stored, "Asmr RNG")
+	}
+}
+
+// Clearing the name is how a project goes back to being matched on its built
+// file alone, so an empty value must be accepted rather than rejected.
+func TestSetCloudPlaceAcceptsClearing(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	postJSON(t, a, cookie, "/api/v1/projects/demo-obby/cloud-place", map[string]any{"cloudPlace": "Asmr RNG"})
+	rec := postJSON(t, a, cookie, "/api/v1/projects/demo-obby/cloud-place", map[string]any{"cloudPlace": ""})
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	stored, _, err := a.server.store.ProjectSetting(context.Background(), "demo-obby", CloudPlaceSettingKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored != "" {
+		t.Errorf("stored=%q want it cleared", stored)
+	}
+}
+
+func TestSetCloudPlaceRejectsAnOversizedName(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	rec := postJSON(t, a, cookie, "/api/v1/projects/demo-obby/cloud-place",
+		map[string]any{"cloudPlace": strings.Repeat("x", cloudPlaceNameLimit+1)})
+	if rec.Code != 400 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestOpenStudioLaunchesTheProject(t *testing.T) {
 	a := newTestAPI(t)
 	cookie := bootstrapCookie(t, a)

@@ -6,7 +6,50 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/10kkyvl/studioforge/internal/roblox/studio"
 )
+
+// TestRealStudioGrantsAccessForTheConfiguredPlace runs the actual access gate
+// against whatever Studio is open, which is the only way to check the one thing
+// unit tests cannot: that the name this project matches on is the name the
+// launcher really reports. A place opened from roblox.com reports its display
+// name and no file name at all, so a project edited that way is refused unless
+// STUDIOFORGE_REAL_CLOUD_PLACE names it.
+//
+//	STUDIOFORGE_REAL_STUDIO=1
+//	STUDIOFORGE_REAL_PLACE_FILE=my-game-a1b2c3d4.rbxl
+//	STUDIOFORGE_REAL_CLOUD_PLACE="My Game"   # optional, for a roblox.com place
+func TestRealStudioGrantsAccessForTheConfiguredPlace(t *testing.T) {
+	if os.Getenv("STUDIOFORGE_REAL_STUDIO") != "1" {
+		t.Skip("set STUDIOFORGE_REAL_STUDIO=1 with Roblox Studio open to run the live smoke")
+	}
+	place := Place{
+		FileName:  os.Getenv("STUDIOFORGE_REAL_PLACE_FILE"),
+		CloudName: os.Getenv("STUDIOFORGE_REAL_CLOUD_PLACE"),
+	}
+	if !place.Named() {
+		t.Skip("set STUDIOFORGE_REAL_PLACE_FILE and/or STUDIOFORGE_REAL_CLOUD_PLACE to name the place to match")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	// Running is what separates "no Studio is open" from "a Studio is open but
+	// another MCP client holds its connection" — the launcher reports both as an
+	// empty list, and this smoke runs alongside a StudioForge daemon that
+	// competes for exactly that slot, so without it a refusal names the wrong
+	// cause.
+	p := &Provisioner{Dir: t.TempDir(), Running: studio.IsRunning}
+	// Open is deliberately nil: this checks recognition of an already-open
+	// Studio, and must never build or launch anything of its own.
+	grant := p.Provision(ctx, "live-smoke", "workspace-write", Target{Place: place})
+	if grant.Release != nil {
+		t.Cleanup(grant.Release)
+	}
+	if grant.ConfigPath == "" {
+		t.Fatalf("the open Studio was refused for %s: %s", place, grant.Notice)
+	}
+	t.Logf("granted for %s: tools=%d state=%q", place, len(grant.AllowedTools), grant.Context)
+}
 
 func TestRealStudioMCP(t *testing.T) {
 	if os.Getenv("STUDIOFORGE_REAL_STUDIO") != "1" {

@@ -179,6 +179,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/projects/{id}/threads", s.createThread)
 	mux.HandleFunc("GET /api/v1/projects/{id}/lead", s.getLead)
 	mux.HandleFunc("POST /api/v1/projects/{id}/lead", s.setLead)
+	mux.HandleFunc("GET /api/v1/projects/{id}/cloud-place", s.getCloudPlace)
+	mux.HandleFunc("POST /api/v1/projects/{id}/cloud-place", s.setCloudPlace)
 	mux.HandleFunc("GET /api/v1/projects/{id}/pace", s.pace)
 	mux.HandleFunc("POST /api/v1/projects/{id}/attachments", s.uploadAttachment)
 	mux.HandleFunc("GET /api/v1/projects/{id}/attachments/{name}", s.getAttachment)
@@ -758,6 +760,50 @@ func (s *Server) createThread(w http.ResponseWriter, r *http.Request) {
 // leadAgentSettingKey is the project_settings key under which the chosen
 // lead agent's ID is stored.
 const leadAgentSettingKey = "lead_agent_id"
+
+// CloudPlaceSettingKey is the project_settings key under which the display
+// name of the roblox.com place a project is edited as is stored. It is empty
+// for a project worked on as its own built file, which is the default; setting
+// it is what lets a run recognise a Studio opened from Roblox — Team Create
+// included — since the launcher reports such an instance by that name and by
+// no file name at all.
+const CloudPlaceSettingKey = "studio_cloud_place"
+
+// cloudPlaceNameLimit bounds what is accepted as a place name. Roblox caps a
+// place's name well below this; the limit is here so a stray paste cannot put
+// an unbounded string into every later refusal notice.
+const cloudPlaceNameLimit = 200
+
+func (s *Server) getCloudPlace(w http.ResponseWriter, r *http.Request) {
+	name, _, err := s.store.ProjectSetting(r.Context(), r.PathValue("id"), CloudPlaceSettingKey)
+	if err != nil {
+		writeError(w, r, 500, "database_error", "Unable to read the cloud place name", err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"cloudPlace": name})
+}
+
+func (s *Server) setCloudPlace(w http.ResponseWriter, r *http.Request) {
+	var body struct{ CloudPlace string }
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, r, 400, "invalid_json", err.Error(), nil)
+		return
+	}
+	// Surrounding whitespace never survives a comparison against what the
+	// launcher reports, so trimming it here is the difference between a setting
+	// that works and one that silently never matches. An empty value is how a
+	// project goes back to being matched on its built file alone.
+	name := strings.TrimSpace(body.CloudPlace)
+	if len(name) > cloudPlaceNameLimit {
+		writeError(w, r, 400, "name_too_long", fmt.Sprintf("A place name is at most %d characters", cloudPlaceNameLimit), nil)
+		return
+	}
+	if err := s.store.SetProjectSetting(r.Context(), r.PathValue("id"), CloudPlaceSettingKey, name); err != nil {
+		writeError(w, r, 500, "database_error", "Unable to save the cloud place name", err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"cloudPlace": name})
+}
 
 func (s *Server) getLead(w http.ResponseWriter, r *http.Request) {
 	agentID, _, err := s.store.ProjectSetting(r.Context(), r.PathValue("id"), leadAgentSettingKey)

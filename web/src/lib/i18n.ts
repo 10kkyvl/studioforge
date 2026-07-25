@@ -255,6 +255,9 @@ export const en = {
   'studios.refreshing': 'Refreshing…',
   'studios.notDetected':
     'Studio MCP not detected. Install or update Roblox Studio, and enable Studio MCP in Assistant settings, then refresh.',
+  'studios.recognise': 'Recognise the project by this name',
+  'studios.recogniseHint':
+    'A place opened from roblox.com — Team Create included — is reported by its display name and by no file name, so runs refuse it until this name is recorded for the project.',
   'settings.title': 'Settings',
   'settings.subtitle': 'Local preferences, diagnostics, backups, and safety.',
   'settings.language': 'Language',
@@ -692,6 +695,9 @@ export const ru: Record<TranslationKey, string> = {
   'studios.refreshing': 'Обновление…',
   'studios.notDetected':
     'Studio MCP не обнаружен. Установите или обновите Roblox Studio и включите Studio MCP в настройках Assistant, затем обновите список.',
+  'studios.recognise': 'Узнавать проект по этому имени',
+  'studios.recogniseHint':
+    'Плейс, открытый с roblox.com (в том числе через Team Create), сообщает только отображаемое имя и не сообщает имя файла — пока это имя не записано для проекта, запуски будут его отклонять.',
   'settings.title': 'Настройки',
   'settings.subtitle': 'Локальные параметры, диагностика, резервное копирование и безопасность.',
   'settings.language': 'Язык',

@@ -144,6 +144,13 @@ export const getLead = (projectId: string) =>
   request<{ agentId: string }>(`/projects/${projectId}/lead`).then((body) => body.agentId);
 export const setLead = (projectId: string, agentId: string): Promise<void> =>
   post<{ agentId: string }>(`/projects/${projectId}/lead`, { agentId }).then(() => undefined);
+// The launcher reports a place opened from roblox.com by its display name and
+// by no file name at all, so a project edited that way is recognised by the
+// name recorded here. An empty name goes back to matching on the built file.
+export const setCloudPlace = (projectId: string, cloudPlace: string): Promise<void> =>
+  post<{ cloudPlace: string }>(`/projects/${projectId}/cloud-place`, { cloudPlace }).then(
+    () => undefined,
+  );
 export const getPace = (projectId: string) =>
   request<{ typicalSeconds: number; samples: number }>(`/projects/${projectId}/pace`);
 export const getRunDiff = (runId: string) => request<RunDiff>(`/runs/${runId}/diff`);

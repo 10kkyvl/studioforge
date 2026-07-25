@@ -900,6 +900,22 @@ tbody tr:last-child td {
   margin: 0;
   text-align: right;
 }
+.studio-card .recognise {
+  width: 100%;
+  margin-top: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  text-align: center;
+  cursor: pointer;
+}
+.studio-card .recognise:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
 .kanban {
   display: grid;
   grid-template-columns: repeat(4, minmax(210px, 1fr));

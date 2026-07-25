@@ -99,27 +99,32 @@ func (p *Provisioner) dialLive(ctx context.Context, launch LaunchConfig) (Transp
 }
 
 func (p *Provisioner) selectForTargetLive(ctx context.Context, client *Client, target Target, instances []Instance, state string) ([]Instance, string, string) {
-	if target.PlaceName == "" {
+	if !target.Place.Named() {
 		if len(instances) > 1 {
 			return nil, "", fmt.Sprintf("Studio MCP withheld: %d Studio instances are open and StudioForge cannot pin one for the agent's own MCP connection; leave a single Studio open", len(instances))
 		}
 		return instances, state, ""
 	}
 
-	matched := matching(instances, target.PlaceName)
+	matched := matching(instances, target.Place)
 	switch {
 	case len(matched) == 1:
 		return matched, state, ""
 	case len(matched) > 1:
-		return nil, "", ambiguousMatchNotice(len(matched), target.PlaceName)
+		return nil, "", ambiguousMatchNotice(len(matched), target.Place)
 	}
 
 	if len(instances) > 0 {
-		return nil, "", mismatchNotice(instances, target.PlaceName)
+		return nil, "", mismatchNotice(instances, target.Place)
 	}
 
 	if p.blocked(ctx) {
 		return nil, "", hostTakenNotice
+	}
+
+	// A roblox.com place cannot be auto-opened; see selectForTarget.
+	if target.Place.Cloud() {
+		return nil, "", cloudPlaceNotice(target.Place)
 	}
 
 	if target.Open == nil || !p.autoOpen() {
@@ -128,17 +133,17 @@ func (p *Provisioner) selectForTargetLive(ctx context.Context, client *Client, t
 	if err := target.Open(ctx); err != nil {
 		return nil, "", "Studio MCP withheld: opening this project's place failed: " + err.Error()
 	}
-	opened, state, err := p.waitForPlaceLive(ctx, client, target.PlaceName)
+	opened, state, err := p.waitForPlaceLive(ctx, client, target.Place)
 	if err != nil {
 		return nil, "", "Studio MCP withheld: " + err.Error()
 	}
 	if len(opened) != 1 {
-		return nil, "", fmt.Sprintf("Studio MCP withheld: %s did not finish opening within %s; the run continues without Studio", target.PlaceName, openWait)
+		return nil, "", fmt.Sprintf("Studio MCP withheld: %s did not finish opening within %s; the run continues without Studio", target.Place, openWait)
 	}
 	return opened, state, ""
 }
 
-func (p *Provisioner) waitForPlaceLive(ctx context.Context, client *Client, placeName string) ([]Instance, string, error) {
+func (p *Provisioner) waitForPlaceLive(ctx context.Context, client *Client, place Place) ([]Instance, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, openWait)
 	defer cancel()
 	ticker := time.NewTicker(time.Second)
@@ -146,7 +151,7 @@ func (p *Provisioner) waitForPlaceLive(ctx context.Context, client *Client, plac
 	for {
 		instances, err := client.ListStudios(ctx)
 		if err == nil {
-			if matched := matching(instances, placeName); len(matched) > 0 {
+			if matched := matching(instances, place); len(matched) > 0 {
 				state := ""
 				if raw, callErr := client.Call(ctx, "get_studio_state", nil); callErr == nil {
 					state = studioStateText(raw)
@@ -165,32 +170,7 @@ func (p *Provisioner) waitForPlaceLive(ctx context.Context, client *Client, plac
 func (p *Provisioner) listWithAttach(ctx context.Context, client *Client) ([]Instance, string, error) {
 	listCtx, cancel := context.WithTimeout(ctx, p.timeout())
 	defer cancel()
-	var attach <-chan time.Time
-	instances, err := client.ListStudios(listCtx)
-	for notConnected(err) {
-		if !p.blocked(ctx) {
-			return nil, "", nil
-		}
-		if attach == nil {
-			window := p.attachWindow
-			if window <= 0 {
-				window = attachWait
-			}
-			attach = time.After(window)
-		}
-		retry := p.retryEvery
-		if retry <= 0 {
-			retry = time.Second
-		}
-		select {
-		case <-time.After(retry):
-		case <-attach:
-			return nil, "", errWSHostUnreachable
-		case <-listCtx.Done():
-			return nil, "", errWSHostUnreachable
-		}
-		instances, err = client.ListStudios(listCtx)
-	}
+	instances, err := p.awaitAttach(listCtx, client, p.attachWindowOr())
 	if err != nil {
 		if IsMethodNotFound(err) {
 			return nil, "", fmt.Errorf("Studio MCP exposes no instance listing; update Roblox Studio")

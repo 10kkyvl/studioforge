@@ -49,7 +49,7 @@ func (p *Provisioner) ListSessions(ctx context.Context) (Sessions, error) {
 	if err != nil {
 		return Sessions{}, nil
 	}
-	instances, _, err := p.probe(ctx, launch)
+	instances, _, err := p.glance(ctx, launch)
 	if errors.Is(err, errWSHostUnreachable) {
 		return Sessions{Detected: true, Blocked: true}, nil
 	}

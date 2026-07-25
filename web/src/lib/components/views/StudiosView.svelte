@@ -6,6 +6,11 @@
   export let projects: Project[];
   export let projectName: (id: string) => string;
   export let onBind: (sessionId: string, projectId: string) => void;
+  // onRecognise records this instance's reported name as the bound project's
+  // roblox.com place name. A place opened from Roblox is reported by that name
+  // and by no file name, so without it a run refuses the very Studio the
+  // operator is working in.
+  export let onRecognise: (projectId: string, placeName: string) => void = () => {};
   // detected is true until a refresh reports otherwise, so a daemon that has
   // never run a real discovery pass (e.g. --mock, or before the operator's
   // first click) does not read as "Studio MCP not detected" by default.
@@ -67,6 +72,15 @@
               >{/each}</select
           ></label
         >
+        {#if studio.projectId && studio.name}
+          <button
+            class="recognise"
+            type="button"
+            title={$translate('studios.recogniseHint')}
+            onclick={() => onRecognise(studio.projectId ?? '', studio.name)}
+            >{$translate('studios.recognise')}</button
+          >
+        {/if}
       </article>
     {:else}<div class="empty">{$translate('studios.empty')}</div>{/each}
   </section>
