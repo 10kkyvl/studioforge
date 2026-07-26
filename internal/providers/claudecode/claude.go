@@ -272,6 +272,9 @@ type handle struct {
 	result      providers.Result
 	streamError string
 	stderr      strings.Builder
+	// shots bounds how many of this run's screenshots reach the operator. Only
+	// readJSON touches it, and there is one of those per run.
+	shots attachments.Publisher
 }
 
 func (h *handle) consume(stdout, stderr io.Reader, cleanup func()) {
@@ -380,6 +383,12 @@ func (h *handle) publishToolImages(event providers.Event) {
 		}
 		path, err := attachments.Save(h.cmd.Dir, decoded)
 		if err != nil {
+			continue
+		}
+		// Capturing is the agent's business; how much of it the operator has to
+		// scroll past is not. Only the first few reach the chat, and never the
+		// same image twice.
+		if !h.shots.Allow(path) {
 			continue
 		}
 		saved = append(saved, path)

@@ -46,6 +46,7 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ### Added
 
+- **Chat images open full size.** A thumbnail is capped at 220x160 so a screenshot does not shove the conversation off the screen, which leaves a whole Studio viewport too small to read. Clicking one — pasted or captured — opens it at full size over the page; click anywhere outside it, the close button, or Escape to dismiss (`web/src/lib/components/views/ChatView.svelte`).
 - **A screenshot the agent takes while it works now appears in the chat.** Until
   now `screen_capture` fed the model's own context and was discarded at the end
   of the turn, so the one participant who could not see what the agent saw was
@@ -57,7 +58,11 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   paths are covered: the in-process loop saves the bridge's decoded image, and
   the Claude adapter pulls the base64 out of the CLI's own `tool_result` blocks,
   which it used to pass through untouched. The prompt asks for a screenshot only
-  when the run's grant actually permits `screen_capture`. Best effort: an image
+  when the run's grant actually permits `screen_capture`, and asks the agent to
+  capture freely for its own checking but to show the operator only what they
+  asked to see. That is backed by a limit rather than left to the model: at most
+  three images per run reach the chat, and never the same image twice, since
+  content-addressed paths make a repeat of an unchanged screen recognisable. Best effort: an image
   that cannot be decoded or written costs a thumbnail, never the run
   (`internal/attachments`, `internal/providers/openrouter/agentloop.go`,
   `internal/providers/claudecode/claude.go`, `internal/prompts/studio.go`,

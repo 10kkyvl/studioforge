@@ -153,3 +153,39 @@ func TestBlock(t *testing.T) {
 		t.Errorf("Block() = %q, want %q", got, want)
 	}
 }
+
+func TestPublisherAllowsOnlyTheFirstFew(t *testing.T) {
+	var p Publisher
+	for i := 0; i < MaxPublishedPerRun; i++ {
+		if !p.Allow(Dir + "/shot-" + string(rune('a'+i)) + ".png") {
+			t.Fatalf("image %d was refused inside the limit", i)
+		}
+	}
+	if p.Allow(Dir + "/shot-overflow.png") {
+		t.Errorf("more than %d images reached the operator", MaxPublishedPerRun)
+	}
+}
+
+// Paths are content-addressed, so the same unchanged screen captured twice is
+// the same path — showing it again tells the operator nothing.
+func TestPublisherRefusesARepeatOfTheSameImage(t *testing.T) {
+	var p Publisher
+	const same = Dir + "/2026-07-26-abc123def456.png"
+	if !p.Allow(same) {
+		t.Fatal("the first showing must be allowed")
+	}
+	if p.Allow(same) {
+		t.Error("the same image was shown twice")
+	}
+	// A repeat must not consume the budget either.
+	if !p.Allow(Dir + "/other.png") {
+		t.Error("a repeat consumed one of the allowed slots")
+	}
+}
+
+func TestPublisherRefusesAnEmptyPath(t *testing.T) {
+	var p Publisher
+	if p.Allow("") {
+		t.Error("an empty path is not an image")
+	}
+}

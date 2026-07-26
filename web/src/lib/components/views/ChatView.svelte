@@ -101,6 +101,11 @@
   let error = '';
   let errorRetry: (() => void) | null = null;
   let sentRunId: string | null = null;
+  // The image currently opened full-size. Chat thumbnails are deliberately
+  // small so a screenshot does not shove the conversation off the screen, which
+  // leaves them too small to actually read — a Studio capture is a whole
+  // viewport scaled into 220px. Clicking one opens it at full size.
+  let lightboxSrc: string | null = null;
   let runDiff: RunDiff | null = null;
   let loadingDiff = false;
   let confirmingRollback = false;
@@ -1157,12 +1162,20 @@
             {#if parsed.images.length > 0 && projectId}
               <div class="message-images">
                 {#each parsed.images as image (image)}
-                  <img
-                    class="message-image"
-                    src={attachmentUrl(projectId, image)}
-                    alt=""
-                    loading="lazy"
-                  />
+                  <button
+                    type="button"
+                    class="message-image-button"
+                    title={$translate('chat.openImage')}
+                    aria-label={$translate('chat.openImage')}
+                    onclick={() => (lightboxSrc = attachmentUrl(projectId, image))}
+                  >
+                    <img
+                      class="message-image"
+                      src={attachmentUrl(projectId, image)}
+                      alt=""
+                      loading="lazy"
+                    />
+                  </button>
                 {/each}
               </div>
             {/if}
@@ -1316,12 +1329,20 @@
                 {#if liveParsed.images.length > 0 && projectId}
                   <div class="message-images">
                     {#each liveParsed.images as image (image)}
-                      <img
-                        class="message-image"
-                        src={attachmentUrl(projectId, image)}
-                        alt=""
-                        loading="lazy"
-                      />
+                      <button
+                        type="button"
+                        class="message-image-button"
+                        title={$translate('chat.openImage')}
+                        aria-label={$translate('chat.openImage')}
+                        onclick={() => (lightboxSrc = attachmentUrl(projectId, image))}
+                      >
+                        <img
+                          class="message-image"
+                          src={attachmentUrl(projectId, image)}
+                          alt=""
+                          loading="lazy"
+                        />
+                      </button>
                     {/each}
                   </div>
                 {/if}
@@ -1611,6 +1632,41 @@
   </article>
 </section>
 
+<!-- Full-size view of a chat image. It is a plain overlay rather than a
+     component of its own: the whole behaviour is "show this one image big,
+     dismiss on anything", and the chat is the only place that needs it. -->
+<svelte:window
+  onkeydown={(event) => {
+    if (event.key === 'Escape' && lightboxSrc) lightboxSrc = null;
+  }}
+/>
+{#if lightboxSrc}
+  <div
+    class="lightbox"
+    role="dialog"
+    aria-modal="true"
+    aria-label={$translate('chat.openImage')}
+    tabindex="-1"
+  >
+    <!-- The backdrop is the dismiss target, and the button under it is what
+         makes that reachable without a mouse. -->
+    <button
+      type="button"
+      class="lightbox-dismiss"
+      aria-label={$translate('chat.closeImage')}
+      onclick={() => (lightboxSrc = null)}
+    ></button>
+    <img class="lightbox-image" src={lightboxSrc} alt="" />
+    <button
+      type="button"
+      class="lightbox-close"
+      title={$translate('chat.closeImage')}
+      aria-label={$translate('chat.closeImage')}
+      onclick={() => (lightboxSrc = null)}>×</button
+    >
+  </div>
+{/if}
+
 <style>
   .chat-layout {
     display: grid;
@@ -1894,12 +1950,73 @@
     gap: 6px;
     margin-top: 8px;
   }
+  .message-image-button {
+    padding: 0;
+    border: 0;
+    background: none;
+    cursor: zoom-in;
+    line-height: 0;
+    border-radius: var(--r-md);
+  }
+  .message-image-button:focus-visible {
+    outline: 2px solid var(--accent, currentColor);
+    outline-offset: 2px;
+  }
   .message-image {
     max-width: 220px;
     max-height: 160px;
     border-radius: var(--r-md);
     border: 1px solid var(--line);
     object-fit: cover;
+    display: block;
+  }
+  .lightbox {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: rgba(0, 0, 0, 0.82);
+  }
+  /* Covers the whole overlay so a click anywhere outside the image dismisses
+     it, while still being a real button for keyboard and screen readers. */
+  .lightbox-dismiss {
+    position: absolute;
+    inset: 0;
+    border: 0;
+    padding: 0;
+    background: none;
+    cursor: zoom-out;
+  }
+  .lightbox-image {
+    position: relative;
+    max-width: 100%;
+    /* Full height minus the padding above, so a tall capture still fits
+       without the overlay scrolling. */
+    max-height: calc(100vh - 48px);
+    object-fit: contain;
+    border-radius: var(--r-md);
+    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+  }
+  .lightbox-close {
+    position: absolute;
+    top: 12px;
+    right: 16px;
+    width: 36px;
+    height: 36px;
+    display: grid;
+    place-items: center;
+    font-size: 24px;
+    line-height: 1;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.45);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 50%;
+    cursor: pointer;
+  }
+  .lightbox-close:hover {
+    background: rgba(0, 0, 0, 0.7);
   }
   .bubble-meta {
     display: flex;

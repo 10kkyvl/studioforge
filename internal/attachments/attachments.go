@@ -160,6 +160,51 @@ func ValidRef(projectPath, ref string) bool {
 	return err == nil
 }
 
+// MaxPublishedPerRun bounds how many screenshots one run may put in front of
+// the operator.
+//
+// An agent should capture as often as it needs to see something — that is what
+// the tool is for, and the image costs whoever is running the model either way.
+// Publishing is the separate question: every published image is re-read by the
+// operator's browser and, on a provider that bills for them, is not free to
+// keep in the conversation. So the first few reach the chat and the rest do
+// not, which keeps a run that photographs each of its twenty steps from
+// flooding a thread while leaving "show me two screenshots" working exactly as
+// asked.
+const MaxPublishedPerRun = 3
+
+// Publisher decides which of a run's screenshots reach the operator. The zero
+// value is ready to use and is not safe for concurrent use by several
+// goroutines; one run's tool loop is single-threaded, which is where it lives.
+type Publisher struct {
+	published map[string]bool
+	count     int
+}
+
+// Allow reports whether this image should be put in front of the operator, and
+// records it if so.
+//
+// A repeat of an image already shown is refused whatever the count: paths are
+// content-addressed, so the same unchanged screen captured three times in a row
+// is the same path, and showing it again tells the operator nothing.
+func (p *Publisher) Allow(path string) bool {
+	if path == "" {
+		return false
+	}
+	if p.published[path] {
+		return false
+	}
+	if p.count >= MaxPublishedPerRun {
+		return false
+	}
+	if p.published == nil {
+		p.published = map[string]bool{}
+	}
+	p.published[path] = true
+	p.count++
+	return true
+}
+
 // Block renders image paths as the section the chat renders thumbnails from.
 // Returns "" for no paths, so a caller can append it unconditionally.
 func Block(paths []string) string {

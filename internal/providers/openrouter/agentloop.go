@@ -350,6 +350,9 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, priorM
 	// the turn itself; it raises this and the loop stops after the current batch
 	// of tool calls has been answered.
 	var askedQuestion atomic.Bool
+	// shots bounds how much of this run's photography the operator has to look
+	// at; the agent may capture as often as it likes.
+	var shots attachments.Publisher
 	toolset, err := agenttools.NewToolSet(resolveProfile(req.PermissionProfile), agenttools.Options{
 		Workspace:  ws,
 		Git:        gitops.New(),
@@ -663,9 +666,13 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, priorM
 					// discarded at the end of the turn, so an agent reporting
 					// "the shop renders correctly" was asking to be taken at its
 					// word about something it alone had looked at.
+					//
+					// Only the first few reach the chat, and never the same
+					// image twice. Capturing is the agent's business; filling a
+					// thread with it is not.
 					if path, err := attachments.SaveDataURL(ws.Root(), res.ImageURL); err != nil {
 						emit(ctx, h, sessionID, providers.Event{Type: "status", RawType: rawType("screenshot"), Payload: map[string]any{"message": "Studio screenshot could not be saved: " + err.Error()}})
-					} else {
+					} else if shots.Allow(path) {
 						emit(ctx, h, sessionID, providers.Event{Type: "message", RawType: rawType("screenshot"), Payload: map[string]any{"text": attachments.Block([]string{path})}})
 					}
 				}
