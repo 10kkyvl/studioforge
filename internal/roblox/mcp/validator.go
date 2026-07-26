@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"time"
 
@@ -69,6 +70,19 @@ const (
 	defaultValidatePollInterval = 3 * time.Second
 )
 
+// captureTimeout bounds the playtest's screenshot on its own, separately from
+// the pass around it. A Studio has been observed accepting screen_capture and
+// never answering it; by the time the capture runs the console window has
+// already closed and the outcome is decided, so a capture that hangs must cost
+// the picture and nothing else.
+const captureTimeout = 20 * time.Second
+
+// captureID names the capture for Studio, which requires one. It is per call so
+// two passes never collide over the same identifier.
+func captureID() string {
+	return "StudioForge_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+}
+
 // ValidateRequest is one automated playtest validation pass.
 type ValidateRequest struct {
 	Target Target
@@ -112,7 +126,18 @@ type ValidationResult struct {
 // decoded or written costs the loop its visual signal; it must never be the
 // reason a run is reported as failed.
 func (p *Provisioner) capture(ctx context.Context, client *Client, projectPath string) string {
-	raw, err := client.Call(ctx, "screen_capture", nil)
+	// screen_capture takes a required capture_id, and calling it without one
+	// fails outright with "Missing required argument" — which is what this call
+	// did for as long as it has existed, so the loop's screenshot was always
+	// empty and nothing downstream ever had one to show.
+	//
+	// It is also bounded separately from the rest of the pass: an observed
+	// Studio can accept the call and never answer it, and a hung capture must
+	// cost the visual signal rather than the whole validation, which has already
+	// done its real work by this point.
+	captureCtx, cancel := context.WithTimeout(ctx, captureTimeout)
+	defer cancel()
+	raw, err := client.Call(captureCtx, "screen_capture", map[string]any{"capture_id": captureID()})
 	if err != nil {
 		return ""
 	}
