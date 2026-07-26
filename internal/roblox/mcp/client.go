@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -103,6 +104,43 @@ func TextResult(raw json.RawMessage) (string, error) {
 		return "", fmt.Errorf("unexpected Studio MCP tool result: %s", raw)
 	}
 	return result.Content[0].Text, nil
+}
+
+// ImageResult unwraps the first image payload of an MCP tool result, which is
+// how screen_capture returns what it saw: a base64 block alongside whatever text
+// the tool also produced.
+//
+// TextResult refuses a result like this outright — it insists on exactly one
+// text block — which is why the validation loop used to end up with a bare
+// string where an image was available all along.
+func ImageResult(raw json.RawMessage) ([]byte, error) {
+	var result struct {
+		Content []struct {
+			Type string `json:"type"`
+			Data string `json:"data"`
+			// Both spellings appear in the wild; the launcher uses mimeType.
+			MIMEType  string `json:"mimeType"`
+			MediaType string `json:"media_type"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil, fmt.Errorf("decode Studio MCP tool result: %w", err)
+	}
+	if result.IsError {
+		return nil, fmt.Errorf("Studio MCP tool returned an error: %s", raw)
+	}
+	for _, block := range result.Content {
+		if block.Type != "image" || block.Data == "" {
+			continue
+		}
+		data, err := base64.StdEncoding.DecodeString(block.Data)
+		if err != nil {
+			return nil, fmt.Errorf("decode Studio MCP image payload: %w", err)
+		}
+		return data, nil
+	}
+	return nil, errors.New("Studio MCP tool result carried no image")
 }
 
 func (c *Client) SelectStudio(ctx context.Context, instanceID string) error {

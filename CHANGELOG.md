@@ -8,6 +8,42 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ## [Unreleased]
 
+### Fixed
+
+- **`run_command`'s allowlist checked the executable's name, not its identity.**
+  It matched on the basename alone, and the value it had just validated went
+  straight to `exec.CommandContext` with no further checking. A `workspace-write`
+  agent may write files — that is what the profile means — so the bypass was two
+  steps: write `git.cmd` into the project, run `./git.cmd`. The `command` must
+  now be a bare executable name; anything carrying a path separator or a volume
+  is refused. The name is then resolved with `exec.LookPath` and the **resolved
+  absolute path** is what actually runs, with a resolution landing inside the
+  project refused outright — an allowlisted name found in the workspace is the
+  agent's own file, not the tool. `danger-full-access` is unchanged, being
+  explicitly the profile for arbitrary commands. This does not make
+  `workspace-write` a sandbox: the build-tool route stays open by design and
+  `docs/SECURITY.md` says so
+  (`internal/providers/openrouter/agenttools/tool_shell.go`).
+
+### Changed
+
+- **The playtest screenshot is taken at the end of the window, and the agent can
+  now actually see it.** It was captured the instant Play mode was entered,
+  before the place had loaded, so the one visual signal the whole validation loop
+  collects showed a loading screen or an empty baseplate. It now runs after the
+  console window has elapsed, immediately before leaving Play mode. The image
+  itself is stored rather than the bare text reference Studio hands back, so a
+  correction run receives it as a real attachment instead of a path in prose —
+  attachments were otherwise per-user-turn, which excluded exactly the
+  system-initiated turn that needs a picture most, since the console can only
+  reveal script errors while a screenshot is the one signal that can show a
+  platform that never spawned or a menu that rendered wrong. The operator sees it
+  too, on every playtest regardless of outcome: a console can be clean while the
+  menu is unreadable. Fail-open throughout — a capture that cannot be taken,
+  decoded or written costs the loop its visual signal, never the run
+  (`internal/roblox/mcp/validator.go`, `internal/roblox/mcp/client.go`,
+  `internal/scheduler/scheduler.go`, `internal/app/app.go`).
+
 ### Added
 
 - **A screenshot the agent takes while it works now appears in the chat.** Until

@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"time"
+
+	"github.com/10kkyvl/studioforge/internal/attachments"
 )
 
 // ValidationOutcome is the result of one automated Play-mode validation pass.
@@ -76,6 +78,11 @@ type ValidateRequest struct {
 	// PollInterval paces console polls within Window; defaultValidatePollInterval
 	// is used when zero.
 	PollInterval time.Duration
+	// ProjectPath is where a captured screenshot is stored, so the operator and
+	// the correction run can both see it rather than being handed a path into
+	// Studio's own world. Empty means the screenshot is recorded as whatever
+	// text the tool returned, as it was before.
+	ProjectPath string
 }
 
 // ValidationResult is the outcome of a Validate call: what the console said,
@@ -96,9 +103,35 @@ type ValidationResult struct {
 	Window time.Duration
 }
 
-// Validate runs one automated playtest: enter Play mode, capture a
-// screenshot, poll the console for Window, exit Play mode, and classify what
-// the console said. It never fails a run — every early-exit path reports
+// capture takes the playtest's one screenshot and returns how the result should
+// refer to it: a path inside the project's attachments when the image itself
+// could be saved, so the operator and a correction run can both look at it, and
+// otherwise whatever text the tool returned, which is all this used to have.
+//
+// Fail-open like everything else in the pass. A screenshot that cannot be taken,
+// decoded or written costs the loop its visual signal; it must never be the
+// reason a run is reported as failed.
+func (p *Provisioner) capture(ctx context.Context, client *Client, projectPath string) string {
+	raw, err := client.Call(ctx, "screen_capture", nil)
+	if err != nil {
+		return ""
+	}
+	if projectPath != "" {
+		if image, err := ImageResult(raw); err == nil {
+			if path, err := attachments.Save(projectPath, image); err == nil {
+				return path
+			}
+		}
+	}
+	if text, err := TextResult(raw); err == nil {
+		return text
+	}
+	return ""
+}
+
+// Validate runs one automated playtest: enter Play mode, poll the console for
+// Window, capture a screenshot, exit Play mode, and classify what the console
+// said. It never fails a run — every early-exit path reports
 // Inconclusive with a Notice, mirroring Provision's own fail-open behavior,
 // because a broken Studio connection here means "no signal", not "the
 // playtest failed".
@@ -137,13 +170,6 @@ func (p *Provisioner) Validate(ctx context.Context, req ValidateRequest) Validat
 	// fails or the console never yields a usable signal.
 	defer func() { _, _ = client.Call(ctx, "start_stop_play", nil) }()
 
-	screenshot := ""
-	if raw, err := client.Call(ctx, "screen_capture", nil); err == nil {
-		if text, err := TextResult(raw); err == nil {
-			screenshot = text
-		}
-	}
-
 	window := req.Window
 	if window <= 0 {
 		window = defaultValidateWindow
@@ -174,6 +200,14 @@ func (p *Provisioner) Validate(ctx context.Context, req ValidateRequest) Validat
 			break
 		}
 	}
+
+	// Captured here, at the end of the window rather than the start: a shot
+	// taken the instant Play mode was entered is of a place that has not
+	// finished loading, which is why the one visual signal the whole loop
+	// collects used to show a loading screen or an empty baseplate. This is the
+	// last thing before the deferred start_stop_play takes the session out of
+	// Play mode.
+	screenshot := p.capture(ctx, client, req.ProjectPath)
 
 	outcome, errs := classifyConsole(console.String())
 	result := ValidationResult{Outcome: outcome, Console: console.String(), Errors: errs, Screenshot: screenshot, Window: window}

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/10kkyvl/studioforge/internal/attachments"
 	"github.com/10kkyvl/studioforge/internal/events"
 	"github.com/10kkyvl/studioforge/internal/gitcheckpoint"
 	"github.com/10kkyvl/studioforge/internal/memory"
@@ -821,6 +822,14 @@ func (m *Manager) emitValidation(j Job, validation ValidationResult, outcome Val
 		payload["notice"] = validation.Notice
 	}
 	m.emit(models.Run{ID: j.RunID, ProjectID: j.ProjectID}, j.AgentID, "validation", "scheduler.validation", payload)
+	// The operator sees what the playtest saw, whatever it concluded. A passing
+	// run is exactly when a screenshot is worth having and nothing was going to
+	// schedule a correction to carry it: the console can be clean while the menu
+	// is unreadable.
+	if attachments.ValidRef(j.WorkingDirectory, validation.Screenshot) {
+		m.emit(models.Run{ID: j.RunID, ProjectID: j.ProjectID}, j.AgentID, "message", "scheduler.playtest_screenshot",
+			map[string]any{"text": attachments.Block([]string{validation.Screenshot})})
+	}
 }
 
 // scheduleCorrection submits a follow-up run for a failed validation,
@@ -872,15 +881,29 @@ func (m *Manager) scheduleCorrection(ctx context.Context, j *Job, sessionID stri
 // Shared by scheduleCorrection (submitted immediately) and
 // proposeCorrectionDecision (submitted only if an operator approves it).
 func buildCorrectionJob(j *Job, sessionID string, validation ValidationResult) Job {
+	prompt := correctionPrompt(validation)
+	// The playtest screenshot travels as a real attachment, not as a path in
+	// prose. Attachments are otherwise per-user-turn, and a correction is
+	// system-initiated — which excluded exactly the turn that needs an image
+	// most, since the console can only ever reveal script errors while the
+	// screenshot is the one signal capable of showing a platform that never
+	// spawned or a menu that rendered wrong. It is carried only when the
+	// validator actually stored an image; a bare path from a Studio that
+	// returned no image stays in the prose, where it always was.
+	var carried []string
+	if attachments.ValidRef(j.WorkingDirectory, validation.Screenshot) {
+		carried = append(carried, validation.Screenshot)
+		prompt = strings.TrimRight(prompt, "\n") + "\n\n" + attachments.Block(carried)
+	}
 	return Job{
 		ProjectID: j.ProjectID, AgentID: j.AgentID, TaskID: j.TaskID,
 		Provider: j.Provider, Model: j.Model, Effort: j.Effort, PermissionProfile: j.PermissionProfile,
 		WorkingDirectory: j.WorkingDirectory, SystemPrompt: j.SystemPrompt,
 		Mode: j.Mode, ThreadID: j.ThreadID, ResumeSessionID: sessionID,
-		MaxBudget: j.MaxBudget, AllowUnverifiedModel: j.AllowUnverifiedModel, Prompt: correctionPrompt(validation),
+		MaxBudget: j.MaxBudget, AllowUnverifiedModel: j.AllowUnverifiedModel, Prompt: prompt,
 		ParentRunID: j.RunID, CorrectionDepth: j.CorrectionDepth + 1,
 		MaxCorrectionRuns: j.MaxCorrectionRuns, ValidateAfterRun: j.ValidateAfterRun,
-		IdempotencyKey: "correction:" + j.RunID,
+		IdempotencyKey: "correction:" + j.RunID, Attachments: carried,
 	}
 }
 
