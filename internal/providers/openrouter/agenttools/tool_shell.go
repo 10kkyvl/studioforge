@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -54,13 +55,74 @@ var interpreterCommands = map[string]bool{
 // eval and is refused with it.
 var refusedSubcommands = map[string]string{"go": "run"}
 
+// allowlistName reduces an executable to the name the allowlist is keyed by.
+func allowlistName(exe string) string {
+	base := strings.ToLower(filepath.Base(exe))
+	for _, suffix := range []string{".exe", ".cmd", ".bat"} {
+		base = strings.TrimSuffix(base, suffix)
+	}
+	return base
+}
+
+// checkCommandIsPlainName refuses an executable that names a location rather
+// than a tool. An allowlisted tool is meant to be invoked by name and found on
+// PATH; the moment a path is accepted, the allowlist checks only the last
+// segment of it, so `./git.cmd` — a file the agent is allowed to write, since
+// writing files is what workspace-write means — passes as git.
+func checkCommandIsPlainName(exe string) string {
+	if strings.ContainsAny(exe, `/\`) || filepath.VolumeName(exe) != "" {
+		return fmt.Sprintf("command must be a bare executable name in workspace-write profile, not a path: %s (use danger-full-access to run a specific file)", exe)
+	}
+	return ""
+}
+
+// resolveWorkspaceCommand turns an allowlisted name into the absolute path that
+// will actually be executed, and refuses if that path turns out to live inside
+// the project.
+//
+// This is the half of the check that cannot be fooled by a filename. PATH is
+// resolved against the same environment the child gets, and a hit inside the
+// workspace means the agent wrote the thing it is asking us to run — an
+// allowlisted name found there is its own file, not the tool.
+//
+// It does not claim to make workspace-write a sandbox: an agent that can write
+// files and run a build tool can still arrange to execute code through a test
+// file or an npm script, which docs/SECURITY.md states plainly. It closes the
+// bypass that needs no build tool at all.
+func resolveWorkspaceCommand(exe, workspaceRoot string) (string, string) {
+	resolved, err := exec.LookPath(exe)
+	if err != nil {
+		return "", fmt.Sprintf("command not found on PATH: %s", exe)
+	}
+	absolute, err := filepath.Abs(resolved)
+	if err != nil {
+		return "", fmt.Sprintf("could not resolve command: %s", exe)
+	}
+	if real, err := filepath.EvalSymlinks(absolute); err == nil {
+		absolute = real
+	}
+	root := workspaceRoot
+	if real, err := filepath.EvalSymlinks(root); err == nil {
+		root = real
+	}
+	if root != "" && pathWithinRoot(root, absolute) {
+		return "", fmt.Sprintf("refusing to run %s: it resolves to %s, inside the project — an allowlisted name found in the workspace is the agent's own file, not the tool", exe, absolute)
+	}
+	return absolute, ""
+}
+
 // checkWorkspaceCommand applies the workspace-write restrictions to an already
 // tokenized command line. An empty return means the command may run.
+//
+// It matches on the name only, which is why it must never be the last word on
+// what actually gets executed: resolveWorkspaceCommand is. A name is not an
+// identity — an agent that may write files can create `git.cmd` in the project
+// and have this function cheerfully recognise it as git.
 func checkWorkspaceCommand(exe string, argv []string) string {
-	base := strings.ToLower(filepath.Base(exe))
-	base = strings.TrimSuffix(base, ".exe")
-	base = strings.TrimSuffix(base, ".cmd")
-	base = strings.TrimSuffix(base, ".bat")
+	if refusal := checkCommandIsPlainName(exe); refusal != "" {
+		return refusal
+	}
+	base := allowlistName(exe)
 	if !runCommandAllowlist[base] {
 		return fmt.Sprintf("command not allowed in workspace-write profile: %s (use danger-full-access for arbitrary commands)", base)
 	}
@@ -118,6 +180,14 @@ func (s *ToolSet) runCommandTool() Tool {
 				if refusal := checkWorkspaceCommand(exe, argv); refusal != "" {
 					return errResult("%s", refusal)
 				}
+				// Run the path we checked, not the name we were handed: the
+				// supervisor does no validation of its own, so whatever reaches
+				// it is what runs.
+				resolved, refusal := resolveWorkspaceCommand(exe, opts.Workspace.Root())
+				if refusal != "" {
+					return errResult("%s", refusal)
+				}
+				exe = resolved
 			}
 			id := fmt.Sprintf("%s-cmd-%d", opts.RunID, s.cmdSeq.Add(1))
 			proc, err := opts.Supervisor.Start(ctx, processes.Spec{

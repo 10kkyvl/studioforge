@@ -82,6 +82,16 @@ directly, and does not open any listener other than the one loopback (or explici
   (`shell: true`) is refused outside `danger-full-access`, `workspace-write` restricts it to a fixed
   allowlist of command names, and `danger-full-access` allows an arbitrary command with the full
   filesystem permissions of the user account — the same ceiling a Claude run already has.
+- **The `workspace-write` command allowlist checks identity, not just the name.** A name is not an
+  identity: matching on the basename alone meant any path ending in an allowlisted name passed, so an
+  agent could write `git.cmd` into the project — which is exactly what `workspace-write` permits —
+  and run `./git.cmd`. Two rules close that. The `command` must be a bare executable name, not a path:
+  anything containing a separator or a volume is refused, because an allowlisted tool is meant to be
+  found on `PATH`. And the name is then resolved with `exec.LookPath` and the **resolved absolute
+  path** is what actually gets executed, with a resolution landing inside the project refused outright
+  — an allowlisted name found in the workspace is the agent's own file, not the tool. This matters
+  because the process supervisor performs no validation of its own; whatever reaches it runs.
+  `danger-full-access` is unaffected, being explicitly the profile for arbitrary commands.
 - **The `workspace-write` command allowlist is a barrier, not a sandbox.** It refuses the direct
   escapes — inline code execution (`node -e`, `node --eval`, `node -p`, `python -c`, `python3 -c`
   and their long forms), `go run`, and `npx`, which fetches and runs an arbitrary package — so an
