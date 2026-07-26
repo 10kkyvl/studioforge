@@ -110,6 +110,9 @@ func StudioSection(access StudioAccess) string {
 	if verifiers := present(permitted, "screen_capture", "get_console_output"); len(verifiers) > 0 {
 		bullets = append(bullets, "Don't assume a script \"just worked\" — confirm with "+orList(verifiers)+" before reporting a visual or gameplay result as done. You cannot see the running game; these are the only things that can tell you what happened.")
 	}
+	if permitted["screen_capture"] {
+		bullets = append(bullets, "Every screen_capture you take is shown to the operator in the chat, so take one whenever you report that something looks right — an interface, an effect, a placed model. They cannot see your run, and a screenshot is the difference between showing them and asking them to take your word for it.")
+	}
 	if permitted["start_stop_play"] {
 		bullets = append(bullets, "start_stop_play changes play state rather than confirming it: use it to enter or leave Play mode, not as evidence that something works.")
 	}

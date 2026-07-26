@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/10kkyvl/studioforge/internal/attachments"
 	"github.com/10kkyvl/studioforge/internal/models"
 )
 
@@ -123,7 +124,7 @@ func TestUploadAttachmentRejectsOversizedFile(t *testing.T) {
 	// reads as image/png — the test isolates the size check from the MIME
 	// check, rather than getting rejected for the wrong reason.
 	oversized := append([]byte{}, tinyPNG...)
-	oversized = append(oversized, make([]byte, maxAttachmentBytes)...)
+	oversized = append(oversized, make([]byte, attachments.MaxBytes)...)
 	rec := postAttachment(t, a, cookie, "demo-obby", "huge.png", oversized)
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
@@ -222,11 +223,11 @@ func TestGetAttachmentHandlerRejectsTraversalPathValues(t *testing.T) {
 }
 
 // A companion secret file just outside the attachments directory proves
-// resolveAttachment refuses to reach it, rather than merely refusing names
+// attachments.Resolve refuses to reach it, rather than merely refusing names
 // that happen to look suspicious.
 func TestResolveAttachmentRejectsTraversal(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, chatAttachmentsDir), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, attachments.Dir), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	secret := filepath.Join(root, "secret.txt")
@@ -234,17 +235,17 @@ func TestResolveAttachmentRejectsTraversal(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"..", "../secret.txt", "../../secret.txt", "a/../../secret.txt", "..\\secret.txt", ".", "", "/etc/passwd"} {
-		if resolved, err := resolveAttachment(root, name); err == nil {
-			t.Errorf("resolveAttachment(%q) = %q, want an error", name, resolved)
+		if resolved, err := attachments.Resolve(root, name); err == nil {
+			t.Errorf("attachments.Resolve(%q) = %q, want an error", name, resolved)
 		}
 	}
 	// A legitimate, single-segment name must still resolve, so the rejection
 	// above is proven to be about traversal specifically, not everything.
-	legit, err := resolveAttachment(root, "2026-07-19-abc123def456.png")
+	legit, err := attachments.Resolve(root, "2026-07-19-abc123def456.png")
 	if err != nil {
 		t.Fatalf("a plain filename must resolve: %v", err)
 	}
-	wantSuffix := filepath.Join(chatAttachmentsDir, "2026-07-19-abc123def456.png")
+	wantSuffix := filepath.Join(attachments.Dir, "2026-07-19-abc123def456.png")
 	if !strings.HasSuffix(legit, wantSuffix) {
 		t.Errorf("resolved=%q, want a suffix of %q", legit, wantSuffix)
 	}

@@ -3,6 +3,7 @@ package claudecode
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/10kkyvl/studioforge/internal/attachments"
 	"github.com/10kkyvl/studioforge/internal/processes"
 	"github.com/10kkyvl/studioforge/internal/providers"
 )
@@ -349,11 +351,91 @@ func (h *handle) readJSON(reader io.Reader) error {
 				h.mu.Unlock()
 			}
 			h.events <- event
+			h.publishToolImages(event)
 		}
 		if err != nil {
 			return err
 		}
 	}
+}
+
+// publishToolImages saves any image a tool returned in this event and announces
+// it as a message the chat renders a thumbnail for.
+//
+// A Studio screenshot rides inside Claude Code's own tool_result JSON, which
+// StudioForge otherwise passes through untouched — so before this, the one
+// participant who could not see what the agent saw was the operator, who is the
+// only one who can tell whether the shop actually looks right. Best effort
+// throughout: a screenshot that cannot be decoded or written is not worth
+// failing a run over, and the run's own transcript still describes it.
+func (h *handle) publishToolImages(event providers.Event) {
+	if event.Type != "tool" || h.cmd == nil || h.cmd.Dir == "" {
+		return
+	}
+	var saved []string
+	for _, data := range toolResultImages(event.Payload) {
+		decoded, err := base64.StdEncoding.DecodeString(data)
+		if err != nil {
+			continue
+		}
+		path, err := attachments.Save(h.cmd.Dir, decoded)
+		if err != nil {
+			continue
+		}
+		saved = append(saved, path)
+	}
+	if len(saved) == 0 {
+		return
+	}
+	h.events <- providers.Event{
+		Type: "message", RawType: "claude.screenshot",
+		Payload: map[string]any{"text": attachments.Block(saved)},
+		At:      time.Now().UTC(),
+	}
+}
+
+// toolResultImages pulls the base64 payloads out of a tool result's image
+// content blocks. Everything is type-asserted rather than unmarshalled into a
+// struct, because this walks the CLI's own JSON: a shape that does not match is
+// a stream carrying something else, not an error worth reporting.
+func toolResultImages(payload any) []string {
+	decoded, ok := payload.(map[string]any)
+	if !ok {
+		return nil
+	}
+	message, ok := decoded["message"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	blocks, ok := message["content"].([]any)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for _, block := range blocks {
+		entry, ok := block.(map[string]any)
+		if !ok || entry["type"] != "tool_result" {
+			continue
+		}
+		inner, ok := entry["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, part := range inner {
+			image, ok := part.(map[string]any)
+			if !ok || image["type"] != "image" {
+				continue
+			}
+			source, ok := image["source"].(map[string]any)
+			if !ok || source["type"] != "base64" {
+				continue
+			}
+			if data, ok := source["data"].(string); ok && data != "" {
+				out = append(out, data)
+			}
+		}
+	}
+	return out
 }
 func (h *handle) readStderr(reader io.Reader) error {
 	r := bufio.NewReader(reader)

@@ -484,7 +484,22 @@ message carries a `studioforge-question` fenced block (step 5 above) — ends th
 way: the run's process has already exited, even though the thread stays resumable and picks up the
 same session once the operator answers.
 
-Two things now write that fence, and the run event's raw type is what tells them apart afterwards. A
+A screenshot an agent takes while it works reaches the operator the same way a
+pasted image does. `screen_capture` returns its image as a base64 content block;
+`internal/attachments` saves it content-addressed under the project's
+`.studioforge/attachments/`, and the provider announces it as an ordinary message
+carrying the `## Attached images` block, which the chat already renders
+thumbnails from — live and again after a reload. Both provider paths do it: the
+in-process loop from the bridge's decoded data URL (`openrouter.screenshot`), and
+the Claude adapter by pulling the base64 out of the CLI's own `tool_result`
+blocks, which it previously passed through untouched (`claude.screenshot`). The
+prompt asks for a screenshot only on runs whose grant actually permits
+`screen_capture`, so a run that cannot take one is never told to. It is best
+effort throughout: an image that cannot be decoded or written costs the operator
+a thumbnail, never the run.
+
+Two things now write the question fence, and the run event's raw type is what
+tells them apart afterwards. A
 model writing it into its own message is the original path, and still the only one Claude and the mock
 provider have. On OpenRouter and NVIDIA the agent instead calls the `studioforge_question` tool, whose
 arguments are checked against the same contract before anything is shown; StudioForge then writes the

@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/10kkyvl/studioforge/internal/attachments"
 	"github.com/10kkyvl/studioforge/internal/gitops"
 	"github.com/10kkyvl/studioforge/internal/prompts"
 	"github.com/10kkyvl/studioforge/internal/providers"
@@ -656,10 +657,22 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, priorM
 				res := router.Execute(ctx, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
 				content = res.Content
 				isError = res.IsError
+				if res.ImageURL != "" {
+					// The operator gets to see what the agent saw. Until now a
+					// screenshot went only into the model's own context and was
+					// discarded at the end of the turn, so an agent reporting
+					// "the shop renders correctly" was asking to be taken at its
+					// word about something it alone had looked at.
+					if path, err := attachments.SaveDataURL(ws.Root(), res.ImageURL); err != nil {
+						emit(ctx, h, sessionID, providers.Event{Type: "status", RawType: rawType("screenshot"), Payload: map[string]any{"message": "Studio screenshot could not be saved: " + err.Error()}})
+					} else {
+						emit(ctx, h, sessionID, providers.Event{Type: "message", RawType: rawType("screenshot"), Payload: map[string]any{"text": attachments.Block([]string{path})}})
+					}
+				}
 				if vision && res.ImageURL != "" {
 					latestStudioImage = res.ImageURL
 				} else if !vision && res.ImageURL != "" {
-					content = "Screenshot captured, but the current model cannot inspect images."
+					content = "Screenshot captured, but the current model cannot inspect images. The operator can see it in the chat."
 				}
 				if content == "" {
 					content = "(no output)"

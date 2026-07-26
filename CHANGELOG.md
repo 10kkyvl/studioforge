@@ -10,6 +10,23 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ### Added
 
+- **A screenshot the agent takes while it works now appears in the chat.** Until
+  now `screen_capture` fed the model's own context and was discarded at the end
+  of the turn, so the one participant who could not see what the agent saw was
+  the operator — who is the only one able to say whether the shop actually looks
+  right. The image is now saved content-addressed into the project's
+  `.studioforge/attachments/` and announced as a message carrying the same
+  `## Attached images` block a pasted image uses, so it renders as a thumbnail
+  live and again after a reload, with no new frontend concept. Both provider
+  paths are covered: the in-process loop saves the bridge's decoded image, and
+  the Claude adapter pulls the base64 out of the CLI's own `tool_result` blocks,
+  which it used to pass through untouched. The prompt asks for a screenshot only
+  when the run's grant actually permits `screen_capture`. Best effort: an image
+  that cannot be decoded or written costs a thumbnail, never the run
+  (`internal/attachments`, `internal/providers/openrouter/agentloop.go`,
+  `internal/providers/claudecode/claude.go`, `internal/prompts/studio.go`,
+  `web/src/lib/components/views/ChatView.svelte`).
+
 - **An agent on OpenRouter or NVIDIA now asks the operator a question with a tool instead of a text
   convention.** `studioforge_question` takes the question and its 2–4 options as schema-validated
   arguments, and StudioForge writes the fenced block itself from them. The model never formats

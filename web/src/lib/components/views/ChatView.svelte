@@ -1304,7 +1304,27 @@
                   </div>
                 </div>
               {:else}
-                <Markdown source={messageText(event.payload)} />
+                {@const liveParsed = parseAttachments(messageText(event.payload))}
+                {#if liveParsed.text}
+                  <Markdown source={liveParsed.text} />
+                {/if}
+                <!-- A screenshot the agent captured mid-run arrives as an
+                     ordinary message carrying the attachments block, the same
+                     shape a pasted image has. Rendering it here as well as in
+                     the history below is what makes it appear while the run is
+                     still going, rather than only once the turn is persisted. -->
+                {#if liveParsed.images.length > 0 && projectId}
+                  <div class="message-images">
+                    {#each liveParsed.images as image (image)}
+                      <img
+                        class="message-image"
+                        src={attachmentUrl(projectId, image)}
+                        alt=""
+                        loading="lazy"
+                      />
+                    {/each}
+                  </div>
+                {/if}
               {/if}
             </div>
           {/if}
