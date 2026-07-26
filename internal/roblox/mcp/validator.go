@@ -71,11 +71,16 @@ const (
 )
 
 // captureTimeout bounds the playtest's screenshot on its own, separately from
-// the pass around it. A Studio has been observed accepting screen_capture and
-// never answering it; by the time the capture runs the console window has
-// already closed and the outcome is decided, so a capture that hangs must cost
-// the picture and nothing else.
-const captureTimeout = 20 * time.Second
+// the pass around it.
+//
+// It is generous because the tool is genuinely slow: a real capture measured
+// about fifteen seconds to come back with a JPEG, and the same call has also
+// been seen not to answer at all. Both need covering — too tight a bound turns
+// a working capture into a miss, and no bound at all lets a wedged one hold the
+// whole validation open, since this inherits the run's context. By the time the
+// capture runs the console window has closed and the outcome is decided, so a
+// capture that never returns costs the picture and nothing else.
+const captureTimeout = 60 * time.Second
 
 // captureID names the capture for Studio, which requires one. It is per call so
 // two passes never collide over the same identifier.
