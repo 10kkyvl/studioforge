@@ -259,13 +259,24 @@ func (m *Manager) SetMCPProvisioner(p MCPProvisioner) {
 type ValidationOutcome string
 
 const (
-	ValidationNone             ValidationOutcome = "none"
-	ValidationPassed           ValidationOutcome = "passed"
+	ValidationNone ValidationOutcome = "none"
+	// ValidationNoErrors names what the playtest actually established rather
+	// than claiming a pass nobody demonstrated.
+	ValidationNoErrors         ValidationOutcome = "no_errors_detected"
 	ValidationFailed           ValidationOutcome = "failed"
 	ValidationInconclusive     ValidationOutcome = "inconclusive"
 	ValidationCorrected        ValidationOutcome = "corrected"
 	ValidationCorrectionFailed ValidationOutcome = "correction_failed"
 )
+
+// ValidationEntry mirrors mcp.ConsoleEntry at the scheduler boundary: one line
+// of Studio console output taken apart into the parts an operator acts on.
+type ValidationEntry struct {
+	Severity string `json:"severity"`
+	Message  string `json:"message"`
+	Script   string `json:"script,omitempty"`
+	Line     int    `json:"line,omitempty"`
+}
 
 // ValidationResult is one run's Studio playtest validation outcome.
 type ValidationResult struct {
@@ -274,6 +285,14 @@ type ValidationResult struct {
 	Errors     []string
 	Screenshot string
 	Notice     string
+	// ClassifiedBy is how the outcome was reached — "structured" from parsed
+	// console records, "phrases" from the fallback matcher — recorded per
+	// validation so the accuracy of each route can be measured later.
+	ClassifiedBy string
+	// Entries are the failing console lines taken apart, so the run view can
+	// show a finding per script and line instead of a wall of console text.
+	// Empty when the console did not parse and phrase matching decided.
+	Entries []ValidationEntry
 	// Window is how long the playtest actually held Play mode. A correction run
 	// is told this, because "no other errors appeared" means something quite
 	// different after thirty seconds than after five minutes, and the agent
@@ -798,7 +817,7 @@ func (m *Manager) runValidation(ctx context.Context, j *Job, grant MCPGrant, lea
 			}
 			m.proposeCorrectionDecision(j, sessionID, validation)
 		}
-	case ValidationPassed:
+	case ValidationNoErrors:
 		if j.ParentRunID != "" {
 			if err := m.store.SetRunValidation(context.Background(), j.ParentRunID, string(ValidationCorrected), ""); err != nil {
 				slog.Error("failed to mark parent run corrected", "parent_run_id", j.ParentRunID, "error", err)
@@ -814,6 +833,12 @@ func (m *Manager) emitValidation(j Job, validation ValidationResult, outcome Val
 	payload := map[string]any{"outcome": string(outcome)}
 	if len(validation.Errors) > 0 {
 		payload["errors"] = validation.Errors
+	}
+	if validation.ClassifiedBy != "" {
+		payload["classifiedBy"] = validation.ClassifiedBy
+	}
+	if len(validation.Entries) > 0 {
+		payload["entries"] = validation.Entries
 	}
 	if validation.Screenshot != "" {
 		payload["screenshot"] = validation.Screenshot

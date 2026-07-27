@@ -68,11 +68,11 @@ plugin loading or dynamic linking.
   publishes a distinct `scheduler.storage_error` event and leaves the row at its last persisted status,
   for `RecoverInterrupted` to pick up as `interrupted` on the next restart. A second
   installable hook, `MCPValidator`, runs after a qualifying Claude run completes: `Manager.run`
-  calls it, persists the resulting `passed`/`failed`/`inconclusive` outcome on the run, publishes it as
+  calls it, persists the resulting `no_errors_detected`/`failed`/`inconclusive` outcome on the run, publishes it as
   a normal run event, and on `failed` schedules a follow-up correction run through the same `Submit`
   path (writer lease, budget check, and its own Git checkpoint all apply) — see "The self-correcting
   playtest validation loop" below. Validation runs under its own cancellable context and aborts to
-  `inconclusive` — never `passed` — the instant the run's write lease is lost, scheduling no correction
+  `inconclusive` — never a pass-like outcome — the instant the run's write lease is lost, scheduling no correction
   and proposing no decision. A correction run's Git checkpoint is bound to its own, already-created run
   id before that run is admitted to the executable queue, so a failed admission never leaves an
   orphaned checkpoint, and correction scheduling is idempotent, keyed on the parent run id. A third
@@ -348,9 +348,23 @@ scheduler's `MCPValidator` hook) is a *second* Studio MCP connection the daemon 
 from the one the agent's own run used (Claude's subprocess or OpenRouter's in-process client, both of
 which have, by this point, already exited or finished their turn). It reuses `Provisioner`'s own
 launcher discovery and instance-selection logic (`probe`/`selectForTarget`) to reach the same Studio
-instance, then on one held-open transport: `start_stop_play` (enter Play mode), `screen_capture`
-(once), polls `get_console_output` for a configurable window (`playtest_window_seconds`, default 30s),
-`start_stop_play` again (exit Play mode), and classifies the collected console text. It only runs for a
+instance, then on one held-open transport: `start_stop_play` (enter Play mode), polls
+`get_console_output` for a configurable window (`playtest_window_seconds`, default 30s) while asking
+`get_studio_state` until Studio confirms it is running, `screen_capture` (once, at the end of the
+window rather than the start, so the shot is of a place that has finished loading), `start_stop_play`
+again (exit Play mode), and classifies the collected console text.
+
+Classification parses that text into records — severity, message, script, line, stack — and decides on
+the parsed severity, so a real error is caught however it is worded and ordinary output is not flagged
+for containing an alarming word. Output that carries neither a severity grade nor a script attribution
+does not parse; that falls back to matching known error phrases, and which route was used is recorded
+per validation (`classifiedBy`) so the accuracy of each is measurable rather than assumed. Because
+Studio answers every poll with the whole buffer rather than what is new, records repeated across polls
+are collapsed before anything is reported. A clean console is reported as `no_errors_detected` — not
+`passed`, which would claim more than the loop shows — and only when `get_studio_state` confirmed the
+place actually entered Play mode; a clean console with no such confirmation is `inconclusive`, since
+"nothing went wrong" and "nothing ran" are otherwise indistinguishable. Unparseable output with no
+phrase hits is `inconclusive` for the same reason. It only runs for a
 job whose provider is Claude or OpenRouter (`scheduler.studioCapable`), non-plan, `workspace-write`
 permission or above, opted in per-agent (`validate_after_run`), and actually holds a Studio grant for
 that run — an absent, ambiguous, or unreachable Studio during validation resolves to `inconclusive`,

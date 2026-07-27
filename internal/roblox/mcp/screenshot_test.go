@@ -71,13 +71,13 @@ func TestValidateCapturesAfterTheConsoleWindow(t *testing.T) {
 	transport := &imagePlaytestTransport{
 		playtestTransport: playtestTransport{
 			studioTransport:  studioTransport{instances: []Instance{{ID: "one", Name: "Place.rbxl"}}},
-			consoleResponses: []string{"Server started", "Player joined"},
+			consoleResponses: []string{"[Output] Server started", "[Output] Player joined"},
 		},
 		imageData: base64.StdEncoding.EncodeToString(tinyPNG),
 	}
 	p := newProvisioner(t, transport)
 	result := p.Validate(context.Background(), fastValidateRequest())
-	if result.Outcome != ValidationPassed {
+	if result.Outcome != ValidationNoErrors {
 		t.Fatalf("outcome=%q notice=%q", result.Outcome, result.Notice)
 	}
 	if transport.screenshotCalls != 1 {
@@ -164,7 +164,7 @@ func TestValidateStaysFailOpenWhenTheCaptureIsUnusable(t *testing.T) {
 	transport := &imagePlaytestTransport{
 		playtestTransport: playtestTransport{
 			studioTransport:  studioTransport{instances: []Instance{{ID: "one", Name: "Place.rbxl"}}},
-			consoleResponses: []string{"Server started"},
+			consoleResponses: []string{"[Output] Server started"},
 		},
 		imageData: "%%%not-base64%%%",
 	}
@@ -172,7 +172,7 @@ func TestValidateStaysFailOpenWhenTheCaptureIsUnusable(t *testing.T) {
 	req := fastValidateRequest()
 	req.ProjectPath = t.TempDir()
 	result := p.Validate(context.Background(), req)
-	if result.Outcome != ValidationPassed {
+	if result.Outcome != ValidationNoErrors {
 		t.Fatalf("outcome=%q, want the console to decide the outcome", result.Outcome)
 	}
 	if result.Screenshot != "" {

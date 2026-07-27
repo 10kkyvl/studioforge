@@ -10,6 +10,20 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ### Fixed
 
+- **The playtest reported `passed` when all it had shown was the absence of eight
+  substrings.** A script that silently does nothing still prints a banner on
+  startup, so the console was non-empty, no marker matched, and the run was
+  reported to the creator as playtested and fine while the game was broken —
+  absence of evidence presented as evidence of absence, which is worse than
+  reporting nothing, because the operator stops looking. The outcome is now
+  called `no_errors_detected` and worded to match in both locales, and it is
+  claimed only when `get_studio_state` confirms the place actually entered Play
+  mode; a clean console without that confirmation is `inconclusive`, since
+  "nothing went wrong" and "nothing ran" are otherwise the same reading. The
+  stored value is migrated so existing runs stay readable. `failed` keeps its
+  meaning and its behaviour (`internal/roblox/mcp/validator.go`,
+  `internal/migrations/sql/015_validation_no_errors_detected.sql`).
+
 - **`run_command`'s allowlist checked the executable's name, not its identity.**
   It matched on the basename alone, and the value it had just validated went
   straight to `exec.CommandContext` with no further checking. A `workspace-write`
@@ -26,6 +40,24 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   (`internal/providers/openrouter/agenttools/tool_shell.go`).
 
 ### Changed
+
+- **The playtest classifies parsed console records instead of matching phrases.**
+  Deciding whether a run broke the game by searching `get_console_output` for
+  eight substrings cost in both directions: a real error phrased unusually was
+  missed, and ordinary output phrased alarmingly spent a correction run — real
+  money against a real budget ceiling — on a problem that did not exist. Console
+  text is now parsed into records (severity, message, script, line, stack) and
+  classified on the severity, so an error is an error however it is worded and
+  the word "error" inside ordinary output is not one. Phrase matching survives
+  only for output carrying neither a severity grade nor a script attribution,
+  and which route decided is recorded per validation (`classifiedBy`) so the
+  accuracy of each is measurable rather than assumed. Output that does not parse
+  and matches no phrase is `inconclusive` rather than pass-like: it establishes
+  no absence of errors. Records repeated across polls are collapsed — Studio
+  answers each poll with the whole buffer rather than what is new, so a single
+  error used to arrive once per remaining tick — and the run view now shows the
+  findings per script and line instead of a wall of console text
+  (`internal/roblox/mcp/console.go`).
 
 - **The playtest screenshot is taken at the end of the window, and the agent can
   now actually see it.** It was captured the instant Play mode was entered,

@@ -63,7 +63,7 @@ func TestValidationSkippedWhenAgentOptedOut(t *testing.T) {
 	called := false
 	manager.SetMCPValidator(func(context.Context, *Job) ValidationResult {
 		called = true
-		return ValidationResult{Outcome: ValidationPassed}
+		return ValidationResult{Outcome: ValidationNoErrors}
 	})
 	job := grantedJob(t)
 	job.ValidateAfterRun = false
@@ -83,7 +83,7 @@ func TestValidationSkippedInPlanMode(t *testing.T) {
 	called := false
 	manager.SetMCPValidator(func(context.Context, *Job) ValidationResult {
 		called = true
-		return ValidationResult{Outcome: ValidationPassed}
+		return ValidationResult{Outcome: ValidationNoErrors}
 	})
 	job := grantedJob(t)
 	job.Mode = "plan"
@@ -103,7 +103,7 @@ func TestValidationSkippedWithoutAStudioGrant(t *testing.T) {
 	called := false
 	manager.SetMCPValidator(func(context.Context, *Job) ValidationResult {
 		called = true
-		return ValidationResult{Outcome: ValidationPassed}
+		return ValidationResult{Outcome: ValidationNoErrors}
 	})
 	run, _, err := manager.Submit(ctx, grantedJob(t))
 	if err != nil {
@@ -121,7 +121,7 @@ func TestValidationSkippedForReadOnlyProfile(t *testing.T) {
 	called := false
 	manager.SetMCPValidator(func(context.Context, *Job) ValidationResult {
 		called = true
-		return ValidationResult{Outcome: ValidationPassed}
+		return ValidationResult{Outcome: ValidationNoErrors}
 	})
 	job := grantedJob(t)
 	job.PermissionProfile = "read-only"
@@ -141,7 +141,7 @@ func TestValidationRunsForOpenRouterWithoutAProvisionerGrant(t *testing.T) {
 	called := false
 	manager.SetMCPValidator(func(context.Context, *Job) ValidationResult {
 		called = true
-		return ValidationResult{Outcome: ValidationPassed}
+		return ValidationResult{Outcome: ValidationNoErrors}
 	})
 	job := grantedJob(t)
 	job.Provider = "openrouter"
@@ -149,25 +149,25 @@ func TestValidationRunsForOpenRouterWithoutAProvisionerGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForRunValidation(t, store, ctx, run.ID, "passed")
+	waitForRunValidation(t, store, ctx, run.ID, "no_errors_detected")
 	if !called {
 		t.Error("an OpenRouter run opted into validation must trigger the validator")
 	}
 }
 
-func TestValidationRunsAndPersistsPassedOutcome(t *testing.T) {
+func TestValidationRunsAndPersistsNoErrorsOutcome(t *testing.T) {
 	manager, _, store, ctx := newHarness(t)
 	withGrant(manager)
 	var gotJob *Job
 	manager.SetMCPValidator(func(_ context.Context, j *Job) ValidationResult {
 		gotJob = j
-		return ValidationResult{Outcome: ValidationPassed, Screenshot: "C:\\shots\\1.png"}
+		return ValidationResult{Outcome: ValidationNoErrors, Screenshot: "C:\\shots\\1.png"}
 	})
 	run, _, err := manager.Submit(ctx, grantedJob(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := waitForRunValidation(t, store, ctx, run.ID, "passed")
+	got := waitForRunValidation(t, store, ctx, run.ID, "no_errors_detected")
 	if got.ValidationScreenshot != "C:\\shots\\1.png" {
 		t.Errorf("validationScreenshot=%q", got.ValidationScreenshot)
 	}
@@ -196,7 +196,7 @@ func TestValidationFailureSchedulesACorrectionRun(t *testing.T) {
 		if j.ParentRunID != "" {
 			// The correction run itself must not recurse into another
 			// correction — its own validator call here is a different test.
-			return ValidationResult{Outcome: ValidationPassed}
+			return ValidationResult{Outcome: ValidationNoErrors}
 		}
 		return ValidationResult{Outcome: ValidationFailed, Errors: []string{"attempt to index nil"}}
 	})
@@ -243,7 +243,7 @@ func TestValidationPassOnACorrectionRunMarksTheParentCorrected(t *testing.T) {
 	manager, _, store, ctx := newHarness(t)
 	withGrant(manager)
 	manager.SetMCPValidator(func(context.Context, *Job) ValidationResult {
-		return ValidationResult{Outcome: ValidationPassed}
+		return ValidationResult{Outcome: ValidationNoErrors}
 	})
 	parent, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "claude", ModelAlias: "balanced", Status: "completed", Phase: "verified", Validation: "failed"}, "")
 	if err != nil {
@@ -296,7 +296,7 @@ func TestValidationHeartbeatsTheLeaseWhileRunning(t *testing.T) {
 	manager.SetMCPValidator(func(context.Context, *Job) ValidationResult {
 		startedOnce.Do(func() { close(validatorStarted) })
 		<-release
-		return ValidationResult{Outcome: ValidationPassed}
+		return ValidationResult{Outcome: ValidationNoErrors}
 	})
 	runA, _, err := manager.Submit(ctx, grantedJob(t))
 	if err != nil {
@@ -325,7 +325,7 @@ func TestValidationHeartbeatsTheLeaseWhileRunning(t *testing.T) {
 	}
 
 	close(release)
-	waitForRunValidation(t, store, ctx, runA.ID, "passed")
+	waitForRunValidation(t, store, ctx, runA.ID, "no_errors_detected")
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		b, err = store.Run(ctx, runB.ID)
@@ -424,7 +424,7 @@ func TestValidationFailureWithinBudgetNeverProposesADecision(t *testing.T) {
 	// this lineage at all.
 	manager.SetMCPValidator(func(_ context.Context, j *Job) ValidationResult {
 		if j.ParentRunID != "" {
-			return ValidationResult{Outcome: ValidationPassed}
+			return ValidationResult{Outcome: ValidationNoErrors}
 		}
 		return ValidationResult{Outcome: ValidationFailed, Errors: []string{"boom"}}
 	})

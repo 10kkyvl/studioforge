@@ -26,6 +26,31 @@
   function decisionFor(runId: string): Decision | undefined {
     return decisions?.find((decision) => decision.runId === runId);
   }
+
+  type PlaytestFinding = { severity: string; message: string; script?: string; line?: number };
+  type PlaytestReport = { notice: string; classifiedBy: string; findings: PlaytestFinding[] };
+
+  // What the playtest actually found, pulled off the validation event rather
+  // than the run record: the run carries only the one-word outcome, and the
+  // per-script findings behind it live in the event's payload. A run with no
+  // validation event yields nothing and the block does not render.
+  function playtestReport(runId: string): PlaytestReport | null {
+    const event = events?.findLast(
+      (candidate) => candidate.runId === runId && candidate.type === 'validation',
+    );
+    const payload = event?.payload;
+    if (!payload || typeof payload !== 'object') return null;
+    const record = payload as Record<string, unknown>;
+    const findings = Array.isArray(record.entries)
+      ? (record.entries as PlaytestFinding[]).filter(
+          (entry) => entry && typeof entry.message === 'string',
+        )
+      : [];
+    const notice = typeof record.notice === 'string' ? record.notice : '';
+    const classifiedBy = typeof record.classifiedBy === 'string' ? record.classifiedBy : '';
+    if (findings.length === 0 && notice === '') return null;
+    return { notice, classifiedBy, findings };
+  }
 </script>
 
 <section class="page-heading">
@@ -144,6 +169,32 @@
           <p>{selectedRun.error}</p>
         </div>
       {/if}
+      {@const report = playtestReport(selectedRun.id)}
+      {#if report}
+        <div class="playtest-panel">
+          <strong>{$translate('runs.playtestFindings')}</strong>
+          {#if report.notice}<p class="playtest-notice">{report.notice}</p>{/if}
+          {#if report.findings.length > 0}
+            <ul class="playtest-findings">
+              {#each report.findings as finding}
+                <li>
+                  {#if finding.script}<code
+                      >{finding.script}{finding.line ? `:${finding.line}` : ''}</code
+                    >{/if}
+                  <span>{finding.message}</span>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+          {#if report.classifiedBy}
+            <p class="playtest-method">
+              {report.classifiedBy === 'structured'
+                ? $translate('runs.playtestParsed')
+                : $translate('runs.playtestPhrases')}
+            </p>
+          {/if}
+        </div>
+      {/if}
     {/if}
     <div class="event-log" aria-live="polite">
       {#if runs.length === 0}<div class="empty">{$translate('runs.emptyList')}</div>
@@ -171,6 +222,32 @@
     text-align: center;
     font-size: var(--fs-sm);
   }
+  .playtest-panel {
+    margin: 0.5rem 0;
+    padding: 0.5rem 0.7rem;
+    border-radius: var(--radius-sm, 6px);
+    background: var(--surface-2);
+    font-size: var(--fs-sm);
+  }
+  .playtest-notice {
+    margin: 0.3rem 0 0;
+    color: var(--muted);
+  }
+  .playtest-findings {
+    margin: 0.4rem 0 0;
+    padding-left: 1.1rem;
+    display: grid;
+    gap: 0.25rem;
+  }
+  .playtest-findings code {
+    margin-right: 0.4rem;
+    color: var(--danger);
+  }
+  .playtest-method {
+    margin: 0.4rem 0 0;
+    color: var(--muted);
+    font-size: var(--fs-xs);
+  }
   .validation-badge {
     display: inline-block;
     margin-left: 0.4rem;
@@ -179,7 +256,7 @@
     font-size: var(--fs-xs);
     background: var(--surface-2);
   }
-  .validation-passed {
+  .validation-no_errors_detected {
     color: var(--success);
   }
   .validation-failed,

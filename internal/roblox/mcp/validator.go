@@ -13,9 +13,20 @@ import (
 type ValidationOutcome string
 
 const (
-	ValidationPassed       ValidationOutcome = "passed"
+	// ValidationNoErrors states what a clean pass actually established: no
+	// script error appeared, and the place was confirmed to be running while
+	// nothing appeared. It is deliberately not called "passed" — nobody played
+	// the game, so a pass is not what was shown.
+	ValidationNoErrors     ValidationOutcome = "no_errors_detected"
 	ValidationFailed       ValidationOutcome = "failed"
 	ValidationInconclusive ValidationOutcome = "inconclusive"
+)
+
+// Classification records how an outcome was reached, so the eventual accuracy
+// of each route is measurable rather than assumed.
+const (
+	ClassifiedStructured = "structured"
+	ClassifiedPhrases    = "phrases"
 )
 
 // errorMarkers are substrings that, case-insensitively, mark a console line as
@@ -34,33 +45,61 @@ var errorMarkers = []string{
 }
 
 // classifyConsole turns raw console text collected during a validation pass
-// into an outcome and the specific lines that caused it. Empty output is
-// inconclusive rather than a pass: silence is not the same as a clean run,
-// and treating it as "passed" would let a Studio that never produced any
-// signal (e.g. the place never actually entered Play mode) look validated.
-func classifyConsole(text string) (ValidationOutcome, []string) {
+// into an outcome, the specific lines that caused it, the parsed entries behind
+// them, and which route reached the verdict.
+//
+// Empty output is inconclusive rather than a pass: silence is not the same as a
+// clean run, and treating it as clean would let a Studio that never produced
+// any signal look validated.
+//
+// Structured parsing decides whenever the text carries Studio's own grading or
+// script attribution, because a severity is what a line is regardless of how it
+// is worded. Phrase matching survives only for output that does not parse, and
+// output that does not parse cannot establish an absence of errors either — it
+// can only report the errors it happened to recognise, so a phrase pass with no
+// hits is inconclusive rather than clean.
+func classifyConsole(text string) (ValidationOutcome, []string, []ConsoleEntry, string) {
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return ValidationInconclusive, nil
+		return ValidationInconclusive, nil, nil, ""
 	}
+
+	entries, structured := ParseConsole(text)
+	if structured {
+		var errs []string
+		var failures []ConsoleEntry
+		for _, entry := range entries {
+			if entry.Failure() {
+				errs = append(errs, entry.Format())
+				failures = append(failures, entry)
+			}
+		}
+		if len(errs) > 0 {
+			return ValidationFailed, errs, failures, ClassifiedStructured
+		}
+		return ValidationNoErrors, nil, nil, ClassifiedStructured
+	}
+
 	var errs []string
+	seen := make(map[string]bool)
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" {
+		if line == "" || seen[line] {
 			continue
 		}
 		lower := strings.ToLower(line)
 		for _, marker := range errorMarkers {
 			if strings.Contains(lower, marker) {
+				seen[line] = true
 				errs = append(errs, line)
 				break
 			}
 		}
 	}
 	if len(errs) > 0 {
-		return ValidationFailed, errs
+		return ValidationFailed, errs, nil, ClassifiedPhrases
 	}
-	return ValidationPassed, nil
+	return ValidationInconclusive, nil, nil, ClassifiedPhrases
 }
 
 // defaultValidateWindow and defaultValidatePollInterval bound an automated
@@ -112,6 +151,13 @@ type ValidationResult struct {
 	Console    string
 	Errors     []string
 	Screenshot string
+	// Entries are the failing lines taken apart into script, line and message,
+	// so the run view can show them as records instead of a wall of console
+	// text. Empty when the console did not parse and phrase matching decided.
+	Entries []ConsoleEntry
+	// ClassifiedBy is which route reached the outcome, ClassifiedStructured or
+	// ClassifiedPhrases, and empty when there was nothing to classify.
+	ClassifiedBy string
 	// Notice explains an Inconclusive result in terms an operator can act on
 	// (Studio closed mid-playtest, no single instance, malformed responses).
 	Notice string
@@ -212,11 +258,21 @@ func (p *Provisioner) Validate(ctx context.Context, req ValidateRequest) Validat
 	defer ticker.Stop()
 	deadline := time.Now().Add(window)
 	var console strings.Builder
+	playConfirmed := false
 	for {
 		if raw, err := client.Call(ctx, "get_console_output", nil); err == nil {
 			if text, err := TextResult(raw); err == nil && text != "" {
 				console.WriteString(text)
 				console.WriteString("\n")
+			}
+		}
+		// Ask Studio what mode it is actually in, until it says Play. Entering
+		// Play mode is not instant, so a single early check would report Edit on
+		// a session that is about to run — but once it has been confirmed once,
+		// there is nothing left to establish and the call stops.
+		if !playConfirmed {
+			if raw, err := client.Call(ctx, "get_studio_state", nil); err == nil {
+				playConfirmed = parsePlayState(studioStateText(raw)) == "play"
 			}
 		}
 		if !time.Now().Before(deadline) {
@@ -239,10 +295,32 @@ func (p *Provisioner) Validate(ctx context.Context, req ValidateRequest) Validat
 	// Play mode.
 	screenshot := p.capture(ctx, client, req.ProjectPath)
 
-	outcome, errs := classifyConsole(console.String())
-	result := ValidationResult{Outcome: outcome, Console: console.String(), Errors: errs, Screenshot: screenshot, Window: window}
-	if outcome == ValidationInconclusive {
+	outcome, errs, entries, classifiedBy := classifyConsole(console.String())
+	// A clean console is only worth reporting as such if the place was seen
+	// running. Without that, "no errors appeared" is indistinguishable from
+	// "nothing ran", and the second is exactly the case an operator must not be
+	// told looks fine. A failure needs no such confirmation: errors that
+	// appeared, appeared.
+	if outcome == ValidationNoErrors && !playConfirmed {
+		outcome = ValidationInconclusive
+	}
+	result := ValidationResult{
+		Outcome:      outcome,
+		Console:      console.String(),
+		Errors:       errs,
+		Entries:      entries,
+		ClassifiedBy: classifiedBy,
+		Screenshot:   screenshot,
+		Window:       window,
+	}
+	switch {
+	case outcome != ValidationInconclusive:
+	case classifiedBy == "":
 		result.Notice = "playtest produced no console signal"
+	case !playConfirmed:
+		result.Notice = "playtest could not confirm the place entered Play mode, so a clean console proves nothing"
+	default:
+		result.Notice = "playtest console output could not be parsed, so no absence of errors was established"
 	}
 	return result
 }

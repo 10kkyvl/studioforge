@@ -336,7 +336,7 @@ func TestValidationLeaseLossAbortsAsInconclusiveWithoutCorrection(t *testing.T) 
 	manager.SetMCPValidator(func(vctx context.Context, _ *Job) ValidationResult {
 		close(validatorStarted)
 		<-vctx.Done()
-		return ValidationResult{Outcome: ValidationPassed}
+		return ValidationResult{Outcome: ValidationNoErrors}
 	})
 	run, _, err := manager.Submit(ctx, grantedJob(t))
 	if err != nil {

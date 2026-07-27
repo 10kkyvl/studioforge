@@ -373,7 +373,11 @@ func Run(ctx context.Context, opts config.Options) error {
 	schedulerManager.SetMCPValidator(func(ctx context.Context, j *scheduler.Job) scheduler.ValidationResult {
 		window := time.Duration(playtestWindowSeconds.Load()) * time.Second
 		result := studioProvisioner.Validate(ctx, mcp.ValidateRequest{Target: studioTarget(ctx, j.ProjectID), Window: window, ProjectPath: j.WorkingDirectory})
-		return scheduler.ValidationResult{Outcome: scheduler.ValidationOutcome(result.Outcome), Console: result.Console, Errors: result.Errors, Screenshot: result.Screenshot, Notice: result.Notice, Window: result.Window}
+		entries := make([]scheduler.ValidationEntry, 0, len(result.Entries))
+		for _, entry := range result.Entries {
+			entries = append(entries, scheduler.ValidationEntry{Severity: string(entry.Severity), Message: entry.Message, Script: entry.Script, Line: entry.Line})
+		}
+		return scheduler.ValidationResult{Outcome: scheduler.ValidationOutcome(result.Outcome), Console: result.Console, Errors: result.Errors, Entries: entries, ClassifiedBy: result.ClassifiedBy, Screenshot: result.Screenshot, Notice: result.Notice, Window: result.Window}
 	})
 	// A failed validation whose correction budget is exhausted proposes a
 	// Decision instead of silently giving up.
