@@ -52,6 +52,30 @@ func (w *Workspace) Resolve(rel string) (string, error) {
 	return joined, nil
 }
 
+// Contains reports whether a path an outside tool already chose lands inside
+// the workspace, applying the same containment as Resolve without Resolve's
+// insistence on a relative path.
+//
+// Resolve is for StudioForge's own tools, which are told to work in
+// project-relative paths, so an absolute one there is a mistake worth refusing
+// outright. A path arriving from Claude Code is normally absolute and entirely
+// legitimate — the question is only whether it is inside the project — so the
+// two need different front doors onto the same checks.
+func (w *Workspace) Contains(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("empty path")
+	}
+	target := path
+	if !looksAbsolute(target) {
+		target = filepath.Join(w.root, target)
+	}
+	target = filepath.Clean(target)
+	if !pathWithinRoot(w.root, target) {
+		return fmt.Errorf("path is outside the project: %s", path)
+	}
+	return ensureNoSymlinkEscape(w.root, target)
+}
+
 func looksAbsolute(p string) bool {
 	if p == "" {
 		return false

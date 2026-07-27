@@ -1323,6 +1323,11 @@ tbody tr:last-child td {
   font-size: var(--fs-2xs);
   font-style: italic;
 }
+/* The most permissive profile should not read like the other two. */
+.path-hint.danger-hint {
+  color: var(--danger);
+  font-style: normal;
+}
 .wizard-hint {
   margin: 14px 24px 0;
   color: var(--muted);

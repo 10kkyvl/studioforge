@@ -412,6 +412,11 @@ export const en = {
   'perm.readOnly': 'Read only',
   'perm.workspaceWrite': 'Write in project',
   'perm.dangerFull': 'Full access (unsafe)',
+  'perm.readOnlyHint': 'Reads files and observes Studio. Cannot edit anything or run commands.',
+  'perm.workspaceWriteHint':
+    'Edits files in the project and changes the open place. File tools are kept inside the project directory; shell commands are not confined, so a build tool can still reach the rest of your account.',
+  'perm.dangerFullHint':
+    'No confinement at all. On Claude this is bypassPermissions, the most permissive mode it has: path rules are ignored and StudioForge’s guard does not run, so the agent can read and write anywhere your user account can. Choose it only for a project you would let run unattended.',
   'provider.mock': 'Demo (no AI)',
   'team.defaultRole': 'Roblox engineer',
   'overview.lastRun': 'Last run',
@@ -857,6 +862,11 @@ export const ru: Record<TranslationKey, string> = {
   'perm.readOnly': 'Только чтение',
   'perm.workspaceWrite': 'Запись в проекте',
   'perm.dangerFull': 'Полный доступ (опасно)',
+  'perm.readOnlyHint': 'Читает файлы и наблюдает за Studio. Ничего не редактирует и не выполняет команд.',
+  'perm.workspaceWriteHint':
+    'Правит файлы проекта и меняет открытый place. Файловые инструменты удерживаются внутри каталога проекта; команды оболочки не ограничены, поэтому сборочный инструмент всё ещё дотянется до остальной части вашей учётной записи.',
+  'perm.dangerFullHint':
+    'Изоляции нет вообще. У Claude это bypassPermissions — самый разрешительный режим: правила путей игнорируются, guard StudioForge не запускается, поэтому агент читает и пишет везде, куда дотягивается ваша учётная запись. Выбирайте только для проекта, который вы готовы оставить без присмотра.',
   'provider.mock': 'Демо (без ИИ)',
   'team.defaultRole': 'Roblox-инженер',
   'overview.lastRun': 'Последний запуск',

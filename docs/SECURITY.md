@@ -68,12 +68,24 @@ directly, and does not open any listener other than the one loopback (or explici
   the run's system prompt (`internal/projects/context.go`). It also writes a Rojo skeleton on first
   registration if none exists (`internal/projects/scaffold.go`), and builds/writes a place file under
   `.studioforge/` when you open Studio. Beyond that, the two providers differ in a way worth being
-  precise about: **a Claude run's subprocess itself runs with the full filesystem permissions of the
-  user account that started StudioForge.** `claude` is started with its working directory (`cmd.Dir`)
-  set to the project's canonical root, but StudioForge does not sandbox, chroot, or otherwise fence
-  that process's own file access — whatever the CLI (or a tool it invokes) chooses to read or write,
-  it can, anywhere the OS account can reach. Claude Code has no OS-level sandbox from StudioForge's
-  side, only its own tool-approval gate. **An OpenRouter run's file tools are contained by
+  precise about: **a Claude run's subprocess runs with the full filesystem permissions of the user
+  account that started StudioForge, and what narrows that depends on the profile.** `claude` is
+  started with its working directory (`cmd.Dir`) set to the project's canonical root, which is a
+  starting point rather than a boundary. On `read-only` and `workspace-write`, StudioForge now also
+  generates a per-run Claude Code settings file (`--settings`, capability-gated) registering a
+  `PreToolUse` hook — `studioforge claude-guard --root <project>` — that resolves the path each file
+  tool was handed against the project root, using the same containment `agenttools` applies to
+  StudioForge's own tools, and refuses anything outside it. The same file denies credential stores
+  (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gh`) outright, as a backstop for a CLI that honours the
+  settings but not the hook. Three limits are load-bearing and must not be read past: **(1)** this is
+  Claude Code checking itself, not an OS boundary — Claude Code's own sandbox is unavailable on
+  native Windows, which is where StudioForge mostly runs; **(2)** `Bash` is deliberately not guarded,
+  because a shell command cannot be reduced to a path and a heuristic that tried would refuse
+  ordinary work while still missing anything determined, so a command can still reach the rest of the
+  account; **(3)** on `danger-full-access` **none of it applies at all** — that profile maps to
+  `bypassPermissions`, which ignores deny rules and skips `PreToolUse` hooks entirely, so no settings
+  file is generated for it rather than one that claims a containment it does not have. **An
+  OpenRouter run's file tools are contained by
   StudioForge's own code, not by the model's good behavior**: `agenttools.Workspace` resolves every
   path a workspace tool touches (list/read/search/grep/create/edit/patch/mkdir/git) against the
   project's canonical root, rejects absolute paths and `..` traversal, and rejects a symlink used to
@@ -193,8 +205,13 @@ directly, and does not open any listener other than the one loopback (or explici
     non-interactive mode has no user to prompt), `danger-full-access` → `bypassPermissions`
     (everything is auto-approved, including arbitrary commands Claude chooses to run). Plan mode
     (the chat "Plan" toggle) always forces `--permission-mode plan` regardless of the agent's
-    profile. Claude Code enforces this itself; StudioForge applies no additional OS-level sandbox
-    around the Claude process on any tier, including `danger-full-access`.
+    profile. Claude Code enforces this itself; StudioForge applies no OS-level sandbox around the
+    Claude process on any tier. What it does add, on `read-only` and `workspace-write` only, is a
+    generated settings file with a `PreToolUse` path guard and credential-store deny rules (see
+    [Local file access](#local-file-access)) — enforced by Claude Code, not by the operating system,
+    and not covering `Bash`. On `danger-full-access` even that does not apply: `bypassPermissions`
+    ignores deny rules and skips hooks, so that tier is genuinely unconfined and the agent profile
+    picker says so at the point of choosing it.
   - OpenRouter: StudioForge's own `agenttools` package enforces the profile directly, tool by tool,
     rather than delegating to the model or an external sandbox — see
     [Local file access](#local-file-access) for the workspace-containment detail. `read-only` exposes

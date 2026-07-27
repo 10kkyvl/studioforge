@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -26,9 +27,31 @@ const cancelGrace = 3 * time.Second
 
 type Provider struct {
 	Executable string
-	mu         sync.Mutex
-	caps       map[string]bool
-	runs       map[string]*handle
+	// Self locates StudioForge's own executable, which a confined run's
+	// PreToolUse hook is pointed at. A seam for tests; nil means os.Executable.
+	Self func() (string, error)
+	mu   sync.Mutex
+	caps map[string]bool
+	runs map[string]*handle
+}
+
+// self is Self with its default filled in.
+func (p *Provider) self() func() (string, error) {
+	if p.Self != nil {
+		return p.Self
+	}
+	return os.Executable
+}
+
+// withSettings puts --settings in front of everything the CLI parses as flags,
+// leaving the prompt where buildArgs left it: last, behind the -- separator.
+func withSettings(args []string, path string) []string {
+	if len(args) == 0 {
+		return []string{"--settings", path}
+	}
+	out := make([]string, 0, len(args)+2)
+	out = append(out, args[0], "--settings", path)
+	return append(out, args[1:]...)
 }
 
 func New(executable string) *Provider {
@@ -84,7 +107,7 @@ func authLooksValid(out string) bool {
 	return (strings.Contains(lower, "logged in") || strings.Contains(lower, "authenticated") || strings.Contains(lower, `"loggedin": true`) || strings.Contains(lower, `"loggedin":true`)) && !strings.Contains(lower, "not logged")
 }
 func parseCapabilities(help string) map[string]bool {
-	flags := map[string]string{"stream-json": "stream-json", "partial-messages": "--include-partial-messages", "session-id": "--session-id", "resume": "--resume", "model": "--model", "effort": "--effort", "max-turns": "--max-turns", "max-budget": "--max-budget-usd", "mcp-config": "--mcp-config", "strict-mcp": "--strict-mcp-config", "permission-mode": "--permission-mode", "allowed-tools": "--allowedTools", "denied-tools": "--disallowedTools", "json-schema": "--json-schema", "name": "--name", "append-system-prompt": "--append-system-prompt", "agents": "--agents", "forward-subagent-text": "--forward-subagent-text"}
+	flags := map[string]string{"stream-json": "stream-json", "partial-messages": "--include-partial-messages", "session-id": "--session-id", "resume": "--resume", "model": "--model", "effort": "--effort", "max-turns": "--max-turns", "max-budget": "--max-budget-usd", "mcp-config": "--mcp-config", "strict-mcp": "--strict-mcp-config", "permission-mode": "--permission-mode", "allowed-tools": "--allowedTools", "denied-tools": "--disallowedTools", "json-schema": "--json-schema", "name": "--name", "append-system-prompt": "--append-system-prompt", "agents": "--agents", "forward-subagent-text": "--forward-subagent-text", "settings": "--settings"}
 	out := map[string]bool{}
 	for cap, needle := range flags {
 		out[cap] = strings.Contains(help, needle)
@@ -106,7 +129,18 @@ func (p *Provider) start(ctx context.Context, req providers.RunRequest, resume s
 	if !diag.Available {
 		return nil, errors.New(diag.Message)
 	}
+	// Confinement is generated before the argv, because whether it could be
+	// written at all decides whether --settings is passed. An absent or
+	// unwritable one degrades the run rather than failing it, the same way a
+	// missing CLI capability does.
+	releaseSettings := func() {}
 	args := buildArgs(req, resume, diag.Capabilities)
+	if diag.Capabilities["settings"] {
+		if path, release, ok := writeConfinement(req.WorkingDirectory, req.PermissionProfile, req.Mode, req.RunID, p.self()); ok {
+			args = withSettings(args, path)
+			releaseSettings = release
+		}
+	}
 	cmd := exec.CommandContext(ctx, diag.Path, args...)
 	cmd.Dir = req.WorkingDirectory
 	cmd.Env = processes.MinimalEnvironment(req.Environment)
@@ -134,7 +168,12 @@ func (p *Provider) start(ctx context.Context, req providers.RunRequest, resume s
 	p.mu.Lock()
 	p.runs[req.RunID] = h
 	p.mu.Unlock()
-	go h.consume(stdout, stderr, func() { p.mu.Lock(); delete(p.runs, req.RunID); p.mu.Unlock() })
+	go h.consume(stdout, stderr, func() {
+		releaseSettings()
+		p.mu.Lock()
+		delete(p.runs, req.RunID)
+		p.mu.Unlock()
+	})
 	return h, nil
 }
 func buildArgs(req providers.RunRequest, resume string, caps map[string]bool) []string {

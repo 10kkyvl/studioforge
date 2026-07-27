@@ -44,6 +44,8 @@ func run(args []string) error {
 			return importCommand(args[1:])
 		case "mcp-shim":
 			return mcpShimCommand(args[1:])
+		case "claude-guard":
+			return claudeGuardCommand(args[1:])
 		case "maintenance":
 			return maintenanceCommand(args[1:])
 		}
@@ -271,6 +273,27 @@ func mcpShimCommand(args []string) error {
 		CachePath:     *cache,
 		QuestionsOnly: *questionsOnly,
 	})
+}
+
+// claudeGuardCommand is the PreToolUse hook StudioForge registers for a
+// confined Claude run. Claude Code runs it before each file tool call, hands it
+// the call on stdin, and reads its decision from stdout.
+//
+// It always exits zero. A hook that exits non-zero is reported to the operator
+// as a broken hook on every single tool call, which is worse than the gap it
+// was closing — so a guard that cannot read its input, or cannot resolve the
+// project root, defers to Claude Code's own permission flow instead.
+func claudeGuardCommand(args []string) error {
+	fs := flag.NewFlagSet("claude-guard", flag.ContinueOnError)
+	root := fs.String("root", "", "project directory the run is confined to")
+	if err := fs.Parse(args); err != nil {
+		return nil
+	}
+	if *root == "" {
+		return nil
+	}
+	claudecode.Guard(os.Stdin, os.Stdout, *root)
+	return nil
 }
 
 // stringList collects a repeatable flag, so launcher arguments survive with

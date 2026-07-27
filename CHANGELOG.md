@@ -41,6 +41,32 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ### Changed
 
+- **A Claude run's file tools are now held inside the project, on the two
+  profiles where that can be enforced.** Setting the subprocess's working
+  directory is a starting point, not a boundary, so the same StudioForge
+  permission profile meant materially different things depending on the
+  provider: OpenRouter's tools resolve every path through StudioForge's own
+  guard, while a Claude run's file access was whatever Claude Code did on its
+  own. `read-only` and `workspace-write` runs now also get a generated
+  per-run settings file (`--settings`, capability-gated like `--max-turns`, so a
+  CLI without it degrades rather than breaks) registering a `PreToolUse` hook —
+  `studioforge claude-guard --root <project>` — that resolves the path each file
+  tool was handed through the same, already-tested containment and refuses
+  anything outside. Credential stores (`~/.ssh`, `~/.aws`, `~/.gnupg`,
+  `~/.config/gh`) are denied outright as a backstop.
+
+  Three limits are stated rather than papered over. This is Claude Code checking
+  its own settings, not an OS boundary, and Claude Code's own sandbox does not
+  exist on native Windows. `Bash` is deliberately not guarded: a shell command
+  cannot be reduced to a path, and a heuristic that tried would refuse ordinary
+  work — git reading its global config, a build tool writing to a cache — while
+  still missing anything determined. And on `danger-full-access` none of it
+  applies, because `bypassPermissions` ignores deny rules and skips hooks
+  entirely; no settings file is generated for that profile rather than one
+  claiming a containment it does not have. The agent profile picker now says
+  what each profile grants, in both locales, at the point of choosing it
+  (`internal/providers/claudecode/confine.go`, `guard.go`).
+
 - **Claude asks the operator through a tool now, not a fenced block in its own
   prose.** The question card was a text protocol parsed out of free-form model
   output: the agent was told to end its turn with a fence whose info-string was

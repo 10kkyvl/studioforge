@@ -14,6 +14,17 @@
   export let onUpdate: (agent: Agent) => void;
   export let onRun: (agent: Agent) => void;
 
+  // What a profile actually grants differs by provider and, on Claude, by what
+  // its permission mode honours — so the picker says it at the point of
+  // choosing rather than leaving the operator to read SECURITY.md.
+  function permissionHint(
+    permission: string | undefined,
+  ): 'perm.readOnlyHint' | 'perm.workspaceWriteHint' | 'perm.dangerFullHint' {
+    if (permission === 'read-only') return 'perm.readOnlyHint';
+    if (permission === 'danger-full-access') return 'perm.dangerFullHint';
+    return 'perm.workspaceWriteHint';
+  }
+
   // Fetched once and shared by every openrouter model picker instance
   // (the create form and every agent row), rather than each one issuing its
   // own /openrouter/models request.
@@ -127,6 +138,9 @@
         ><option value="danger-full-access">{$translate('perm.dangerFull')}</option></select
       ></label
     >
+    <p class="path-hint" class:danger-hint={draft.permission === 'danger-full-access'}>
+      {$translate(permissionHint(draft.permission))}
+    </p>
     <label
       >{$translate('common.budget')}<input
         type="number"
@@ -225,6 +239,9 @@
             ><option value="danger-full-access">{$translate('perm.dangerFull')}</option></select
           ></label
         >
+        <p class="path-hint" class:danger-hint={agent.permission === 'danger-full-access'}>
+          {$translate(permissionHint(agent.permission))}
+        </p>
         <label
           >{$translate('common.budget')}<input
             type="number"
