@@ -97,18 +97,22 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   eight substrings cost in both directions: a real error phrased unusually was
   missed, and ordinary output phrased alarmingly spent a correction run — real
   money against a real budget ceiling — on a problem that did not exist. Console
-  text is now parsed into records (severity, message, script, line, stack) and
-  classified on the severity, so an error is an error however it is worded and
-  the word "error" inside ordinary output is not one. Phrase matching survives
-  only for output carrying neither a severity grade nor a script attribution,
-  and which route decided is recorded per validation (`classifiedBy`) so the
-  accuracy of each is measurable rather than assumed. Output that does not parse
-  and matches no phrase is `inconclusive` rather than pass-like: it establishes
-  no absence of errors. Records repeated across polls are collapsed — Studio
-  answers each poll with the whole buffer rather than what is new, so a single
-  error used to arrive once per remaining tick — and the run view now shows the
-  findings per script and line instead of a wall of console text
-  (`internal/roblox/mcp/console.go`).
+  text is now parsed into records (message, script, line, stack) and classified
+  on what a live Studio actually leaves to key on — measured against one rather
+  than assumed. `get_console_output` returns bare message text: no timestamps,
+  no severity, no message type. The one structural signal is the attribution
+  Roblox puts on a runtime failure — `AssistantCommand:9: attempt to index nil
+  with 'field'` — and that is trusted however the message is worded. Phrase
+  matching is therefore not a fallback for unparseable text but for the failures
+  Roblox prints with no attribution at all (`is not a valid member of`,
+  `Infinite yield possible on …`), and it is skipped for any line Studio did
+  grade, so the word "error" inside ordinary output is not one. Which route
+  found the failures is recorded per validation (`classifiedBy`) so the accuracy
+  of each is measurable rather than assumed. Records repeated across polls are
+  collapsed, and the run view now shows the findings per script and line instead
+  of a wall of console text (`internal/roblox/mcp/console.go`). The residual gap
+  is stated rather than hidden: an unattributed failure whose wording matches no
+  known phrase is still missed, and `error(msg, 0)` produces exactly that.
 
 - **The playtest screenshot is taken at the end of the window, and the agent can
   now actually see it.** It was captured the instant Play mode was entered,

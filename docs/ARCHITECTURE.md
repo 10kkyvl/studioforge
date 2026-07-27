@@ -354,11 +354,15 @@ instance, then on one held-open transport: `start_stop_play` (enter Play mode), 
 window rather than the start, so the shot is of a place that has finished loading), `start_stop_play`
 again (exit Play mode), and classifies the collected console text.
 
-Classification parses that text into records — severity, message, script, line, stack — and decides on
-the parsed severity, so a real error is caught however it is worded and ordinary output is not flagged
-for containing an alarming word. Output that carries neither a severity grade nor a script attribution
-does not parse; that falls back to matching known error phrases, and which route was used is recorded
-per validation (`classifiedBy`) so the accuracy of each is measurable rather than assumed. Because
+Classification parses that text into records — message, script, line, stack — and decides on them.
+Measured against a live Studio, `get_console_output` returns bare message text with no timestamps and
+no severity, so the only structural signal Roblox leaves is the attribution on a runtime failure
+(`AssistantCommand:9: attempt to index nil with 'field'`); that attribution is trusted however the
+message is worded. Phrase matching is not a fallback for unparseable text but for the failures Roblox
+prints unattributed — `is not a valid member of`, `Infinite yield possible on …` — and it is skipped
+for any line Studio did grade, so an alarming word inside ordinary output is not flagged. Which route
+found the failures is recorded per validation (`classifiedBy`) so the accuracy of each is measurable
+rather than assumed; a clean console records neither, because the Play-mode evidence decided it. Because
 Studio answers every poll with the whole buffer rather than what is new, records repeated across polls
 are collapsed before anything is reported. A clean console is reported as `no_errors_detected` — not
 `passed`, which would claim more than the loop shows — and only when `get_studio_state` confirmed the

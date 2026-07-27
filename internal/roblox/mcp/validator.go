@@ -52,54 +52,62 @@ var errorMarkers = []string{
 // clean run, and treating it as clean would let a Studio that never produced
 // any signal look validated.
 //
-// Structured parsing decides whenever the text carries Studio's own grading or
-// script attribution, because a severity is what a line is regardless of how it
-// is worded. Phrase matching survives only for output that does not parse, and
-// output that does not parse cannot establish an absence of errors either — it
-// can only report the errors it happened to recognise, so a phrase pass with no
-// hits is inconclusive rather than clean.
+// Both routes run over every line, which is what a live Studio turned out to
+// require. `get_console_output` returns bare message text: no timestamps, no
+// severity, no message type. The only structural signal Roblox leaves is the
+// attribution it puts on a runtime failure — "ServerScriptService.Main:12: …" —
+// so that is what "structured" means here.
+//
+// Phrase matching is therefore not a fallback for text that failed to parse. It
+// is the fallback for the errors Roblox prints with no attribution at all —
+// "X is not a valid member of Y", "Infinite yield possible on …" — which are
+// real, common, and carry nothing to key on but their wording. Treating an
+// unattributed console as unparseable would have made a clean run permanently
+// unprovable, since a console with no errors has nothing to attribute.
+//
+// Which route found the failures is what gets recorded; a console with none
+// records nothing, because it was the Play-mode evidence, not either route, that
+// decided the outcome.
 func classifyConsole(text string) (ValidationOutcome, []string, []ConsoleEntry, string) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return ValidationInconclusive, nil, nil, ""
 	}
 
-	entries, structured := ParseConsole(text)
-	if structured {
-		var errs []string
-		var failures []ConsoleEntry
-		for _, entry := range entries {
-			if entry.Failure() {
-				errs = append(errs, entry.Format())
-				failures = append(failures, entry)
-			}
-		}
-		if len(errs) > 0 {
-			return ValidationFailed, errs, failures, ClassifiedStructured
-		}
-		return ValidationNoErrors, nil, nil, ClassifiedStructured
-	}
-
+	entries, _ := ParseConsole(text)
 	var errs []string
-	seen := make(map[string]bool)
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || seen[line] {
+	var failures []ConsoleEntry
+	attributed := false
+	for _, entry := range entries {
+		switch {
+		case entry.Failure():
+			attributed = true
+		case !entry.Graded && matchesErrorPhrase(entry.Message):
+		default:
 			continue
 		}
-		lower := strings.ToLower(line)
-		for _, marker := range errorMarkers {
-			if strings.Contains(lower, marker) {
-				seen[line] = true
-				errs = append(errs, line)
-				break
-			}
-		}
+		errs = append(errs, entry.Format())
+		failures = append(failures, entry)
 	}
 	if len(errs) > 0 {
-		return ValidationFailed, errs, nil, ClassifiedPhrases
+		if attributed {
+			return ValidationFailed, errs, failures, ClassifiedStructured
+		}
+		return ValidationFailed, errs, failures, ClassifiedPhrases
 	}
-	return ValidationInconclusive, nil, nil, ClassifiedPhrases
+	return ValidationNoErrors, nil, nil, ""
+}
+
+// matchesErrorPhrase reports whether a message reads like one of the failures
+// Roblox prints without attaching a script and line to it.
+func matchesErrorPhrase(message string) bool {
+	lower := strings.ToLower(message)
+	for _, marker := range errorMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // defaultValidateWindow and defaultValidatePollInterval bound an automated

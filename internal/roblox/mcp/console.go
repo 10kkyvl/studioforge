@@ -25,6 +25,12 @@ type ConsoleEntry struct {
 	Script   string
 	Line     int
 	Stack    []string
+	// Graded is true when Studio stated this line's severity itself, rather than
+	// leaving it to be inferred. It matters because phrase matching must not
+	// second-guess a grade: a line Studio called ordinary output is ordinary
+	// output however alarming its wording, and overriding that is exactly the
+	// false positive that spends a correction run on nothing.
+	Graded bool
 	// Raw is the line as it arrived, so anything shown to an operator can fall
 	// back to exactly what Studio printed rather than this package's reading of
 	// it.
@@ -122,6 +128,7 @@ func ParseConsole(text string) ([]ConsoleEntry, bool) {
 		if graded {
 			structured = true
 		}
+		entry.Graded = graded
 
 		entry.Message = strings.TrimSpace(body)
 		if entry.Message == "" {

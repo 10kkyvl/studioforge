@@ -30,25 +30,65 @@ func TestClassifyConsoleWithOnlyOrdinaryStructuredOutputFindsNoErrors(t *testing
 	if len(errs) != 0 {
 		t.Errorf("errs=%v, want none", errs)
 	}
-	if by != ClassifiedStructured {
-		t.Errorf("classifiedBy=%q, want structured", by)
+	if by != "" {
+		t.Errorf("classifiedBy=%q, want empty — neither route found anything, so neither decided", by)
 	}
 }
 
-// Output carrying no severity grade and no script attribution cannot establish
-// that nothing went wrong — it can only be searched for the phrases we happen to
-// know. A phrase pass that finds nothing is the absence of evidence, which is
-// exactly what #36 is about not reporting as evidence of absence.
-func TestClassifyConsoleWithUnparseableCleanOutputIsInconclusive(t *testing.T) {
+// A live Studio returns bare message text with no severity and no timestamps, so
+// a clean console has nothing to attribute and nothing to grade. Treating that
+// as unparseable would make a clean run permanently unprovable. What stops it
+// being reported as a pass is the Play-mode evidence in Validate, not the
+// classifier — see TestValidateWithoutPlayModeEvidenceIsNotPassLike.
+func TestClassifyConsoleWithPlainCleanOutputFindsNoErrors(t *testing.T) {
 	outcome, errs, _, by := classifyConsole("Server started\nPlayer joined the game\nRound 1 begins")
-	if outcome != ValidationInconclusive {
-		t.Fatalf("outcome=%q, want inconclusive", outcome)
+	if outcome != ValidationNoErrors {
+		t.Fatalf("outcome=%q, want no_errors_detected", outcome)
 	}
 	if len(errs) != 0 {
 		t.Errorf("errs=%v, want none", errs)
 	}
-	if by != ClassifiedPhrases {
-		t.Errorf("classifiedBy=%q, want phrases", by)
+	if by != "" {
+		t.Errorf("classifiedBy=%q, want empty", by)
+	}
+}
+
+// Roblox prints these two with no script and no line, so nothing but their
+// wording identifies them. Observed live: "NoSuchChildHere is not a valid member
+// of Workspace \"Workspace\"" carries no attribution at all.
+func TestClassifyConsoleCatchesUnattributedRobloxErrors(t *testing.T) {
+	for _, line := range []string{
+		`NoSuchChildHere is not a valid member of Workspace "Workspace"`,
+		"Infinite yield possible on 'ReplicatedStorage:WaitForChild(\"Remote\")'",
+	} {
+		outcome, errs, _, by := classifyConsole("Server started\n" + line)
+		if outcome != ValidationFailed {
+			t.Errorf("%q -> %q, want failed", line, outcome)
+		}
+		if len(errs) != 1 {
+			t.Errorf("%q -> errs=%v, want one", line, errs)
+		}
+		if by != ClassifiedPhrases {
+			t.Errorf("%q -> classifiedBy=%q, want phrases — Roblox attributes neither", line, by)
+		}
+	}
+}
+
+// The shape a live Studio actually returns for a runtime failure, captured by
+// TestRealStudioErrorShape: script, line, message, and nothing else.
+func TestClassifyConsoleReadsTheLiveErrorShape(t *testing.T) {
+	outcome, errs, entries, by := classifyConsole("AssistantCommand:9: attempt to index nil with 'field'")
+	if outcome != ValidationFailed {
+		t.Fatalf("outcome=%q, want failed", outcome)
+	}
+	if by != ClassifiedStructured {
+		t.Errorf("classifiedBy=%q, want structured — the attribution is the signal", by)
+	}
+	if len(entries) != 1 || entries[0].Script != "AssistantCommand" || entries[0].Line != 9 {
+		t.Errorf("entries=%+v", entries)
+	}
+	if len(errs) != 1 {
+		t.Errorf("errs=%v", errs)
 	}
 }
 
@@ -94,12 +134,16 @@ func TestClassifyConsoleCollectsMultipleErrorLines(t *testing.T) {
 // A wording that sounds alarming in ordinary output is what phrase matching gets
 // wrong in the other direction, and what a severity grade settles.
 func TestClassifyConsoleDoesNotFailOnAlarminglyWordedOrdinaryOutput(t *testing.T) {
-	outcome, _, _, by := classifyConsole("[Output] Loaded error handler module\n[Output] stack begin marker written to log")
+	outcome, _, _, by := classifyConsole("[Output] Loaded error handler module\n[Output] recovering from unhandled exception in the queue")
 	if outcome != ValidationNoErrors {
 		t.Fatalf("outcome=%q, want no_errors_detected", outcome)
 	}
-	if by != ClassifiedStructured {
-		t.Errorf("classifiedBy=%q, want structured", by)
+	if by != "" {
+		t.Errorf("classifiedBy=%q, want empty — nothing was found, so nothing decided", by)
+	}
+	// The grade is what protects it: the same wording ungraded still matches.
+	if outcome, _, _, by := classifyConsole("recovering from unhandled exception in the queue"); outcome != ValidationFailed || by != ClassifiedPhrases {
+		t.Errorf("ungraded, the same wording must still be caught: outcome=%q by=%q", outcome, by)
 	}
 }
 
