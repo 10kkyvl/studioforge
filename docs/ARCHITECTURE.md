@@ -753,4 +753,6 @@ flowchart LR
 ```
 
 See [ADR 0001](adr/0001-architecture.md) and [ADR 0002](adr/0002-external-capabilities.md) for the
-accepted decisions behind this shape.
+accepted decisions behind this shape, [ADR 0003](adr/0003-prompt-ab-results.md) for the measured
+before/after behind the prompt changes, and [ADR 0004](adr/0004-agent-authored-tests.md) for the
+design behind running agent-authored tests inside Studio instead of watching the console.

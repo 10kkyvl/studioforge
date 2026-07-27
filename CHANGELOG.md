@@ -39,6 +39,22 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   `docs/SECURITY.md` says so
   (`internal/providers/openrouter/agenttools/tool_shell.go`).
 
+### Documentation
+
+- **A design for agent-authored tests in Studio, with the execution path settled
+  against a live session** ([ADR 0004](docs/adr/0004-agent-authored-tests.md)).
+  The validation loop enters Play mode and watches the console; nobody plays the
+  game, so it can only ever catch what breaks on its own at startup. The
+  load-bearing question was whether a test could be executed inside Studio and a
+  structured result returned, and it now has an answer: `execute_luau` accepts
+  `datamodel_type` `Edit`, `Server` and `Client` — and only those; `Play` is
+  rejected outright — with `Server` and `Client` both reaching the *running*
+  game. `TestService` is fully reachable and `HttpService:JSONEncode` round-trips
+  through the tool result, so a named-case report can come back today with the
+  tool surface StudioForge already has. The ADR answers the six questions #41
+  requires, and recommends building it as two issues while explicitly deferring
+  the accumulating project-level suite, which has an unsolved problem in it.
+
 ### Changed
 
 - **A Claude run's file tools are now held inside the project, on the two
