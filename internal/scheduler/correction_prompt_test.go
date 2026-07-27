@@ -248,7 +248,7 @@ var studioReadOnlyToolsPrefixed = []string{
 }
 
 func TestWithStudioRulesGrantedReadOnlyNamesScreenCaptureNotWorkspaceTools(t *testing.T) {
-	grant := MCPGrant{ConfigPath: "x.json", AllowedTools: studioReadOnlyToolsPrefixed}
+	grant := MCPGrant{ConfigPath: "x.json", Studio: true, AllowedTools: studioReadOnlyToolsPrefixed}
 	got := withStudioRules("Base prompt.", grant)
 
 	if !strings.Contains(got, "screen_capture") {
@@ -262,7 +262,7 @@ func TestWithStudioRulesGrantedReadOnlyNamesScreenCaptureNotWorkspaceTools(t *te
 }
 
 func TestWithStudioRulesEmptyBasePromptReturnsJustTheSection(t *testing.T) {
-	grant := MCPGrant{ConfigPath: "x.json", AllowedTools: studioReadOnlyToolsPrefixed}
+	grant := MCPGrant{ConfigPath: "x.json", Studio: true, AllowedTools: studioReadOnlyToolsPrefixed}
 	withBase := withStudioRules("Base prompt.", grant)
 	wantSection := strings.TrimPrefix(withBase, "Base prompt.\n\n")
 	if wantSection == withBase {

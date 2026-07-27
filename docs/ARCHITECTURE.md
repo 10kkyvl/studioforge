@@ -439,8 +439,8 @@ correction lineage.
    prompt via `prompts.ForRun`: the standing `prompts.HouseRules` (answer in the operator's language;
    the subject is the Roblox project, never StudioForge itself; and how much to write and how far to
    go beyond what was asked), then how this run can put a closed question to the operator — the
-   `studioforge_question` tool on OpenRouter and NVIDIA, the `studioforge-question` text fence
-   everywhere else — then the agent's stored `SystemPrompt`, then the project's two static `.agent/*`
+   `studioforge_question` tool on every coding provider, the `studioforge-question` text fence only
+   for the mock provider — then the agent's stored `SystemPrompt`, then the project's two static `.agent/*`
    context files (`projects.LoadContext`) if present, then the compact Roblox interface rules when
    `prompts.TaskTouchesUI` matches the task text, then a "Relevant project memory" block when
    `internal/memory.Store.Search` (limit 5, by project and the incoming prompt text) returns anything
@@ -512,17 +512,24 @@ prompt asks for a screenshot only on runs whose grant actually permits
 effort throughout: an image that cannot be decoded or written costs the operator
 a thumbnail, never the run.
 
-Two things now write the question fence, and the run event's raw type is what
-tells them apart afterwards. A
-model writing it into its own message is the original path, and still the only one Claude and the mock
-provider have. On OpenRouter and NVIDIA the agent instead calls the `studioforge_question` tool, whose
-arguments are checked against the same contract before anything is shown; StudioForge then writes the
-fence itself from the validated arguments and ends the turn. The model never formats anything, so a
-question that would have been dropped — a sentence before the fence, a different info-string, JSON
-that is nearly right — comes back as a tool error the agent can retry instead. Everything downstream
-of the fence is deliberately unchanged, which is why a question asked either way parks the run and
-renders identically, live and after a page reload. Stuck-run escalation writes the same fence by hand
-under raw type `scheduler.stuck` and is unaffected by any of this.
+A question now reaches the operator by one of two routes, and the run event records which
+(`channel`). Every coding provider uses the tool. OpenRouter and NVIDIA call `studioforge_question` in
+StudioForge's own in-process toolset, which validates the arguments and writes the fence itself from
+them. Claude calls the same tool on StudioForge's own MCP server — `studioforge mcp-shim
+--questions-only`, registered on *every* Claude run rather than only on the ones granted Studio, and
+serving exactly one tool without touching a launcher. That server validates and answers; it has no
+route back to the daemon and needs none, because the CLI reports its own tool calls with their
+arguments on the `stream-json` output `scheduler.emitEvent` already reads, so observing the call there
+is the delivery (`detectQuestionToolCall`). Because a config is now written for every Claude run,
+`--strict-mcp-config` is emitted only for a run that was actually granted Studio (`MCPGrant.Studio`);
+carrying the question server is not a reason to disable the operator's own MCP servers.
+
+Either way the model never formats anything, so a question that would have been dropped — a sentence
+before the fence, a different info-string, JSON that is nearly right — comes back as a tool error the
+agent can retry instead. Everything downstream is deliberately unchanged, which is why a question
+asked either way parks the run and renders identically, live and after a page reload. The fence parser
+remains for the two things that still write one by hand: stuck-run escalation, under raw type
+`scheduler.stuck`, and the mock provider's scripted demo.
 
 ## Configuration flow
 
@@ -629,8 +636,9 @@ of the following is enforced independently:
 - **A Claude run still inherits the operator's own Claude Code configuration** (`CLAUDE.md`, hooks,
   plugins, skills) from the local `claude` installation, and that configuration is billed and executed on
   every run. `--strict-mcp-config` isolates a run from the operator's other configured MCP servers, but it
-  is only emitted alongside `--mcp-config` — i.e. only when Studio access was granted — so a run without
-  Studio access still inherits those other servers. Claude Code's `--bare` flag would isolate a run fully,
+  is emitted only when Studio access was granted, so a run without it still inherits those other servers.
+  Every Claude run carries an `--mcp-config` regardless — StudioForge's own question server lives in one —
+  and that deliberately does not flip the flag on. Claude Code's `--bare` flag would isolate a run fully,
   but it requires `ANTHROPIC_API_KEY` and cannot use OAuth/subscription authentication, so StudioForge does
   not use it.
 

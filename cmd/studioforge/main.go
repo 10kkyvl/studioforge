@@ -252,19 +252,24 @@ func mcpShimCommand(args []string) error {
 	fs := flag.NewFlagSet("mcp-shim", flag.ContinueOnError)
 	launcher := fs.String("launcher", "", "Studio MCP launcher command")
 	cache := fs.String("tool-cache", "", "path remembering the tool list Studio last published")
+	questionsOnly := fs.Bool("questions-only", false, "serve StudioForge's own question tool instead of Studio's tools, without touching a launcher")
 	var launcherArgs stringList
 	fs.Var(&launcherArgs, "launcher-arg", "argument for the launcher command (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *launcher == "" {
+	// The questions-only server reaches nothing outside this process, so it needs
+	// no launcher and must not demand one: it is registered on every Claude run,
+	// including the ones with no Studio anywhere on the machine.
+	if *launcher == "" && !*questionsOnly {
 		return errors.New("mcp-shim requires --launcher")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return mcp.Serve(ctx, os.Stdin, os.Stdout, mcp.ShimOptions{
-		Launch:    mcp.LaunchConfig{Command: *launcher, Args: launcherArgs},
-		CachePath: *cache,
+		Launch:        mcp.LaunchConfig{Command: *launcher, Args: launcherArgs},
+		CachePath:     *cache,
+		QuestionsOnly: *questionsOnly,
 	})
 }
 

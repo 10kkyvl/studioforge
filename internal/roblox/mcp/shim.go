@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/10kkyvl/studioforge/internal/questions"
 )
 
 // The shim is an MCP server that StudioForge puts between an agent and the
@@ -37,6 +39,11 @@ type ShimOptions struct {
 	Launch    LaunchConfig
 	CachePath string
 	Dial      Dialer
+	// QuestionsOnly serves StudioForge's own single-tool server instead of the
+	// Studio passthrough: it advertises the operator question and nothing else,
+	// and never opens a launcher connection. This is the server every Claude run
+	// gets, whether or not it was granted Studio.
+	QuestionsOnly bool
 }
 
 type shim struct {
@@ -103,18 +110,28 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, opts ShimOptions) e
 }
 
 func (s *shim) dispatch(ctx context.Context, method string, params json.RawMessage) (any, *Error) {
+	name := ServerName
+	if s.opts.QuestionsOnly {
+		name = QuestionServerName
+	}
 	switch method {
 	case "initialize":
 		return map[string]any{
 			"protocolVersion": protocolVersion,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": ServerName, "version": "1.0.0"},
+			"serverInfo":      map[string]any{"name": name, "version": "1.0.0"},
 		}, nil
 	case "ping":
 		return map[string]any{}, nil
 	case "tools/list":
+		if s.opts.QuestionsOnly {
+			return map[string]any{"tools": []Tool{questionTool()}}, nil
+		}
 		return map[string]any{"tools": s.toolList(ctx)}, nil
 	case "tools/call":
+		if s.opts.QuestionsOnly {
+			return s.callQuestion(params)
+		}
 		return s.callTool(ctx, params)
 	default:
 		return nil, &Error{Code: codeMethodNotFound, Message: "unknown method " + method}
@@ -151,6 +168,57 @@ func (s *shim) toolList(ctx context.Context) []Tool {
 	s.tools = tools
 	s.mu.Unlock()
 	return tools
+}
+
+// questionTool is the single tool the questions-only server advertises.
+func questionTool() Tool {
+	return Tool{Name: questions.ToolName, Description: questions.Description, InputSchema: questions.SchemaMap()}
+}
+
+// callQuestion answers the operator question entirely inside the shim.
+//
+// Nothing is sent anywhere from here, and nothing needs to be. The shim is a
+// separate process that is never told which run it serves and has no route back
+// to the daemon — which is exactly why Claude was left on the text fence in the
+// first place. It does not need one: StudioForge already reads the CLI's own
+// stream-json output, and a tool call appears in that stream with its arguments
+// attached. Validating here and letting the call be observed there is what turns
+// the question into a schema-checked tool without inventing a transport.
+func (s *shim) callQuestion(params json.RawMessage) (any, *Error) {
+	var call struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+	}
+	if err := json.Unmarshal(params, &call); err != nil {
+		return nil, &Error{Code: -32602, Message: "invalid tools/call params: " + err.Error()}
+	}
+	if call.Name != questions.ToolName {
+		return nil, &Error{Code: codeMethodNotFound, Message: "unknown tool " + call.Name}
+	}
+	var q questions.Question
+	if len(call.Arguments) > 0 {
+		if err := json.Unmarshal(call.Arguments, &q); err != nil {
+			return toolError("invalid arguments: " + err.Error()), nil
+		}
+	}
+	validated, err := q.Validate()
+	if err != nil {
+		// A contract violation is returned as a tool error rather than a protocol
+		// error: the agent can read it, fix the arguments and call again, which is
+		// the entire advantage this has over a malformed fence that simply never
+		// rendered.
+		return toolError(err.Error()), nil
+	}
+	return map[string]any{"content": []any{map[string]any{"type": "text", "text": questions.Accepted(validated)}}}, nil
+}
+
+// toolError is an MCP tool result the model is meant to read and act on, as
+// opposed to a JSON-RPC error, which it is not.
+func toolError(message string) map[string]any {
+	return map[string]any{
+		"isError": true,
+		"content": []any{map[string]any{"type": "text", "text": message}},
+	}
 }
 
 func (s *shim) callTool(ctx context.Context, params json.RawMessage) (any, *Error) {

@@ -234,6 +234,35 @@ func TestBuildArgsPassesAllowedTools(t *testing.T) {
 	}
 }
 
+// Every Claude run now carries an MCP config, because StudioForge's own
+// question server lives in one. Only a run that was actually granted Studio is
+// confined to it — turning the question server into a reason to disable the
+// operator's own MCP servers would be a change nobody asked for.
+func TestBuildArgsConfinesToTheMCPConfigOnlyForAStudioRun(t *testing.T) {
+	caps := map[string]bool{"mcp-config": true, "strict-mcp": true}
+	has := func(args []string, flag string) bool {
+		for _, arg := range args {
+			if arg == flag {
+				return true
+			}
+		}
+		return false
+	}
+
+	studio := buildArgs(providers.RunRequest{RunID: "id", Prompt: "p", MCPConfigPath: "cfg.json", StrictMCP: true}, "", caps)
+	if !has(studio, "--mcp-config") || !has(studio, "--strict-mcp-config") {
+		t.Errorf("a Studio run must be confined to its config: %q", studio)
+	}
+
+	questionOnly := buildArgs(providers.RunRequest{RunID: "id", Prompt: "p", MCPConfigPath: "cfg.json"}, "", caps)
+	if !has(questionOnly, "--mcp-config") {
+		t.Errorf("the question server still has to be registered: %q", questionOnly)
+	}
+	if has(questionOnly, "--strict-mcp-config") {
+		t.Errorf("a run that was never granted Studio must keep the operator's own MCP servers: %q", questionOnly)
+	}
+}
+
 func TestBuildArgsAppendsSystemPrompt(t *testing.T) {
 	caps := map[string]bool{"append-system-prompt": true}
 	args := buildArgs(providers.RunRequest{RunID: "id", Prompt: "hi", SystemPrompt: "You are the orchestrator."}, "", caps)

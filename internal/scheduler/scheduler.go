@@ -18,6 +18,7 @@ import (
 	"github.com/10kkyvl/studioforge/internal/models"
 	"github.com/10kkyvl/studioforge/internal/prompts"
 	"github.com/10kkyvl/studioforge/internal/providers"
+	"github.com/10kkyvl/studioforge/internal/questions"
 	"github.com/10kkyvl/studioforge/internal/resources"
 )
 
@@ -89,6 +90,70 @@ func detectQuestion(text string) (questionBlock, bool) {
 		seen[label] = true
 	}
 	return block, true
+}
+
+// detectQuestionToolCall finds an operator question the agent asked by calling
+// the tool rather than by writing a fenced block in its reply.
+//
+// This is how Claude asks. Claude reaches StudioForge's own MCP server in a
+// separate process that is never told which run it serves and has no route back
+// to the daemon, so the shim cannot deliver the question itself — but it does
+// not have to. The CLI reports its own tool calls, arguments included, on the
+// stream this already reads, so observing the call here is the delivery. The
+// shim's job is to validate before the operator sees anything, which is what
+// makes a malformed question a tool error the agent can retry instead of a card
+// that silently never rendered.
+//
+// The name is matched with or without a provider's namespace prefix, because
+// how a provider decorates tool names is its own business and this package
+// stays provider-neutral.
+func detectQuestionToolCall(payload any) (questionBlock, bool) {
+	decoded, ok := payload.(map[string]any)
+	if !ok {
+		return questionBlock{}, false
+	}
+	message, ok := decoded["message"].(map[string]any)
+	if !ok {
+		return questionBlock{}, false
+	}
+	content, ok := message["content"].([]any)
+	if !ok {
+		return questionBlock{}, false
+	}
+	for _, raw := range content {
+		block, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if kind, _ := block["type"].(string); kind != "tool_use" {
+			continue
+		}
+		name, _ := block["name"].(string)
+		if name != questions.ToolName && !strings.HasSuffix(name, "__"+questions.ToolName) {
+			continue
+		}
+		input, err := json.Marshal(block["input"])
+		if err != nil {
+			continue
+		}
+		var q questions.Question
+		if json.Unmarshal(input, &q) != nil {
+			continue
+		}
+		validated, err := q.Validate()
+		if err != nil {
+			// The shim already refused this and told the agent why, so there is
+			// nothing to publish and nothing to end the turn over: it can correct
+			// the arguments and call again.
+			continue
+		}
+		options := make([]questionOption, 0, len(validated.Options))
+		for _, option := range validated.Options {
+			options = append(options, questionOption{Label: option.Label, Description: option.Description})
+		}
+		return questionBlock{Question: validated.Question, Options: options}, true
+	}
+	return questionBlock{}, false
 }
 
 // messageText pulls the human-readable text out of a provider message
@@ -213,6 +278,10 @@ type Job struct {
 type MCPGrant struct {
 	ConfigPath   string
 	AllowedTools []string
+	// Studio reports whether the config actually reaches Roblox Studio. A config
+	// is written for every Claude run to carry StudioForge's own question server,
+	// so its presence no longer implies a Studio grant.
+	Studio bool
 	Notice       string
 	Context      string
 	Release      func()
@@ -228,7 +297,7 @@ type MCPGrant struct {
 // of tool names and a reason, and knows nothing about what any of them do.
 func withStudioRules(systemPrompt string, grant MCPGrant) string {
 	section := prompts.StudioSection(prompts.StudioAccess{
-		Granted: grant.ConfigPath != "",
+		Granted: grant.Studio,
 		Tools:   grant.AllowedTools,
 		Notice:  grant.Notice,
 	})
@@ -559,7 +628,7 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 	// then and now — the queue wait, the writer lease — happens before anything
 	// knows whether Studio would be available. Composing them from the grant is
 	// what stops a run being told about tools it does not have.
-	req := providers.RunRequest{RunID: j.RunID, ProjectID: j.ProjectID, AgentID: j.AgentID, ThreadID: j.ThreadID, WorkingDirectory: j.WorkingDirectory, Prompt: prompt, SystemPrompt: withStudioRules(j.SystemPrompt, grant), Mode: j.Mode, Model: j.Model, Effort: j.Effort, PermissionProfile: j.PermissionProfile, MaxBudget: j.MaxBudget, AllowUnverifiedModel: j.AllowUnverifiedModel, Scenario: j.Scenario, MCPConfigPath: grant.ConfigPath, AllowedTools: grant.AllowedTools, Subagents: j.Subagents, Attachments: j.Attachments}
+	req := providers.RunRequest{RunID: j.RunID, ProjectID: j.ProjectID, AgentID: j.AgentID, ThreadID: j.ThreadID, WorkingDirectory: j.WorkingDirectory, Prompt: prompt, SystemPrompt: withStudioRules(j.SystemPrompt, grant), Mode: j.Mode, Model: j.Model, Effort: j.Effort, PermissionProfile: j.PermissionProfile, MaxBudget: j.MaxBudget, AllowUnverifiedModel: j.AllowUnverifiedModel, Scenario: j.Scenario, MCPConfigPath: grant.ConfigPath, StrictMCP: grant.Studio, AllowedTools: grant.AllowedTools, Subagents: j.Subagents, Attachments: j.Attachments}
 	resumeSession := j.ResumeSessionID
 	if j.ResumeThread && j.ThreadID != "" {
 		resumeSession, err = m.store.ThreadSessionBefore(ctx, j.ThreadID, j.RunID)
@@ -753,7 +822,7 @@ func (m *Manager) runValidation(ctx context.Context, j *Job, grant MCPGrant, lea
 	validate := m.validate
 	m.mu.Unlock()
 	studioCapable := j.Provider == "claude" || j.Provider == "openrouter"
-	grantOK := j.Provider != "claude" || grant.ConfigPath != ""
+	grantOK := j.Provider != "claude" || grant.Studio
 	if validate == nil || !studioCapable || j.Mode == "plan" || !grantOK || !j.ValidateAfterRun || !isWorkspaceWriteOrAbove(j.PermissionProfile) {
 		return
 	}
@@ -1168,11 +1237,22 @@ func (m *Manager) emitEvent(ctx context.Context, e *execution, event providers.E
 	// exactly the same, which is why a question asked either way survives a
 	// page reload identically.
 	if event.Type == "message" && isFullyBufferedMessage(event.RawType) {
-		if block, ok := detectQuestion(messageText(event.Payload)); ok {
+		block, ok := detectQuestion(messageText(event.Payload))
+		channel := "fence"
+		if !ok {
+			// Claude asks by calling the tool, and its call arrives on this same
+			// stream rather than as text. Both routes end in the identical event,
+			// so everything downstream — the card, the waiting_decision
+			// transition, the answer resuming the session — is untouched by which
+			// one was used.
+			block, ok = detectQuestionToolCall(event.Payload)
+			channel = "tool"
+		}
+		if ok {
 			m.mu.Lock()
 			e.question = true
 			m.mu.Unlock()
-			_, _ = m.hub.Publish(ctx, models.RunEvent{ProjectID: j.ProjectID, RunID: j.RunID, AgentID: j.AgentID, Type: "question", RawType: event.RawType, Payload: map[string]any{"question": block.Question, "options": block.Options}, CreatedAt: event.At})
+			_, _ = m.hub.Publish(ctx, models.RunEvent{ProjectID: j.ProjectID, RunID: j.RunID, AgentID: j.AgentID, Type: "question", RawType: event.RawType, Payload: map[string]any{"question": block.Question, "options": block.Options, "channel": channel}, CreatedAt: event.At})
 		}
 	}
 	_, _ = m.hub.Publish(ctx, models.RunEvent{ProjectID: j.ProjectID, RunID: j.RunID, AgentID: j.AgentID, Type: event.Type, RawType: event.RawType, Payload: event.Payload, CreatedAt: event.At})

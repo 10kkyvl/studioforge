@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"sort"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -44,8 +45,15 @@ func TestAllowedToolsAreScopedByPermissionProfile(t *testing.T) {
 			t.Errorf("danger-full-access must auto-approve %q", reaching)
 		}
 	}
-	if len(full) != len(OfficialTools) {
-		t.Errorf("danger-full-access should cover every official tool: got %d want %d", len(full), len(OfficialTools))
+	// Every Studio tool plus StudioForge's own question, which is not a Studio
+	// tool and is granted on every profile.
+	if len(full) != len(OfficialTools)+1 {
+		t.Errorf("danger-full-access should cover every official tool and the question: got %d want %d", len(full), len(OfficialTools)+1)
+	}
+	for _, profile := range []string{"read-only", "workspace-write", "danger-full-access"} {
+		if !slices.Contains(AllowedTools(profile), QuestionToolFullName) {
+			t.Errorf("%s must be able to ask the operator a question", profile)
+		}
 	}
 	if got := AllowedTools("nonsense"); len(got) != 0 {
 		t.Errorf("an unknown profile must grant nothing, got %q", got)
@@ -56,9 +64,14 @@ func TestAllowedToolsAreScopedByPermissionProfile(t *testing.T) {
 // tiers: it would silently never be auto-approved and would simply stop working.
 func TestEveryOfficialToolIsClassified(t *testing.T) {
 	official := append([]string(nil), OfficialTools...)
-	classified := AllowedTools("danger-full-access")
-	for i, name := range classified {
-		classified[i] = strings.TrimPrefix(name, ToolPrefix)
+	// The question is StudioForge's own tool on its own server, not one of
+	// Studio's, so it is not what this guard is about.
+	var classified []string
+	for _, name := range AllowedTools("danger-full-access") {
+		if name == QuestionToolFullName {
+			continue
+		}
+		classified = append(classified, strings.TrimPrefix(name, ToolPrefix))
 	}
 	sort.Strings(official)
 	sort.Strings(classified)
@@ -69,6 +82,10 @@ func TestEveryOfficialToolIsClassified(t *testing.T) {
 
 func TestAllowedToolsUseServerPrefix(t *testing.T) {
 	for _, tool := range AllowedTools("read-only") {
+		if tool == QuestionToolFullName {
+			// StudioForge's own server, deliberately not Studio's.
+			continue
+		}
 		if !strings.HasPrefix(tool, "mcp__"+ServerName+"__") {
 			t.Errorf("tool %q lacks the MCP server prefix", tool)
 		}

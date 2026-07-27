@@ -29,6 +29,11 @@ type Grant struct {
 	Notice       string
 	Context      string // a snapshot of the open place, for the run's prompt
 	Release      func()
+	// Studio reports whether this grant actually reaches Roblox Studio. It is
+	// explicit rather than inferred from ConfigPath because a config is now
+	// written for every Claude run — StudioForge's own question server lives
+	// there too — so a written config no longer means Studio was granted.
+	Studio bool
 }
 
 // Provisioner decides whether a run may reach Roblox Studio and, if so, writes
@@ -183,7 +188,7 @@ const openWait = 45 * time.Second
 func (p *Provisioner) Provision(ctx context.Context, runID, permissionProfile string, target Target) Grant {
 	tools := AllowedTools(permissionProfile)
 	if len(tools) == 0 {
-		return Grant{Notice: fmt.Sprintf("Studio MCP withheld: permission profile %q grants no Studio tools", permissionProfile)}
+		return p.questionOnlyGrant(runID, fmt.Sprintf("Studio MCP withheld: permission profile %q grants no Studio tools", permissionProfile))
 	}
 	override := ""
 	if p.Override != nil {
@@ -193,18 +198,18 @@ func (p *Provisioner) Provision(ctx context.Context, runID, permissionProfile st
 	if err != nil {
 		// Studio not installed or MCP not enabled is an ordinary local setup, not
 		// a run failure.
-		return Grant{}
+		return p.questionOnlyGrant(runID, "")
 	}
 	instances, state, err := p.probe(ctx, launch)
 	if errors.Is(err, errWSHostUnreachable) {
-		return Grant{Notice: hostTakenNotice}
+		return p.questionOnlyGrant(runID, hostTakenNotice)
 	}
 	if err != nil {
-		return Grant{Notice: "Studio MCP withheld: " + err.Error()}
+		return p.questionOnlyGrant(runID, "Studio MCP withheld: "+err.Error())
 	}
 	instances, state, notice := p.selectForTarget(ctx, launch, target, instances, state)
 	if notice != "" {
-		return Grant{Notice: notice}
+		return p.questionOnlyGrant(runID, notice)
 	}
 	if len(instances) == 0 {
 		// A machine with no Studio open stays silent: plenty of runs never want
@@ -213,18 +218,23 @@ func (p *Provisioner) Provision(ctx context.Context, runID, permissionProfile st
 		// here, yet leaving it silent strips the agent of every Studio tool with
 		// no stated reason, and it improvises a workaround instead.
 		if p.blocked(ctx) {
-			return Grant{Notice: hostTakenNotice}
+			return p.questionOnlyGrant(runID, hostTakenNotice)
 		}
-		return Grant{}
+		return p.questionOnlyGrant(runID, "")
 	}
 	path := filepath.Join(p.Dir, runID+".json")
-	if err := WriteConfig(path, p.agentLaunch(launch)); err != nil {
-		return Grant{Notice: "Studio MCP withheld: " + err.Error()}
+	servers := map[string]LaunchConfig{ServerName: p.agentLaunch(launch)}
+	if question, ok := p.questionLaunch(); ok {
+		servers[QuestionServerName] = question
+	}
+	if err := WriteServers(path, servers); err != nil {
+		return p.questionOnlyGrant(runID, "Studio MCP withheld: "+err.Error())
 	}
 	return Grant{
 		ConfigPath:   path,
 		AllowedTools: tools,
 		Context:      state,
+		Studio:       true,
 		Release:      func() { _ = os.Remove(path) },
 	}
 }
@@ -475,6 +485,46 @@ func (p *Provisioner) agentLaunch(launch LaunchConfig) LaunchConfig {
 		args = append(args, "--tool-cache", filepath.Join(p.Dir, toolCacheName))
 	}
 	return LaunchConfig{Command: exe, Args: args}
+}
+
+// questionLaunch is the command behind StudioForge's own single-tool MCP
+// server. It wraps no launcher and never touches Studio, so unlike agentLaunch
+// there is nothing to fall back to: without the executable's own path there is
+// no server, and the run keeps the text fence it has always had.
+func (p *Provisioner) questionLaunch() (LaunchConfig, bool) {
+	self := p.Exe
+	if self == nil {
+		self = os.Executable
+	}
+	exe, err := self()
+	if err != nil {
+		return LaunchConfig{}, false
+	}
+	return LaunchConfig{Command: exe, Args: []string{"mcp-shim", "--questions-only"}}, true
+}
+
+// questionOnlyGrant is what a run gets when Studio is not granted: StudioForge's
+// own question server and nothing else.
+//
+// Every path through Provision that declines Studio comes through here, because
+// asking the operator a question has nothing to do with whether Studio is open.
+// Leaving those runs with no MCP config at all is what used to send them back to
+// the text fence, which is the failure this replaces.
+func (p *Provisioner) questionOnlyGrant(runID, notice string) Grant {
+	launch, ok := p.questionLaunch()
+	if !ok {
+		return Grant{Notice: notice}
+	}
+	path := filepath.Join(p.Dir, runID+".json")
+	if err := WriteServers(path, map[string]LaunchConfig{QuestionServerName: launch}); err != nil {
+		return Grant{Notice: notice}
+	}
+	return Grant{
+		ConfigPath:   path,
+		AllowedTools: []string{QuestionToolFullName},
+		Notice:       notice,
+		Release:      func() { _ = os.Remove(path) },
+	}
 }
 
 // Status is what the UI needs to say about Studio: how many are open at all,

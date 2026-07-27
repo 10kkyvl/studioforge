@@ -354,9 +354,12 @@ OS credential store StudioForge itself reads the API key from.
   prompts; verify the published SHA-256 before running one.
 - A Claude run inherits the **operator's own Claude Code configuration** — `CLAUDE.md`, hooks,
   plugins, skills — which is billed to every run and makes behavior depend on the local install.
-  `--strict-mcp-config` is only emitted alongside `--mcp-config`, i.e. only when a run was granted
-  Studio access; a run without Studio access still inherits the operator's other configured MCP
-  servers. Claude Code's `--bare` would isolate a run fully, but it requires `ANTHROPIC_API_KEY` and
+  `--strict-mcp-config` is emitted only for a run that was granted Studio access; a run without it
+  still inherits the operator's other configured MCP servers. Every Claude run now carries an
+  `--mcp-config` regardless, because StudioForge's own single-tool question server lives in one, and
+  that deliberately does **not** flip the flag on: carrying the question server is not a reason to
+  disable servers the operator configured for themselves.
+  Claude Code's `--bare` would isolate a run fully, but it requires `ANTHROPIC_API_KEY` and
   cannot use OAuth/subscription authentication, so StudioForge does not use it.
 - **`--max-turns` does not exist in current Claude Code.** StudioForge's capability probe drops the
   flag when `claude --help` does not advertise it, so an agent's configured max-turns limit does not

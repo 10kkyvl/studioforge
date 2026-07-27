@@ -312,7 +312,7 @@ func Run(ctx context.Context, opts config.Options) error {
 			return scheduler.MCPGrant{}
 		}
 		grant := studioProvisioner.Provision(ctx, j.RunID, j.PermissionProfile, studioTarget(ctx, j.ProjectID))
-		return scheduler.MCPGrant{ConfigPath: grant.ConfigPath, AllowedTools: grant.AllowedTools, Notice: grant.Notice, Context: grant.Context, Release: grant.Release}
+		return scheduler.MCPGrant{ConfigPath: grant.ConfigPath, AllowedTools: grant.AllowedTools, Studio: grant.Studio, Notice: grant.Notice, Context: grant.Context, Release: grant.Release}
 	})
 	openrouterProvider.SetMCPConnector(func(ctx context.Context, projectID, runID, permissionProfile string) openrouter.MCPGrant {
 		g := studioProvisioner.ProvisionLive(ctx, permissionProfile, studioTarget(ctx, projectID))

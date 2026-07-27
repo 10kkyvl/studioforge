@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/10kkyvl/studioforge/internal/questions"
 )
 
 type LaunchConfig struct {
@@ -56,6 +58,22 @@ const ServerName = "Roblox_Studio"
 // ToolPrefix is how Claude Code namespaces this server's tools.
 const ToolPrefix = "mcp__" + ServerName + "__"
 
+// QuestionServerName is StudioForge's own MCP server, distinct from the Studio
+// passthrough above. It carries one tool — the operator question — and is
+// registered on every Claude run, including runs that were never granted
+// Studio.
+//
+// It is separate rather than folded into the Studio server for the reason that
+// matters: the Studio server exists only when a run holds a Studio grant, and a
+// question is not a Studio concern. Registering the question on that server
+// would leave every run without Studio falling back to the text fence, which is
+// the failure mode this replaces.
+const QuestionServerName = "studioforge"
+
+// QuestionToolFullName is the operator-question tool as Claude Code namespaces
+// it — the form the allowlist and the run's own event stream both use.
+const QuestionToolFullName = "mcp__" + QuestionServerName + "__" + questions.ToolName
+
 // Registering the server is not enough: in non-interactive mode an unapproved
 // tool call is denied, so Studio tools must also be auto-approved by name. The
 // tiers below mirror the agent permission profiles validated by the API.
@@ -84,11 +102,14 @@ func AllowedTools(permissionProfile string) []string {
 	default:
 		return nil
 	}
-	out := make([]string, 0, len(names))
+	out := make([]string, 0, len(names)+1)
 	for _, name := range names {
 		out = append(out, ToolPrefix+name)
 	}
-	return out
+	// Asking the operator changes nothing in the project, so it is granted on
+	// every profile that gets anything at all — including read-only, which can hit
+	// a genuine fork in the road like any other run.
+	return append(out, QuestionToolFullName)
 }
 
 func concat(groups ...[]string) []string {
@@ -100,7 +121,14 @@ func concat(groups ...[]string) []string {
 }
 
 func WriteConfig(path string, launch LaunchConfig) error {
-	body, err := json.MarshalIndent(Config{MCPServers: map[string]LaunchConfig{ServerName: launch}}, "", "  ")
+	return WriteServers(path, map[string]LaunchConfig{ServerName: launch})
+}
+
+// WriteServers writes an MCP config naming several servers at once. A run gets
+// one config file rather than one per server, because Claude Code builds its
+// toolset from what a single --mcp-config names.
+func WriteServers(path string, servers map[string]LaunchConfig) error {
+	body, err := json.MarshalIndent(Config{MCPServers: servers}, "", "  ")
 	if err != nil {
 		return err
 	}

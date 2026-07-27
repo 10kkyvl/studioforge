@@ -13,10 +13,10 @@ func TestQuestionChannelFollowsWhatTheProviderCarries(t *testing.T) {
 	for provider, want := range map[string]prompts.QuestionChannel{
 		"openrouter": prompts.QuestionTool,
 		"nvidia":     prompts.QuestionTool,
-		// Claude reaches StudioForge's own tools only through the MCP shim, and
-		// the shim is registered only on runs that were granted Studio — so the
-		// tool cannot be promised here. The fence always works.
-		"claude": prompts.QuestionFence,
+		// Claude reaches the same tool through StudioForge's own MCP server, which
+		// is registered on every Claude run rather than only on the ones granted
+		// Studio, so the tool can be promised here too.
+		"claude": prompts.QuestionTool,
 		// The mock provider's scripted demo emits the fence by construction.
 		"mock": prompts.QuestionFence,
 		"":     prompts.QuestionFence,

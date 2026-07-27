@@ -58,7 +58,7 @@ func newProvisioner(t *testing.T, transport Transport) *Provisioner {
 func TestProvisionGrantsAccessForASingleStudio(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "one", Name: "Place.rbxl"}}})
 	grant := p.Provision(context.Background(), "run-1", "workspace-write", Target{})
-	if grant.ConfigPath == "" {
+	if !grant.Studio {
 		t.Fatalf("expected access, got notice %q", grant.Notice)
 	}
 	body, err := os.ReadFile(grant.ConfigPath)
@@ -86,28 +86,35 @@ func TestProvisionGrantsAccessForASingleStudio(t *testing.T) {
 func TestProvisionRefusesAmbiguousStudioSelection(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "one", Name: "A.rbxl"}, {ID: "two", Name: "B.rbxl"}}})
 	grant := p.Provision(context.Background(), "run-1", "workspace-write", Target{})
-	if grant.ConfigPath != "" {
+	if grant.Studio {
 		t.Fatal("two open Studios must not receive access")
 	}
 	if !strings.Contains(grant.Notice, "2 Studio instances") {
 		t.Errorf("notice should say why access was withheld, got %q", grant.Notice)
 	}
-	entries, err := os.ReadDir(p.Dir)
+	// A config is still written — every Claude run carries StudioForge's own
+	// question server — but it must not name Studio, which is what was refused.
+	body, err := os.ReadFile(grant.ConfigPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".json") {
-			t.Errorf("no config may be written when access is refused, found %q", entry.Name())
-		}
+	var config Config
+	if err := json.Unmarshal(body, &config); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := config.MCPServers[ServerName]; ok {
+		t.Error("a refused Studio must not be registered in the run's config")
+	}
+	if _, ok := config.MCPServers[QuestionServerName]; !ok {
+		t.Error("a run refused Studio still has to be able to ask the operator a question")
 	}
 }
 
 func TestProvisionWithoutStudioIsNotAFailure(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{instances: nil})
 	grant := p.Provision(context.Background(), "run-1", "workspace-write", Target{})
-	if grant.ConfigPath != "" || grant.Notice != "" {
-		t.Errorf("no Studio open should be silent, got path=%q notice=%q", grant.ConfigPath, grant.Notice)
+	if grant.Studio || grant.Notice != "" {
+		t.Errorf("no Studio open should be silent, got studio=%v notice=%q", grant.Studio, grant.Notice)
 	}
 }
 
@@ -121,7 +128,7 @@ func TestProvisionExplainsAStudioHeldByAnotherClient(t *testing.T) {
 	p.attachWindow = 100 * time.Millisecond
 	p.retryEvery = 10 * time.Millisecond
 	grant := p.Provision(context.Background(), "run-1", "workspace-write", Target{})
-	if grant.ConfigPath != "" {
+	if grant.Studio {
 		t.Fatal("a Studio held by another client must not receive access")
 	}
 	if !strings.Contains(grant.Notice, "another MCP client") {
@@ -159,15 +166,15 @@ func TestProvisionMissingLauncherIsNotAFailure(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{})
 	p.Override = func() string { return filepath.Join(t.TempDir(), "absent") }
 	grant := p.Provision(context.Background(), "run-1", "workspace-write", Target{})
-	if grant.ConfigPath != "" || grant.Notice != "" {
-		t.Errorf("an absent launcher is an ordinary setup, got path=%q notice=%q", grant.ConfigPath, grant.Notice)
+	if grant.Studio || grant.Notice != "" {
+		t.Errorf("an absent launcher is an ordinary setup, got studio=%v notice=%q", grant.Studio, grant.Notice)
 	}
 }
 
 func TestProvisionSurfacesLauncherErrors(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{callErr: errors.New("launcher exploded")})
 	grant := p.Provision(context.Background(), "run-1", "workspace-write", Target{})
-	if grant.ConfigPath != "" {
+	if grant.Studio {
 		t.Fatal("a broken launcher must not receive access")
 	}
 	if !strings.Contains(grant.Notice, "launcher exploded") {
@@ -179,7 +186,7 @@ func TestProvisionSurfacesLauncherErrors(t *testing.T) {
 func TestProvisionScopesToolsToTheProfile(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "one", Name: "Place.rbxl"}}})
 	grant := p.Provision(context.Background(), "run-1", "read-only", Target{})
-	if grant.ConfigPath == "" {
+	if !grant.Studio {
 		t.Fatalf("read-only should still get access, notice=%q", grant.Notice)
 	}
 	for _, tool := range grant.AllowedTools {
@@ -217,7 +224,7 @@ func TestProbeWaitsForThePluginToAttach(t *testing.T) {
 	p.Running = func(context.Context) bool { return true }
 	p.retryEvery = 10 * time.Millisecond
 	grant := p.Provision(context.Background(), "run-attach", "workspace-write", Target{})
-	if grant.ConfigPath == "" {
+	if !grant.Studio {
 		t.Fatalf("Studio withheld though the plugin attached after a retry: %q", grant.Notice)
 	}
 }
@@ -230,7 +237,7 @@ func TestProvisionExplainsAPluginThatNeverAttaches(t *testing.T) {
 	p.attachWindow = 100 * time.Millisecond
 	p.retryEvery = 10 * time.Millisecond
 	grant := p.Provision(context.Background(), "run-held", "workspace-write", Target{})
-	if grant.ConfigPath != "" {
+	if grant.Studio {
 		t.Fatal("an unreachable WS host must not receive access")
 	}
 	if !strings.Contains(grant.Notice, "another MCP client") {
@@ -245,8 +252,8 @@ func TestProvisionStaysSilentWhenNotConnectedAndStudioClosed(t *testing.T) {
 	p.Running = func(context.Context) bool { return false }
 	start := time.Now()
 	grant := p.Provision(context.Background(), "run-closed", "workspace-write", Target{})
-	if grant.ConfigPath != "" || grant.Notice != "" {
-		t.Errorf("a closed Studio must stay silent, got path=%q notice=%q", grant.ConfigPath, grant.Notice)
+	if grant.Studio || grant.Notice != "" {
+		t.Errorf("a closed Studio must stay silent, got studio=%v notice=%q", grant.Studio, grant.Notice)
 	}
 	if time.Since(start) > 2*time.Second {
 		t.Error("a closed Studio must not wait out the attach window")
@@ -286,7 +293,7 @@ func TestProbeWaitsForStudioToRegisterItsPlace(t *testing.T) {
 	p.Running = func(context.Context) bool { return true }
 	p.retryEvery = 10 * time.Millisecond
 	grant := p.Provision(context.Background(), "run-registering", "workspace-write", Target{})
-	if grant.ConfigPath == "" {
+	if !grant.Studio {
 		t.Fatalf("Studio withheld though the place registered after a retry: %q", grant.Notice)
 	}
 }
@@ -299,7 +306,7 @@ func TestProvisionExplainsAPlaceThatNeverRegisters(t *testing.T) {
 	p.attachWindow = 100 * time.Millisecond
 	p.retryEvery = 10 * time.Millisecond
 	grant := p.Provision(context.Background(), "run-unregistered", "workspace-write", Target{})
-	if grant.ConfigPath != "" {
+	if grant.Studio {
 		t.Fatal("a Studio that registered no place must not receive access")
 	}
 	if !strings.Contains(grant.Notice, "another MCP client") {
@@ -315,8 +322,8 @@ func TestProvisionStaysSilentWhenListEmptyAndStudioClosed(t *testing.T) {
 	p.Running = func(context.Context) bool { return false }
 	start := time.Now()
 	grant := p.Provision(context.Background(), "run-empty-closed", "workspace-write", Target{})
-	if grant.ConfigPath != "" || grant.Notice != "" {
-		t.Errorf("a closed Studio must stay silent, got path=%q notice=%q", grant.ConfigPath, grant.Notice)
+	if grant.Studio || grant.Notice != "" {
+		t.Errorf("a closed Studio must stay silent, got studio=%v notice=%q", grant.Studio, grant.Notice)
 	}
 	if time.Since(start) > 2*time.Second {
 		t.Error("a closed Studio must not wait out the attach window")
@@ -353,7 +360,7 @@ func TestProbeWaitsForStudioToNameItsPlace(t *testing.T) {
 	p.Running = func(context.Context) bool { return true }
 	p.retryEvery = 10 * time.Millisecond
 	grant := p.Provision(context.Background(), "run-nameless", "workspace-write", Target{Place: Place{FileName: "Place.rbxl"}})
-	if grant.ConfigPath == "" {
+	if !grant.Studio {
 		t.Fatalf("Studio withheld though the place was named after a retry: %q", grant.Notice)
 	}
 }
@@ -366,7 +373,7 @@ func TestProvisionReportsAGenuineMismatchWithoutWaiting(t *testing.T) {
 	p.Running = func(context.Context) bool { return true }
 	start := time.Now()
 	grant := p.Provision(context.Background(), "run-mismatch", "workspace-write", Target{Place: Place{FileName: "Place.rbxl"}})
-	if grant.ConfigPath != "" {
+	if grant.Studio {
 		t.Fatal("a Studio holding a different place must not receive access")
 	}
 	if !strings.Contains(grant.Notice, "Other.rbxl") {
@@ -451,7 +458,7 @@ func TestProvisionDoesNotHangOnAnUnresponsiveStudio(t *testing.T) {
 	go func() { done <- p.Provision(context.Background(), "run-1", "workspace-write", Target{}) }()
 	select {
 	case grant := <-done:
-		if grant.ConfigPath != "" {
+		if grant.Studio {
 			t.Fatal("an unresponsive Studio must not receive access")
 		}
 		if grant.Notice == "" {
@@ -465,7 +472,7 @@ func TestProvisionDoesNotHangOnAnUnresponsiveStudio(t *testing.T) {
 func TestProvisionRefusesUnknownProfile(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "one"}}})
 	grant := p.Provision(context.Background(), "run-1", "", Target{})
-	if grant.ConfigPath != "" {
+	if grant.Studio {
 		t.Fatal("an unrecognised profile must not receive access")
 	}
 	if !strings.Contains(grant.Notice, "grants no Studio tools") {
@@ -483,7 +490,7 @@ func (s *silentTransport) ListTools(context.Context) ([]Tool, error) { return ni
 func TestProvisionIgnoresAnEmptyToolList(t *testing.T) {
 	p := newProvisioner(t, &silentTransport{studioTransport{instances: []Instance{{ID: "one", Name: "place.rbxl"}}}})
 	grant := p.Provision(context.Background(), "run-silent", "workspace-write", Target{})
-	if grant.ConfigPath == "" {
+	if !grant.Studio {
 		t.Fatalf("Studio was withheld though the instance listing answered: %q", grant.Notice)
 	}
 }
@@ -531,7 +538,7 @@ func TestProvisionPicksTheStudioHoldingThisProjectsPlace(t *testing.T) {
 		{ID: "mine", Name: "my-game-a1b2c3d4.rbxl"},
 	}})
 	grant := p.Provision(context.Background(), "run-match", "workspace-write", Target{Place: Place{FileName: "my-game-a1b2c3d4.rbxl"}})
-	if grant.ConfigPath == "" {
+	if !grant.Studio {
 		t.Fatalf("the project's own Studio was refused: %q", grant.Notice)
 	}
 }
@@ -542,7 +549,7 @@ func TestProvisionRefusesAnotherProjectsStudio(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "other", Name: "someone-elses-b2c3d4e5.rbxl"}}})
 	grant := p.Provision(context.Background(), "run-foreign", "workspace-write",
 		Target{Place: Place{FileName: "my-game-a1b2c3d4.rbxl"}})
-	if grant.ConfigPath != "" {
+	if grant.Studio {
 		t.Fatal("granted access to another project's Studio")
 	}
 	if !strings.Contains(grant.Notice, "does not hold this project's place") {
@@ -565,7 +572,7 @@ func TestProvisionOpensTheProjectsPlaceWhenNoneIsOpen(t *testing.T) {
 	if !opened {
 		t.Fatal("Studio was never opened")
 	}
-	if grant.ConfigPath == "" {
+	if !grant.Studio {
 		t.Fatalf("no access after opening: %q", grant.Notice)
 	}
 }
@@ -578,7 +585,7 @@ func TestProvisionLeavesStudioClosedWhenAutoOpenIsOff(t *testing.T) {
 		Place: Place{FileName: "my-game-a1b2c3d4.rbxl"},
 		Open:  func(context.Context) error { t.Fatal("opened Studio though auto-open is off"); return nil },
 	})
-	if grant.ConfigPath != "" {
+	if grant.Studio {
 		t.Fatal("granted access with no Studio open")
 	}
 }
@@ -608,7 +615,7 @@ func TestProvisionNeverAutoOpensWhileAnotherInstanceIsOpen(t *testing.T) {
 	if opened != 0 {
 		t.Fatalf("Studio was opened though another instance is already up, opened=%d", opened)
 	}
-	if grant.ConfigPath != "" {
+	if grant.Studio {
 		t.Fatal("granted access though no instance holds this project's place")
 	}
 	if !strings.Contains(grant.Notice, "does not hold this project's place") {
@@ -637,7 +644,7 @@ func TestProvisionOpensExactlyOnceWhenNothingIsOpen(t *testing.T) {
 	if opens != 1 {
 		t.Fatalf("opens=%d, want exactly 1", opens)
 	}
-	if grant.ConfigPath == "" {
+	if !grant.Studio {
 		t.Fatalf("no access after opening: %q", grant.Notice)
 	}
 }
@@ -652,7 +659,7 @@ func TestProvisionRefusesAmbiguousTargetMatch(t *testing.T) {
 		{ID: "two", Name: "my-game-a1b2c3d4.rbxl"},
 	}})
 	grant := p.Provision(context.Background(), "run-ambiguous-target", "workspace-write", Target{Place: Place{FileName: "my-game-a1b2c3d4.rbxl"}})
-	if grant.ConfigPath != "" {
+	if grant.Studio {
 		t.Fatal("two instances holding the same place must not receive access")
 	}
 	if !strings.Contains(grant.Notice, "2 Studio instances hold my-game-a1b2c3d4.rbxl") {
@@ -735,7 +742,7 @@ func TestProvisionDoesNotAutoOpenOverAStudioHiddenByAnotherClient(t *testing.T) 
 		Place: Place{FileName: "my-game-a1b2c3d4.rbxl"},
 		Open:  func(context.Context) error { t.Fatal("launched a duplicate Studio over a host-taken one"); return nil },
 	})
-	if grant.ConfigPath != "" {
+	if grant.Studio {
 		t.Fatal("granted access though the WS host is owned by another client")
 	}
 	if !strings.Contains(grant.Notice, "another MCP client") {
@@ -771,7 +778,7 @@ func TestProvisionMatchesPlaceNamesCaseInsensitively(t *testing.T) {
 	p := newProvisioner(t, &studioTransport{instances: []Instance{{ID: "mine", Name: "My-Game-A1B2C3D4.rbxl"}}})
 	grant := p.Provision(context.Background(), "run-case", "workspace-write",
 		Target{Place: Place{FileName: "my-game-a1b2c3d4.rbxl"}})
-	if grant.ConfigPath == "" {
+	if !grant.Studio {
 		t.Fatalf("case difference refused the project's own Studio: %q", grant.Notice)
 	}
 }
@@ -785,7 +792,7 @@ func TestProvisionMatchesACloudPlaceByItsDisplayName(t *testing.T) {
 	grant := p.Provision(context.Background(), "run-cloud", "workspace-write", Target{
 		Place: Place{FileName: "asmr-rng-b27c0859.rbxl", CloudName: "Asmr RNG"},
 	})
-	if grant.ConfigPath == "" {
+	if !grant.Studio {
 		t.Fatalf("the project's own Team Create Studio was refused: %q", grant.Notice)
 	}
 }
@@ -797,7 +804,7 @@ func TestProvisionStillMatchesTheBuiltFileForACloudProject(t *testing.T) {
 	grant := p.Provision(context.Background(), "run-cloud-local", "workspace-write", Target{
 		Place: Place{FileName: "asmr-rng-b27c0859.rbxl", CloudName: "Asmr RNG"},
 	})
-	if grant.ConfigPath == "" {
+	if !grant.Studio {
 		t.Fatalf("the project's built place was refused: %q", grant.Notice)
 	}
 }
@@ -809,7 +816,7 @@ func TestProvisionRefusesAnUnrelatedStudioForACloudProject(t *testing.T) {
 	grant := p.Provision(context.Background(), "run-cloud-foreign", "workspace-write", Target{
 		Place: Place{FileName: "asmr-rng-b27c0859.rbxl", CloudName: "Asmr RNG"},
 	})
-	if grant.ConfigPath != "" {
+	if grant.Studio {
 		t.Fatal("granted access to an unrelated Studio")
 	}
 	// The refusal has to send the operator to Roblox; telling someone working in
@@ -837,7 +844,7 @@ func TestProvisionNeverAutoOpensACloudPlace(t *testing.T) {
 	if opened != 0 {
 		t.Fatalf("a roblox.com place cannot be opened from a local build, opened=%d", opened)
 	}
-	if grant.ConfigPath != "" {
+	if grant.Studio {
 		t.Fatal("granted access though no Studio holds this project's place")
 	}
 	if !strings.Contains(grant.Notice, "open it from Roblox") {

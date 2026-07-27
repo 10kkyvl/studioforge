@@ -41,6 +41,31 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ### Changed
 
+- **Claude asks the operator through a tool now, not a fenced block in its own
+  prose.** The question card was a text protocol parsed out of free-form model
+  output: the agent was told to end its turn with a fence whose info-string was
+  exactly `studioforge-question`, containing only JSON, with nothing else in the
+  message. Defending that cost three house-rule bullets and a worked example,
+  because the failure was real — a sentence before the fence, a different
+  info-string, or slightly malformed JSON produced a turn where the question
+  silently never rendered. OpenRouter and NVIDIA already had the tool; Claude did
+  not, because StudioForge's tools reached it only through a shim registered on
+  Studio runs, never told which run it serves and with no route back to the
+  daemon. It needs none: the CLI reports its own tool calls, arguments included,
+  on the `stream-json` output the scheduler already reads, so observing the call
+  there is the delivery. Claude now gets `studioforge mcp-shim --questions-only`,
+  StudioForge's own single-tool MCP server, registered on **every** Claude run
+  rather than only the ones granted Studio — a machine with no Studio installed
+  still gets it — so no run is left quietly falling back. Arguments are validated
+  before the operator sees anything, and a violation is a tool error the agent can
+  retry rather than a dropped card. The route each question arrived on is recorded
+  on the run event. Because every Claude run now carries an MCP config,
+  `--strict-mcp-config` is emitted only for a run actually granted Studio: the
+  question server is not a reason to disable the operator's own MCP servers.
+  Stuck-run escalation and the mock provider still write the fence by hand, so the
+  parser stays and a question asked either way renders identically
+  (`internal/questions`, `internal/roblox/mcp/shim.go`).
+
 - **The playtest classifies parsed console records instead of matching phrases.**
   Deciding whether a run broke the game by searching `get_console_output` for
   eight substrings cost in both directions: a real error phrased unusually was

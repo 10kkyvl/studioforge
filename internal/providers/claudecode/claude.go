@@ -165,7 +165,10 @@ func buildArgs(req providers.RunRequest, resume string, caps map[string]bool) []
 	}
 	if req.MCPConfigPath != "" && caps["mcp-config"] {
 		args = append(args, "--mcp-config", req.MCPConfigPath)
-		if caps["strict-mcp"] {
+		// Only a Studio run is confined to this config. A run that carries one
+		// solely for StudioForge's own question server has no business losing the
+		// MCP servers its operator configured.
+		if req.StrictMCP && caps["strict-mcp"] {
 			args = append(args, "--strict-mcp-config")
 		}
 	}

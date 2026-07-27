@@ -19,6 +19,13 @@ type RunRequest struct {
 	MaxBudget                                                                                                           float64
 	AllowUnverifiedModel                                                                                                bool
 	MCPConfigPath                                                                                                       string
+	// StrictMCP confines the run to the servers named in MCPConfigPath, dropping
+	// the ones the operator has configured for themselves. It is set only for a
+	// run that was granted Studio: every Claude run now carries a config, because
+	// StudioForge's own question server lives in one, and turning that into a
+	// reason to disable the operator's other servers would be a change nobody
+	// asked for.
+	StrictMCP bool
 	// AllowedTools names the tools the run may call without an interactive
 	// approval, which non-interactive runs cannot answer.
 	AllowedTools []string

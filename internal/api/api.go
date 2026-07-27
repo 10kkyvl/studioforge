@@ -1024,16 +1024,19 @@ func (s *Server) ensureUIReference(root string) {
 // before the operator sees them, and a malformed question comes back as a tool
 // error the agent can retry instead of a card that silently never renders.
 //
-// Claude reaches StudioForge's tools only through the MCP shim, which is a
-// separate process registered only on runs that were granted Studio, is never
-// told which run it serves, and has no route back to the daemon. Putting the
-// tool there needs a callback channel that does not exist, and would still cover
-// only the Claude runs that got Studio — so Claude keeps the text fence, which
-// always works, as its single path. The mock provider emits the fence by
-// construction in its scripted demo, so it stays on the fence too.
+// Claude reaches the same tool through StudioForge's own MCP server, which is a
+// separate process that is never told which run it serves and has no route back
+// to the daemon — and needs none. It validates the arguments and answers; the
+// call itself is observed on the CLI's stream-json output, which the scheduler
+// already reads. That server is registered on every Claude run rather than only
+// on the ones granted Studio, so there is no run left quietly falling back.
+//
+// The mock provider emits the fence by construction in its scripted demo, so it
+// stays on the fence, and the fence parser stays for it and for stuck-run
+// escalation, which builds one by hand.
 func questionChannelFor(provider string) prompts.QuestionChannel {
 	switch provider {
-	case "openrouter", "nvidia":
+	case "openrouter", "nvidia", "claude":
 		return prompts.QuestionTool
 	default:
 		return prompts.QuestionFence

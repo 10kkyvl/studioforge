@@ -24,7 +24,7 @@ func grantedJob(t *testing.T) Job {
 
 func withGrant(manager *Manager) {
 	manager.SetMCPProvisioner(func(context.Context, *Job) MCPGrant {
-		return MCPGrant{ConfigPath: "C:\\configs\\run.json", AllowedTools: []string{"mcp__Roblox_Studio__start_stop_play"}}
+		return MCPGrant{ConfigPath: "C:\\configs\\run.json", Studio: true, AllowedTools: []string{"mcp__Roblox_Studio__start_stop_play"}}
 	})
 }
 
