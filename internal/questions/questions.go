@@ -29,10 +29,10 @@ const ToolName = "studioforge_question"
 // would be dropped further down the line is refused here instead, while the
 // agent is still in a position to fix it.
 const (
-	MaxLength           = 2000
-	MinOptions          = 2
-	MaxOptions          = 4
-	MaxLabelLength      = 120
+	MaxLength            = 2000
+	MinOptions           = 2
+	MaxOptions           = 4
+	MaxLabelLength       = 120
 	MaxDescriptionLength = 600
 )
 
