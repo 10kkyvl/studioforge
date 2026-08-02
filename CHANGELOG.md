@@ -319,6 +319,13 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   default to long narration between tool calls and to quietly widening a task — extra abstractions,
   unrequested tidying — which costs more here than in a developer tool, because the audience is
   Roblox creators rather than developers reading a build log (`internal/prompts/houserules.go`).
+- **How often the playtest polls the console is now a setting, not a constant.** The window it polls
+  for has been configurable for a while (`playtest_window_seconds`); the interval within it was a
+  hardcoded three seconds, even though `ValidateRequest.PollInterval` already existed and was already
+  honoured — nothing ever set it. `playtest_poll_seconds` (default 3, accepted between 1 and 60) now
+  reaches it, alongside the window in **Settings**, so a place that prints rarely can be polled less
+  often and one being watched closely can be polled more (`internal/api/api.go`, `internal/app/app.go`,
+  `web/src/lib/components/views/SettingsView.svelte`).
 
 ### Changed
 

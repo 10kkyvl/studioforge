@@ -598,7 +598,7 @@ func TestProjectCreationAddsDefaultAgentAndAgentCRUD(t *testing.T) {
 func TestRuntimeSettingsAreValidatedAndReturned(t *testing.T) {
 	a := newTestAPI(t)
 	cookie := bootstrapCookie(t, a)
-	request := httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/settings", strings.NewReader(`{"default_provider":"openrouter","claude_path":"C:\\tools\\claude.exe","concurrency":"8"}`))
+	request := httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/settings", strings.NewReader(`{"default_provider":"openrouter","claude_path":"C:\\tools\\claude.exe","concurrency":"8","playtest_poll_seconds":"5"}`))
 	request.Header.Set("Origin", "http://127.0.0.1:1234")
 	request.Header.Set("Content-Type", "application/json")
 	request.AddCookie(cookie)
@@ -616,7 +616,7 @@ func TestRuntimeSettingsAreValidatedAndReturned(t *testing.T) {
 		t.Fatal(err)
 	}
 	settings := snapshot["settings"].(map[string]any)
-	if settings["default_provider"] != "openrouter" || settings["claude_path"] != `C:\tools\claude.exe` || settings["concurrency"] != "8" {
+	if settings["default_provider"] != "openrouter" || settings["claude_path"] != `C:\tools\claude.exe` || settings["concurrency"] != "8" || settings["playtest_poll_seconds"] != "5" {
 		t.Fatalf("settings=%+v", settings)
 	}
 }
@@ -628,6 +628,27 @@ func TestInvalidSettingsRequestDoesNotPartiallyPersist(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/settings", strings.NewReader(`{"locale":"ru","concurrency":"0"}`))
+	request.Header.Set("Origin", "http://127.0.0.1:1234")
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	a.handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("settings status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	locale, ok, err := a.store.Setting(context.Background(), "locale")
+	if err != nil || !ok || locale != "en" {
+		t.Fatalf("locale=%q ok=%v err=%v", locale, ok, err)
+	}
+}
+
+func TestInvalidPlaytestPollSecondsIsRejected(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	if err := a.store.SetSetting(context.Background(), "locale", "en"); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/settings", strings.NewReader(`{"locale":"ru","playtest_poll_seconds":"61"}`))
 	request.Header.Set("Origin", "http://127.0.0.1:1234")
 	request.Header.Set("Content-Type", "application/json")
 	request.AddCookie(cookie)

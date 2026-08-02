@@ -673,6 +673,18 @@
         <p class="path-hint">{$translate('settings.playtestWindowHint')}</p>
       </div>
       <div class="wide path-field">
+        <label
+          >{$translate('settings.playtestPoll')}<input
+            type="number"
+            min="1"
+            step="1"
+            value={settings.playtest_poll_seconds}
+            onchange={(event) => (settings.playtest_poll_seconds = event.currentTarget.value)}
+          /></label
+        >
+        <p class="path-hint">{$translate('settings.playtestPollHint')}</p>
+      </div>
+      <div class="wide path-field">
         <details class="advanced-routing">
           <summary><ChevronDown size={14} />{$translate('openrouter.routing.title')}</summary>
           <div class="settings-fields">

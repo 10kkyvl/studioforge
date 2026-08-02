@@ -319,7 +319,7 @@ func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 	settings := map[string]any{"locale": locale, "setupComplete": setupDone && setup == "true", "safeMode": s.safeMode}
 	defaults := map[string]string{
 		"default_provider": "claude", "default_model": "default", "default_effort": "medium",
-		"claude_path": "", "rojo_path": "", "git_path": "", "studio_mcp_path": "", "studio_auto_open": "true", "concurrency": "6", "playtest_window_seconds": "30",
+		"claude_path": "", "rojo_path": "", "git_path": "", "studio_mcp_path": "", "studio_auto_open": "true", "concurrency": "6", "playtest_window_seconds": "30", "playtest_poll_seconds": "3",
 		"stuck_detection_enabled": "true", "stuck_idle_seconds": "600", "stuck_repetition_cap": "6",
 		"openrouter_data_collection": "", "openrouter_zdr": "", "openrouter_allow_fallbacks": "",
 	}
@@ -391,7 +391,7 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		"locale": true, "theme": true, "setup_complete": true, "concurrency": true,
 		"default_provider": true, "default_model": true, "default_effort": true,
 		"claude_path": true, "rojo_path": true, "git_path": true, "studio_mcp_path": true, "studio_auto_open": true,
-		"playtest_window_seconds": true,
+		"playtest_window_seconds": true, "playtest_poll_seconds": true,
 		"stuck_detection_enabled": true, "stuck_idle_seconds": true, "stuck_repetition_cap": true,
 		"openrouter_data_collection": true, "openrouter_zdr": true, "openrouter_allow_fallbacks": true,
 		"event_retention_days": true,
@@ -424,6 +424,13 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 			seconds, err := strconv.Atoi(value)
 			if err != nil || seconds <= 0 {
 				writeError(w, r, 400, "invalid_playtest_window", "Playtest window must be a positive number of seconds", nil)
+				return
+			}
+		}
+		if key == "playtest_poll_seconds" {
+			seconds, err := strconv.Atoi(value)
+			if err != nil || seconds < 1 || seconds > 60 {
+				writeError(w, r, 400, "invalid_playtest_poll", "Playtest poll interval must be a number of seconds between 1 and 60", nil)
 				return
 			}
 		}

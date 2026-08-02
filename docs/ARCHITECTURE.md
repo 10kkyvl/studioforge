@@ -349,7 +349,8 @@ from the one the agent's own run used (Claude's subprocess or OpenRouter's in-pr
 which have, by this point, already exited or finished their turn). It reuses `Provisioner`'s own
 launcher discovery and instance-selection logic (`probe`/`selectForTarget`) to reach the same Studio
 instance, then on one held-open transport: `start_stop_play` (enter Play mode), polls
-`get_console_output` for a configurable window (`playtest_window_seconds`, default 30s) while asking
+`get_console_output` for a configurable window (`playtest_window_seconds`, default 30s) at a
+configurable interval (`playtest_poll_seconds`, default 3s, accepted between 1 and 60) while asking
 `get_studio_state` until Studio confirms it is running, `screen_capture` (once, at the end of the
 window rather than the start, so the shot is of a place that has finished loading), `start_stop_play`
 again (exit Play mode), and classifies the collected console text. Studio answers each poll with the

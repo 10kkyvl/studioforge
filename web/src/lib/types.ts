@@ -223,6 +223,7 @@ export type AppSettings = {
   studio_auto_open: string;
   concurrency: string;
   playtest_window_seconds: string;
+  playtest_poll_seconds: string;
   // OpenRouter routing preferences. Empty string means "provider default" for
   // every field; require_parameters has no UI toggle and is always on
   // server-side. Persisted through the same POST /settings payload as every

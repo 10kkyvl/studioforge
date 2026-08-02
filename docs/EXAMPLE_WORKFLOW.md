@@ -272,8 +272,9 @@ automatically before a run** in Settings).
    that does not exist.
 4. After the run reaches its normal completion, watch the **Runs** view: a `validation` badge appears
    on the run row once the daemon's own Studio MCP connection has entered Play mode, polled the
-   console for the configured window (`playtest_window_seconds` in Settings, default 30 seconds),
-   taken a screenshot, and exited Play mode again.
+   console for the configured window (`playtest_window_seconds` in Settings, default 30 seconds) at
+   the configured interval (`playtest_poll_seconds`, default 3 seconds), taken a screenshot, and
+   exited Play mode again.
 5. If the console showed a script error or an infinite-yield warning, the badge reads **Playtest
    failed**, and a second run appears in the list linked back to the first (**Correction of** on the
    correction run, **Correction scheduled** on the original) — it resumes the same chat session with

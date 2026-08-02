@@ -306,6 +306,9 @@ export const en = {
   'settings.playtestWindow': 'Playtest console window (seconds)',
   'settings.playtestWindowHint':
     'How long the validation loop stays in Play mode polling the console before classifying the result.',
+  'settings.playtestPoll': 'Playtest poll interval (seconds)',
+  'settings.playtestPollHint':
+    'How often the validation loop polls the console within that window.',
   'settings.detect': 'Detect',
   'settings.detectAll': 'Detect all paths',
   'settings.detecting': 'Detecting…',
@@ -761,6 +764,8 @@ export const ru: Record<TranslationKey, string> = {
   'settings.playtestWindow': 'Окно консоли playtest (секунды)',
   'settings.playtestWindowHint':
     'Как долго цикл проверки остаётся в режиме Play, опрашивая консоль, прежде чем классифицировать результат.',
+  'settings.playtestPoll': 'Интервал опроса playtest (секунды)',
+  'settings.playtestPollHint': 'Как часто цикл проверки опрашивает консоль в пределах этого окна.',
   'settings.detect': 'Найти',
   'settings.detectAll': 'Найти все пути',
   'settings.detecting': 'Поиск…',

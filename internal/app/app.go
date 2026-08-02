@@ -195,6 +195,13 @@ func Run(ctx context.Context, opts config.Options) error {
 	if seconds, err := strconv.Atoi(setting("playtest_window_seconds", "30")); err == nil && seconds > 0 {
 		playtestWindowSeconds.Store(int64(seconds))
 	}
+	// playtestPollSeconds paces how often that loop polls the console within
+	// the window above.
+	var playtestPollSeconds atomic.Int64
+	playtestPollSeconds.Store(3)
+	if seconds, err := strconv.Atoi(setting("playtest_poll_seconds", "3")); err == nil && seconds >= 1 && seconds <= 60 {
+		playtestPollSeconds.Store(int64(seconds))
+	}
 	// Stuck-run escalation settings: on by default (unlike the opt-in
 	// validation loop above), since the whole point is a safety net against a
 	// runaway session, with defaults chosen so a normal run never trips them
@@ -372,7 +379,8 @@ func Run(ctx context.Context, opts config.Options) error {
 	// Studio from the daemon's side.
 	schedulerManager.SetMCPValidator(func(ctx context.Context, j *scheduler.Job) scheduler.ValidationResult {
 		window := time.Duration(playtestWindowSeconds.Load()) * time.Second
-		result := studioProvisioner.Validate(ctx, mcp.ValidateRequest{Target: studioTarget(ctx, j.ProjectID), Window: window, ProjectPath: j.WorkingDirectory})
+		pollInterval := time.Duration(playtestPollSeconds.Load()) * time.Second
+		result := studioProvisioner.Validate(ctx, mcp.ValidateRequest{Target: studioTarget(ctx, j.ProjectID), Window: window, PollInterval: pollInterval, ProjectPath: j.WorkingDirectory})
 		entries := make([]scheduler.ValidationEntry, 0, len(result.Entries))
 		for _, entry := range result.Entries {
 			entries = append(entries, scheduler.ValidationEntry{Severity: string(entry.Severity), Message: entry.Message, Script: entry.Script, Line: entry.Line})
@@ -409,6 +417,12 @@ func Run(ctx context.Context, opts config.Options) error {
 				return errors.New("playtest_window_seconds must be a positive integer")
 			}
 			playtestWindowSeconds.Store(int64(seconds))
+		case "playtest_poll_seconds":
+			seconds, err := strconv.Atoi(value)
+			if err != nil || seconds < 1 || seconds > 60 {
+				return errors.New("playtest_poll_seconds must be an integer between 1 and 60")
+			}
+			playtestPollSeconds.Store(int64(seconds))
 		case "stuck_detection_enabled":
 			if value != "true" && value != "false" {
 				return errors.New("stuck_detection_enabled must be true or false")
