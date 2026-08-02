@@ -352,7 +352,10 @@ instance, then on one held-open transport: `start_stop_play` (enter Play mode), 
 `get_console_output` for a configurable window (`playtest_window_seconds`, default 30s) while asking
 `get_studio_state` until Studio confirms it is running, `screen_capture` (once, at the end of the
 window rather than the start, so the shot is of a place that has finished loading), `start_stop_play`
-again (exit Play mode), and classifies the collected console text.
+again (exit Play mode), and classifies the collected console text. Studio answers each poll with the
+whole console buffer rather than the delta, so the loop appends only the part of an answer that
+extends the previous one — a rotated or truncated buffer is kept whole, and a line the place really
+did print twice survives, since this is a prefix shift rather than a line-level de-duplication.
 
 Classification parses that text into records — message, script, line, stack — and decides on them.
 Measured against a live Studio, `get_console_output` returns bare message text with no timestamps and

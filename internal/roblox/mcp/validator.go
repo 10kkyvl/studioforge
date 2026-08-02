@@ -266,12 +266,34 @@ func (p *Provisioner) Validate(ctx context.Context, req ValidateRequest) Validat
 	defer ticker.Stop()
 	deadline := time.Now().Add(window)
 	var console strings.Builder
+	var lastConsoleText string
 	playConfirmed := false
 	for {
 		if raw, err := client.Call(ctx, "get_console_output", nil); err == nil {
 			if text, err := TextResult(raw); err == nil && text != "" {
-				console.WriteString(text)
-				console.WriteString("\n")
+				// Studio answers every poll with the whole console buffer, not the
+				// delta since the last one, so appending it wholesale here would
+				// make Console grow quadratically with the number of polls.
+				// Shift by the common prefix instead: if the new text starts with
+				// what the previous poll already contributed, only the remainder
+				// is new and gets appended; otherwise the buffer rotated or was
+				// truncated and the whole thing is kept so nothing is lost. This
+				// is deliberately not a line-set dedup — a line that genuinely
+				// repeats within one buffer is real output and must survive,
+				// which a line-set dedup would silently collapse. dedupeEntries
+				// (console.go) takes the opposite tradeoff on purpose for
+				// Errors: it collapses repeats there because that list feeds a
+				// correction prompt, where a repeat is pure noise rather than
+				// evidence.
+				if strings.HasPrefix(text, lastConsoleText) {
+					console.WriteString(text[len(lastConsoleText):])
+				} else {
+					if console.Len() > 0 {
+						console.WriteString("\n")
+					}
+					console.WriteString(text)
+				}
+				lastConsoleText = text
 			}
 		}
 		// Ask Studio what mode it is actually in, until it says Play. Entering

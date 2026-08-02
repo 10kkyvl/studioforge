@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -322,6 +323,60 @@ func TestValidateFailsOnScriptError(t *testing.T) {
 	}
 	if transport.playCalls != 2 {
 		t.Errorf("playCalls=%d, want 2 even after a failure", transport.playCalls)
+	}
+}
+
+// Studio answers every poll with the whole console buffer, so appending each
+// poll's text wholesale would repeat everything already seen. The loop must
+// shift by the common prefix and append only what grew.
+func TestValidateConsoleAppendsOnlyNewTextAcrossPolls(t *testing.T) {
+	transport := &playtestTransport{
+		studioTransport:  studioTransport{instances: []Instance{{ID: "one", Name: "Place.rbxl"}}},
+		consoleResponses: []string{"a", "a\nb", "a\nb\nc"},
+	}
+	p := newProvisioner(t, transport)
+	req := fastValidateRequest()
+	req.Window = 60 * time.Millisecond
+	result := p.Validate(context.Background(), req)
+	for _, line := range []string{"a", "b", "c"} {
+		if n := strings.Count(result.Console, line); n != 1 {
+			t.Errorf("Console has %q %d times, want exactly once: %q", line, n, result.Console)
+		}
+	}
+}
+
+// A line that genuinely repeats within a single poll's response is real
+// output, not an artifact of polling, and must not be collapsed the way
+// dedupeEntries collapses repeats across polls.
+func TestValidateConsolePreservesLineThatRepeatsWithinOnePoll(t *testing.T) {
+	transport := &playtestTransport{
+		studioTransport:  studioTransport{instances: []Instance{{ID: "one", Name: "Place.rbxl"}}},
+		consoleResponses: []string{"tick\ntick\ntick"},
+	}
+	p := newProvisioner(t, transport)
+	result := p.Validate(context.Background(), fastValidateRequest())
+	if n := strings.Count(result.Console, "tick"); n != 3 {
+		t.Errorf("Console has %d occurrences of a line repeated within one poll, want 3: %q", n, result.Console)
+	}
+}
+
+// If a later poll's text does not start with the previous poll's text, the
+// buffer rotated or was truncated rather than merely grown. There is no
+// common prefix to shift by, so the whole new text must be kept rather than
+// discarded as if it were already seen.
+func TestValidateConsoleKeepsWholeBufferWhenItDoesNotExtendThePrevious(t *testing.T) {
+	transport := &playtestTransport{
+		studioTransport:  studioTransport{instances: []Instance{{ID: "one", Name: "Place.rbxl"}}},
+		consoleResponses: []string{"a\nb", "x\ny"},
+	}
+	p := newProvisioner(t, transport)
+	req := fastValidateRequest()
+	req.Window = 60 * time.Millisecond
+	result := p.Validate(context.Background(), req)
+	for _, line := range []string{"a", "b", "x", "y"} {
+		if !strings.Contains(result.Console, line) {
+			t.Errorf("Console lost %q after the buffer rotated: %q", line, result.Console)
+		}
 	}
 }
 

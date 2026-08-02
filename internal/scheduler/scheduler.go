@@ -281,10 +281,10 @@ type MCPGrant struct {
 	// Studio reports whether the config actually reaches Roblox Studio. A config
 	// is written for every Claude run to carry StudioForge's own question server,
 	// so its presence no longer implies a Studio grant.
-	Studio bool
-	Notice       string
-	Context      string
-	Release      func()
+	Studio  bool
+	Notice  string
+	Context string
+	Release func()
 }
 
 // withStudioRules appends the Studio half of the system prompt, composed from
@@ -1036,12 +1036,14 @@ func (m *Manager) proposeCorrectionDecision(j *Job, sessionID string, validation
 }
 
 // maxCorrectionErrorLines bounds how many console error lines a correction
-// prompt carries. The classifier is substring matching over every console poll
-// in the window with no de-duplication, so one real Luau error can arrive as a
-// dozen near-identical lines; past the first handful they stop telling the agent
-// anything new and start crowding out the instruction around them. The count
-// that was found is still stated, so a truncated list never reads as the whole
-// picture.
+// prompt carries. dedupeEntries (internal/roblox/mcp/console.go) already
+// collapses the same error arriving on every remaining poll, so the cap is not
+// standing in for that — it exists because a genuinely noisy place can still
+// print many distinct errors in one playtest, and a correction prompt does not
+// benefit from fifty lines of them; past the first handful they stop telling
+// the agent anything new and start crowding out the instruction around them.
+// The count that was found is still stated, so a truncated list never reads as
+// the whole picture.
 const maxCorrectionErrorLines = 12
 
 // correctionPrompt is the instruction a correction run receives after a

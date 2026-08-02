@@ -119,6 +119,19 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ### Fixed
 
+- **The playtest recorded the console ten times over.** Studio answers every
+  `get_console_output` call with the whole buffer rather than what is new since
+  the last one, and the poll loop appended each answer wholesale, so with the
+  default 30-second window and 3-second interval a line printed early in the
+  window was stored roughly ten times and the collected console grew
+  quadratically with the length of the window — which meant lengthening the
+  window made the record of it worse. The loop now appends only the part of a
+  poll's answer that extends the previous one, and keeps the whole answer when
+  it does not extend it, so a rotated or truncated buffer loses nothing. This is
+  deliberately not a line-level de-duplication: a line the place genuinely
+  printed twice is real output and survives, while `dedupeEntries` keeps taking
+  the opposite tradeoff for the error list that feeds a correction prompt, where
+  a repeat is noise rather than evidence (`internal/roblox/mcp/validator.go`).
 
 - **The playtest reported `passed` when all it had shown was the absence of eight
   substrings.** A script that silently does nothing still prints a banner on
