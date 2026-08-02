@@ -137,7 +137,12 @@ paths:
       responses: {"200": {description: Action accepted}}
   /runs/{id}/diff:
     get:
-      summary: Diff for a run - against its own git checkpoint commit when one exists, else the working tree against HEAD
+      summary: >-
+        Diff for a run - against its own git checkpoint commit when one
+        exists, else the working tree against HEAD; the response also
+        carries studioDirectEdits, set when the run called a Studio MCP
+        tool that changed the open place directly (never reflected in this
+        diff)
       parameters:
         - {name: id, in: path, required: true, schema: {type: string}}
       responses: {"200": {description: Diff}}

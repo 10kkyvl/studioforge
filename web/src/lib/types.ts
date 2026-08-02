@@ -116,6 +116,9 @@ export type RunDiff = {
   diff: string;
   status?: string;
   note?: string;
+  // Set when the run called a Studio MCP tool that changed the open place
+  // directly; that change never reaches git, so it is never in `diff`.
+  studioDirectEdits?: boolean;
   checkpoint?: {
     commitHash: string;
     branch: string;

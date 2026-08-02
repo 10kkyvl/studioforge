@@ -387,6 +387,7 @@ func Run(ctx context.Context, opts config.Options) error {
 		}
 		return scheduler.ValidationResult{Outcome: scheduler.ValidationOutcome(result.Outcome), Console: result.Console, Errors: result.Errors, Entries: entries, ClassifiedBy: result.ClassifiedBy, Screenshot: result.Screenshot, Notice: result.Notice, Window: result.Window}
 	})
+	schedulerManager.SetMCPMutationChecker(mcp.MutatesPlace)
 	// A failed validation whose correction budget is exhausted proposes a
 	// Decision instead of silently giving up.
 	schedulerManager.SetDecisionProposer(decisionProposer(store))

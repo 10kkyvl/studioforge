@@ -1,8 +1,8 @@
 package mcp
 
 import (
-	"sort"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -78,6 +78,70 @@ func TestEveryOfficialToolIsClassified(t *testing.T) {
 	if strings.Join(official, ",") != strings.Join(classified, ",") {
 		t.Errorf("risk tiers drifted from OfficialTools:\n official   = %v\n classified = %v", official, classified)
 	}
+}
+
+func TestMutatesPlaceFlagsOnlyToolsThatChangeTheOpenPlace(t *testing.T) {
+	mutating := []string{"multi_edit", "execute_luau", "generate_mesh", "generate_material", "generate_procedural_model", "insert_asset", "character_navigation", "subagent", "skill"}
+	for _, name := range mutating {
+		if !MutatesPlace(name) {
+			t.Errorf("MutatesPlace(%q) = false, want true", name)
+		}
+		if !MutatesPlace(ToolPrefix + name) {
+			t.Errorf("MutatesPlace(%q) = false, want true", ToolPrefix+name)
+		}
+	}
+	// start_stop_play changes Play/Stop mode, not the place's contents, and the
+	// daemon's own validation loop calls it on every validated run — flagging it
+	// would mark every one of those runs regardless of what the agent did.
+	// search_asset only queries the Marketplace, and wait_job_finished polls a
+	// job some earlier call already started.
+	nonMutating := append([]string{"start_stop_play", "search_asset", "wait_job_finished", "unknown_tool"}, readOnlyTools...)
+	nonMutating = append(nonMutating, reachingTools...)
+	for _, name := range nonMutating {
+		if MutatesPlace(name) {
+			t.Errorf("MutatesPlace(%q) = true, want false", name)
+		}
+		if MutatesPlace(ToolPrefix + name) {
+			t.Errorf("MutatesPlace(%q) = true, want false", ToolPrefix+name)
+		}
+	}
+}
+
+// Guards against a tool being added to OfficialTools but forgotten here: it
+// would silently default to "does not mutate" and understate the risk of
+// whatever it actually did.
+func TestEveryOfficialToolIsClassifiedForMutation(t *testing.T) {
+	for _, name := range OfficialTools {
+		if _, ok := mutatingTools[name]; ok {
+			continue
+		}
+		if _, ok := readOnlyToolSet()[name]; ok {
+			continue
+		}
+		if name == "search_asset" || name == "wait_job_finished" || name == "start_stop_play" {
+			continue
+		}
+		if _, ok := reachingToolSet()[name]; ok {
+			continue
+		}
+		t.Errorf("official tool %q is not explicitly accounted for as mutating or not-mutating", name)
+	}
+}
+
+func readOnlyToolSet() map[string]bool {
+	set := make(map[string]bool, len(readOnlyTools))
+	for _, name := range readOnlyTools {
+		set[name] = true
+	}
+	return set
+}
+
+func reachingToolSet() map[string]bool {
+	set := make(map[string]bool, len(reachingTools))
+	for _, name := range reachingTools {
+		set[name] = true
+	}
+	return set
 }
 
 func TestAllowedToolsUseServerPrefix(t *testing.T) {

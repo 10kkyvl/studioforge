@@ -90,7 +90,7 @@ func nullText(s string) any {
 }
 func formatTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 
-const runColumns = `id,project_id,agent_id,COALESCE(task_id,''),provider,model_alias,provider_session_id,status,phase,required_resource,error,cost,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,base_commit,result_commit,COALESCE(thread_id,''),prompt_snapshot,validation,COALESCE(validation_screenshot,''),COALESCE(parent_run_id,''),correction_depth,created_at,updated_at,started_at,finished_at,stuck_escalated`
+const runColumns = `id,project_id,agent_id,COALESCE(task_id,''),provider,model_alias,provider_session_id,status,phase,required_resource,error,cost,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,base_commit,result_commit,COALESCE(thread_id,''),prompt_snapshot,validation,COALESCE(validation_screenshot,''),COALESCE(parent_run_id,''),correction_depth,created_at,updated_at,started_at,finished_at,stuck_escalated,studio_direct_edits`
 
 func (s *Store) Run(ctx context.Context, id string) (models.Run, error) {
 	row := s.db.SQL.QueryRowContext(ctx, `SELECT `+runColumns+` FROM runs WHERE id=?`, id)
@@ -103,12 +103,13 @@ func scanRun(row scanner) (models.Run, error) {
 	var r models.Run
 	var created, updated string
 	var started, finished sql.NullString
-	var stuckEscalated int
-	err := row.Scan(&r.ID, &r.ProjectID, &r.AgentID, &r.TaskID, &r.Provider, &r.ModelAlias, &r.ProviderSession, &r.Status, &r.Phase, &r.RequiredResource, &r.Error, &r.Cost, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens, &r.CacheCreationTokens, &r.BaseCommit, &r.ResultCommit, &r.ThreadID, &r.PromptSnapshot, &r.Validation, &r.ValidationScreenshot, &r.ParentRunID, &r.CorrectionDepth, &created, &updated, &started, &finished, &stuckEscalated)
+	var stuckEscalated, studioDirectEdits int
+	err := row.Scan(&r.ID, &r.ProjectID, &r.AgentID, &r.TaskID, &r.Provider, &r.ModelAlias, &r.ProviderSession, &r.Status, &r.Phase, &r.RequiredResource, &r.Error, &r.Cost, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens, &r.CacheCreationTokens, &r.BaseCommit, &r.ResultCommit, &r.ThreadID, &r.PromptSnapshot, &r.Validation, &r.ValidationScreenshot, &r.ParentRunID, &r.CorrectionDepth, &created, &updated, &started, &finished, &stuckEscalated, &studioDirectEdits)
 	if err != nil {
 		return r, err
 	}
 	r.StuckEscalated = stuckEscalated != 0
+	r.StudioDirectEdits = studioDirectEdits != 0
 	r.CreatedAt = parseTime(created)
 	r.UpdatedAt = parseTime(updated)
 	if started.Valid {
@@ -222,6 +223,22 @@ func (s *Store) UpdateRunStuck(ctx context.Context, id, status, phase, resource,
 // screenshot from its own playtest.
 func (s *Store) SetRunValidation(ctx context.Context, id, validation, screenshot string) error {
 	res, err := s.db.SQL.ExecContext(ctx, `UPDATE runs SET validation=?,validation_screenshot=COALESCE(NULLIF(?,''),validation_screenshot),updated_at=? WHERE id=?`, validation, screenshot, Now(), id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// SetRunStudioDirectEdits records that this run called a Studio MCP tool
+// that changes the open place directly. Written once, the first time the
+// scheduler observes such a call — see Manager.trackStudioMutation — so a
+// second observation on the same run is a no-op rather than a second write.
+func (s *Store) SetRunStudioDirectEdits(ctx context.Context, id string) error {
+	res, err := s.db.SQL.ExecContext(ctx, `UPDATE runs SET studio_direct_edits=1,updated_at=? WHERE id=?`, Now(), id)
 	if err != nil {
 		return err
 	}

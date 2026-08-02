@@ -18,7 +18,7 @@ func (s *Server) runDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.git == nil {
-		writeJSON(w, 200, map[string]string{"diff": "", "note": "Diffing is not available"})
+		writeJSON(w, 200, map[string]any{"diff": "", "note": "Diffing is not available", "studioDirectEdits": run.StudioDirectEdits})
 		return
 	}
 	checkpoint, checkpointErr := s.store.CheckpointForRun(r.Context(), run.ID)
@@ -33,10 +33,10 @@ func (s *Server) runDiff(w http.ResponseWriter, r *http.Request) {
 		diff, err = s.git.DiffHead(r.Context(), project.Path)
 	}
 	if err != nil {
-		writeJSON(w, 200, map[string]string{"diff": "", "note": "Unable to compute diff: " + err.Error()})
+		writeJSON(w, 200, map[string]any{"diff": "", "note": "Unable to compute diff: " + err.Error(), "studioDirectEdits": run.StudioDirectEdits})
 		return
 	}
-	response := map[string]any{"diff": diff}
+	response := map[string]any{"diff": diff, "studioDirectEdits": run.StudioDirectEdits}
 	if hasCheckpoint {
 		response["checkpoint"] = map[string]any{
 			"commitHash": checkpoint.CommitHash,

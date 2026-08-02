@@ -198,6 +198,34 @@ func TestSetRunValidationUnknownRunFails(t *testing.T) {
 	}
 }
 
+func TestSetRunStudioDirectEditsPersists(t *testing.T) {
+	store, ctx := newThreadStore(t)
+	created, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "claude", ModelAlias: "balanced"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.StudioDirectEdits {
+		t.Fatal("a freshly created run must not start flagged")
+	}
+	if err := store.SetRunStudioDirectEdits(ctx, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Run(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.StudioDirectEdits {
+		t.Error("studioDirectEdits was not persisted")
+	}
+}
+
+func TestSetRunStudioDirectEditsUnknownRunFails(t *testing.T) {
+	store, ctx := newThreadStore(t)
+	if err := store.SetRunStudioDirectEdits(ctx, "missing-run"); err == nil {
+		t.Fatal("expected an error for an unknown run id")
+	}
+}
+
 func TestCreateRunPersistsParentAndDepth(t *testing.T) {
 	store, ctx := newThreadStore(t)
 	original, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "claude", ModelAlias: "balanced"}, "")

@@ -326,6 +326,21 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   reaches it, alongside the window in **Settings**, so a place that prints rarely can be polled less
   often and one being watched closely can be polled more (`internal/api/api.go`, `internal/app/app.go`,
   `web/src/lib/components/views/SettingsView.svelte`).
+- **A run that changed Studio directly, bypassing git, is now flagged instead of quietly vanishing
+  from the diff.** `execute_luau`, `multi_edit`, `insert_asset` and the rest of the tools that mutate
+  the open place write into Studio's own session, not the project's working tree, so a run that used
+  one looked from the diff panel exactly like a run that changed nothing — "No changes to show for
+  this run" read the same whether the agent left the place untouched or rebuilt half of it from a
+  script. `mcp.MutatesPlace` classifies which Studio tools count (`subagent` and `skill` included on
+  purpose: both hand the turn to Roblox's own agent inside Studio, whose own tool calls never reach
+  this provider's event stream, so excluding them would reproduce the exact miss this closes), and the
+  scheduler watches every provider's own tool-call events for one, unconditionally — never gated
+  behind the per-agent stuck-detection opt-out, which has nothing to do with whether Studio was
+  changed. The diff panel now says so in place of, or above, the usual message, and the rollback
+  confirmation states plainly that Studio-side changes will not be undone by restoring a commit
+  (`internal/roblox/mcp/config.go`, `internal/scheduler/studio_mutation.go`,
+  `internal/migrations/sql/016_studio_direct_edits.sql`, `internal/api/diff.go`,
+  `web/src/lib/components/views/ChatView.svelte`).
 
 ### Changed
 

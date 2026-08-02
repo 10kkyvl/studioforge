@@ -221,6 +221,9 @@ type RunStore interface {
 	SetRunUsage(context.Context, string, string, float64, models.TokenUsage) error
 	BudgetAllowed(context.Context, string, float64) (bool, float64, float64, error)
 	SetRunValidation(ctx context.Context, id, validation, screenshot string) error
+	// SetRunStudioDirectEdits records that a run called a Studio MCP tool that
+	// changes the open place directly (see MCPMutationChecker).
+	SetRunStudioDirectEdits(ctx context.Context, id string) error
 	// UpdateRunStuck writes a run's running->waiting_decision transition
 	// together with the stuck_escalated bookkeeping that triggered it, in one
 	// write (see database.Store.UpdateRunStuck).
@@ -383,6 +386,21 @@ func (m *Manager) SetMCPValidator(v MCPValidator) {
 	m.mu.Unlock()
 }
 
+// MCPMutationChecker reports whether a Studio MCP tool changes the place
+// currently open in Studio, given the tool's bare or ToolPrefix-prefixed
+// name. Stated as a function value, like MCPValidator, rather than an import
+// of internal/roblox/mcp: this package stays provider-neutral, and nothing
+// here needs to know Studio's tool taxonomy beyond "does this one mutate".
+type MCPMutationChecker func(toolName string) bool
+
+// SetMCPMutationChecker installs the hook trackStudioMutation uses to decide
+// whether a tool call flags a run as having changed Studio directly.
+func (m *Manager) SetMCPMutationChecker(c MCPMutationChecker) {
+	m.mu.Lock()
+	m.mutationChecker = c
+	m.mu.Unlock()
+}
+
 // isWorkspaceWriteOrAbove reports whether a permission profile includes the
 // tools the validation loop's own start_stop_play call needs. Gating on this
 // keeps the daemon's own Studio connection from acting with more reach than
@@ -417,6 +435,7 @@ type Manager struct {
 	globalLimit, perProjectLimit, perProviderLimit, perModelLimit int
 	provision                                                     MCPProvisioner
 	validate                                                      MCPValidator
+	mutationChecker                                               MCPMutationChecker
 	propose                                                       DecisionProposer
 	memoryStore                                                   *memory.Store
 	mu                                                            sync.Mutex
@@ -441,6 +460,12 @@ type execution struct {
 	// carried a studioforge-question fenced block, so the run's final
 	// transition lands on waiting_decision instead of completed.
 	question bool
+	// studioDirectEdits is set once this run has called a Studio MCP tool
+	// that changes the open place directly (see MCPMutationChecker), so the
+	// diff/rollback UI can warn the operator that something outside git
+	// changed. Persisted to the run row the first time it flips; see
+	// Manager.trackStudioMutation.
+	studioDirectEdits bool
 	// cancelling is set by Cancel under m.mu at the same moment it calls
 	// cancel(), so Pause/Resume can detect a cancellation already in flight
 	// and refuse to race their own status write against the run goroutine's
@@ -709,6 +734,10 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 			}
 			e.lastEventAt = time.Now()
 			m.emitEvent(ctx, e, event)
+			// Unconditional, unlike the stuck-detection block below: an agent's
+			// per-run StuckDetectionEnabled opt-out must never also silence the
+			// warning that it changed Studio directly.
+			m.trackStudioMutation(e, event)
 			// Stuck detection never fires on top of the agent's own natural
 			// question — that already has its own waiting_decision path once
 			// this turn ends, and racing two escalation mechanisms against the

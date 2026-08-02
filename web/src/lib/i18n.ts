@@ -243,10 +243,14 @@ export const en = {
   'chat.removeAttachment': 'Remove attachment',
   'chat.diffChangedFiles': 'Changed files',
   'chat.diffNoChanges': 'No changes to show for this run.',
+  'chat.diffStudioDirect':
+    'This run changed the open place directly in Roblox Studio. Those changes are not tracked by git, so they are not in this diff.',
   'chat.rollbackButton': 'Roll back to before this run',
   'chat.rollbackConfirmTitle': 'This will restore commit',
   'chat.rollbackExplain':
     "A new branch is created and checked out; nothing is deleted, reset, or force-pushed. This run's own branch and history are left untouched.",
+  'chat.rollbackStudioDirect':
+    'This run also changed the open place directly in Roblox Studio. Rolling back the git branch will not undo those changes.',
   'chat.rollbackConfirmButton': 'Confirm rollback',
   'chat.rollbackWorking': 'Rolling back…',
   'chat.rollbackDonePrefix': 'Rolled back. New branch:',
@@ -701,10 +705,14 @@ export const ru: Record<TranslationKey, string> = {
   'chat.removeAttachment': 'Удалить вложение',
   'chat.diffChangedFiles': 'Изменённые файлы',
   'chat.diffNoChanges': 'Для этого запуска нет изменений.',
+  'chat.diffStudioDirect':
+    'Этот запуск изменил открытый place напрямую в Roblox Studio. Эти изменения не отслеживаются git, поэтому их нет в этом diff.',
   'chat.rollbackButton': 'Откатить к состоянию до этого запуска',
   'chat.rollbackConfirmTitle': 'Это восстановит коммит',
   'chat.rollbackExplain':
     'Будет создана и открыта новая ветка; ничего не удаляется, не сбрасывается и не отправляется force-push. Ветка и история этого запуска остаются нетронутыми.',
+  'chat.rollbackStudioDirect':
+    'Этот запуск также изменил открытый place напрямую в Roblox Studio. Откат ветки git эти изменения не отменит.',
   'chat.rollbackConfirmButton': 'Подтвердить откат',
   'chat.rollbackWorking': 'Откатываем…',
   'chat.rollbackDonePrefix': 'Откат выполнен. Новая ветка:',

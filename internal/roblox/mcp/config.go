@@ -112,6 +112,50 @@ func AllowedTools(permissionProfile string) []string {
 	return append(out, QuestionToolFullName)
 }
 
+// mutatingTools are the workspaceTools that actually change the open place,
+// as opposed to observing it or merely driving its mode. Kept as its own set
+// rather than reusing workspaceTools wholesale because a few of that tier do
+// not themselves edit anything:
+//   - search_asset only queries the Marketplace; insert_asset is the step
+//     that actually places something into the world.
+//   - wait_job_finished polls a job some earlier call already started, so
+//     whatever started it is what gets classified.
+//   - start_stop_play changes Play/Stop mode, not the place's contents, and
+//     the daemon's own post-run validation loop calls it on every validated
+//     run (validator.go's playtest step) — treating it as a mutation would
+//     flag every one of those runs regardless of what the agent actually did.
+//
+// subagent and skill are included deliberately, not by omission: both hand
+// work to Roblox's own agent running inside Studio, and that nested agent's
+// own tool calls never surface in this provider's event stream — StudioForge
+// only ever sees the subagent/skill call itself. Excluding them here would
+// silently reproduce the exact miss this issue exists to fix.
+//
+// This is a "the capability was used" signal, not proof that anything
+// changed — an execute_luau call that only reads state still flags. That
+// bias is intentional: a false warning costs the operator one sentence,
+// while a missed one costs them the truth about what they are looking at.
+var mutatingTools = map[string]bool{
+	"multi_edit":                true,
+	"execute_luau":              true,
+	"generate_mesh":             true,
+	"generate_material":         true,
+	"generate_procedural_model": true,
+	"insert_asset":              true,
+	"character_navigation":      true,
+	"subagent":                  true,
+	"skill":                     true,
+}
+
+// MutatesPlace reports whether tool is one that changes the place currently
+// open in Roblox Studio. tool may be given bare (as it appears in
+// OfficialTools) or prefixed with ToolPrefix (as it appears on a run's own
+// event stream); both forms are accepted so a caller never has to know which
+// shape it is holding.
+func MutatesPlace(tool string) bool {
+	return mutatingTools[strings.TrimPrefix(tool, ToolPrefix)]
+}
+
 func concat(groups ...[]string) []string {
 	var out []string
 	for _, group := range groups {

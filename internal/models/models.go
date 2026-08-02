@@ -139,6 +139,11 @@ type Run struct {
 	// stopping it and asking the operator to continue or stop, rather than the
 	// agent completing, failing, or asking its own question.
 	StuckEscalated bool `json:"stuckEscalated,omitempty"`
+	// StudioDirectEdits is true when this run called a Studio MCP tool that
+	// changes the open place directly (see mcp.MutatesPlace). Those changes
+	// never touch git, so a run's diff and a rollback both leave them
+	// untouched no matter what they show.
+	StudioDirectEdits bool `json:"studioDirectEdits,omitempty"`
 }
 
 type ChatThread struct {

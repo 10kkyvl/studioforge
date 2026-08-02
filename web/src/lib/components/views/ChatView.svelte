@@ -1462,13 +1462,22 @@
     {#if loadingDiff}
       <p class="diff-muted">{$translate('common.loading')}</p>
     {:else if runDiff}
+      <!-- Above whatever git had to say, including a note explaining why it had
+           nothing: a run that edited Studio directly is exactly the run whose
+           empty or unavailable diff is most likely to be read as "nothing
+           happened". -->
+      {#if runDiff.studioDirectEdits}
+        <p class="diff-studio-notice">{$translate('chat.diffStudioDirect')}</p>
+      {/if}
       {#if runDiff.diff.trim() !== '' && !runDiff.note}
         <details class="diff-panel">
           <summary>{$translate('chat.diffChangedFiles')}</summary>
           <pre class="diff-pre">{runDiff.diff}</pre>
         </details>
-      {:else}
-        <p class="diff-muted">{runDiff.note || $translate('chat.diffNoChanges')}</p>
+      {:else if runDiff.note}
+        <p class="diff-muted">{runDiff.note}</p>
+      {:else if !runDiff.studioDirectEdits}
+        <p class="diff-muted">{$translate('chat.diffNoChanges')}</p>
       {/if}
       {#if runDiff.checkpoint}
         <div class="rollback-row">
@@ -1484,6 +1493,9 @@
                 ({runDiff.checkpoint.label})
               </p>
               <p class="rollback-explain">{$translate('chat.rollbackExplain')}</p>
+              {#if runDiff.studioDirectEdits}
+                <p class="rollback-studio-notice">{$translate('chat.rollbackStudioDirect')}</p>
+              {/if}
               {#if rollbackError}
                 <p class="rollback-error">{rollbackError}</p>
               {/if}
@@ -2534,6 +2546,16 @@
     color: var(--muted);
     font-size: var(--fs-xs);
   }
+  .diff-studio-notice {
+    margin: 10px 18px 0;
+    padding: 8px 12px;
+    border: 1px solid var(--warning);
+    border-radius: var(--r-md);
+    background: color-mix(in srgb, var(--warning) 12%, transparent);
+    color: var(--warning);
+    font-size: var(--fs-xs);
+    line-height: 1.45;
+  }
   .rollback-row {
     margin: 8px 18px 0;
   }
@@ -2568,6 +2590,11 @@
   .rollback-explain {
     margin: 6px 0 0;
     color: var(--muted);
+    font-size: var(--fs-xs);
+  }
+  .rollback-studio-notice {
+    margin: 6px 0 0;
+    color: var(--warning);
     font-size: var(--fs-xs);
   }
   .rollback-error {
