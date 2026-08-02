@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Select from '$lib/components/ui/Select.svelte';
   import { onMount } from 'svelte';
   import {
     ALargeSmall,
@@ -277,6 +278,27 @@
     void loadOpenRouterStatus();
     void loadNVIDIAStatus();
   });
+  const SETTINGS_EFFORTS = ['low', 'medium', 'high', 'xhigh'] as const;
+  $: providerOptions = [
+    { value: 'claude', label: 'Claude Code' },
+    { value: 'openrouter', label: 'OpenRouter' },
+    { value: 'nvidia', label: 'NVIDIA NIM' },
+    { value: 'mock', label: $translate('provider.mock') },
+  ];
+  $: effortOptions = SETTINGS_EFFORTS.map((level) => ({
+    value: level,
+    label: $translate(`effort.${level}` as TranslationKey),
+  }));
+  $: dataCollectionOptions = [
+    { value: '', label: $translate('openrouter.routing.providerDefault') },
+    { value: 'allow', label: $translate('openrouter.routing.allow') },
+    { value: 'deny', label: $translate('openrouter.routing.deny') },
+  ];
+  $: toggleOptions = [
+    { value: '', label: $translate('openrouter.routing.providerDefault') },
+    { value: 'true', label: $translate('openrouter.routing.on') },
+    { value: 'false', label: $translate('openrouter.routing.off') },
+  ];
 </script>
 
 <section class="page-heading">
@@ -549,12 +571,11 @@
     </header>
     <div class="settings-fields">
       <label
-        >{$translate('settings.defaultProvider')}<select bind:value={settings.default_provider}
-          ><option value="claude">Claude Code</option><option value="openrouter">OpenRouter</option
-          ><option value="nvidia">NVIDIA NIM</option><option value="mock"
-            >{$translate('provider.mock')}</option
-          ></select
-        ></label
+        >{$translate('settings.defaultProvider')}<Select
+          bind:value={settings.default_provider}
+          label={$translate('settings.defaultProvider')}
+          options={providerOptions}
+        /></label
       >
       <label
         >{$translate('settings.defaultModel')}<input
@@ -563,13 +584,11 @@
         /></label
       >
       <label
-        >{$translate('settings.defaultEffort')}<select bind:value={settings.default_effort}
-          ><option value="low">{$translate('effort.low')}</option><option value="medium"
-            >{$translate('effort.medium')}</option
-          ><option value="high">{$translate('effort.high')}</option><option value="xhigh"
-            >{$translate('effort.xhigh')}</option
-          ></select
-        ></label
+        >{$translate('settings.defaultEffort')}<Select
+          bind:value={settings.default_effort}
+          label={$translate('settings.defaultEffort')}
+          options={effortOptions}
+        /></label
       >
       <label
         >{$translate('settings.concurrency')}<input
@@ -658,27 +677,25 @@
           <summary><ChevronDown size={14} />{$translate('openrouter.routing.title')}</summary>
           <div class="settings-fields">
             <label
-              >{$translate('openrouter.routing.dataCollection')}<select
+              >{$translate('openrouter.routing.dataCollection')}<Select
                 bind:value={settings.openrouter_data_collection}
-                ><option value="">{$translate('openrouter.routing.providerDefault')}</option><option
-                  value="allow">{$translate('openrouter.routing.allow')}</option
-                ><option value="deny">{$translate('openrouter.routing.deny')}</option></select
-              ></label
+                label={$translate('openrouter.routing.dataCollection')}
+                options={dataCollectionOptions}
+              /></label
             >
             <label
-              >{$translate('openrouter.routing.zdr')}<select bind:value={settings.openrouter_zdr}
-                ><option value="">{$translate('openrouter.routing.providerDefault')}</option><option
-                  value="true">{$translate('openrouter.routing.on')}</option
-                ><option value="false">{$translate('openrouter.routing.off')}</option></select
-              ></label
+              >{$translate('openrouter.routing.zdr')}<Select
+                bind:value={settings.openrouter_zdr}
+                label={$translate('openrouter.routing.zdr')}
+                options={toggleOptions}
+              /></label
             >
             <label
-              >{$translate('openrouter.routing.allowFallbacks')}<select
+              >{$translate('openrouter.routing.allowFallbacks')}<Select
                 bind:value={settings.openrouter_allow_fallbacks}
-                ><option value="">{$translate('openrouter.routing.providerDefault')}</option><option
-                  value="true">{$translate('openrouter.routing.on')}</option
-                ><option value="false">{$translate('openrouter.routing.off')}</option></select
-              ></label
+                label={$translate('openrouter.routing.allowFallbacks')}
+                options={toggleOptions}
+              /></label
             >
           </div>
         </details>

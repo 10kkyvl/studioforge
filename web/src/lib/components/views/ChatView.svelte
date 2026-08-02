@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from 'svelte';
-  import { Cpu, Lock, MessagesSquare, Plus } from '@lucide/svelte';
+  import { Cpu, ImagePlus, Lock, MessagesSquare, Plus, TerminalSquare } from '@lucide/svelte';
   import {
     APIError,
     attachmentUrl,
@@ -26,6 +26,7 @@
   import { aggregateOpenRouterMessages } from '$lib/openrouterStream';
   import { parseAttachments } from '$lib/attachments';
   import Markdown from '$lib/components/Markdown.svelte';
+  import Select from '$lib/components/ui/Select.svelte';
   import { foregroundRun, liveThreadRuns, queuedBehindForeground } from '$lib/runQueue';
   import { endsRun, mcpWithheldMessage } from '$lib/runStatus';
   import {
@@ -379,6 +380,20 @@
       const file = item.getAsFile();
       if (file) await attachImage(file);
     }
+  }
+
+  let fileInputEl: HTMLInputElement;
+
+  async function pickImages(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    for (const file of Array.from(input.files ?? [])) await attachImage(file);
+    input.value = '';
+  }
+
+  function openCommands() {
+    draft = '/';
+    slashMenuDismissed = false;
+    void tick().then(() => composerEl?.focus());
   }
 
   async function attachImage(file: File) {
@@ -998,22 +1013,76 @@
 
 <section class="page-heading">
   <div>
-    <p class="eyebrow">{$translate('nav.chat')}</p>
     <h1>
       {selectedThread ? displayThreadTitle(selectedThread.title) : $translate('chat.threadsTitle')}
     </h1>
+    {#if threadSpendTokens > 0 || threadCacheTokens > 0}
+      <p class="thread-tokens">
+        {$translate('common.spend')}
+        {formatTokens(threadSpendTokens, $locale)}{#if threadCacheTokens > 0}
+          <span class="token-cache"
+            >· {$translate('common.cache')} {formatTokens(threadCacheTokens, $locale)}</span
+          >{/if}
+      </p>
+    {/if}
+  </div>
+  <div class="chat-toolbar">
+    {#if studioActionable}
+      <button
+        type="button"
+        class="studio-badge"
+        class:warn={studioStatus.state === 'other'}
+        disabled={openingStudio}
+        title={`${studioLabel} — ${$translate('chat.studioOpen')}`}
+        aria-label={$translate('chat.studioOpen')}
+        onclick={openStudioFromBadge}
+      >
+        <span class="dot"></span>{studioLabel}
+      </button>
+    {:else}
+      <span
+        class="studio-badge"
+        class:online={studioStatus.state === 'matched'}
+        class:warn={studioStatus.state === 'blocked'}
+        title={`${studioLabel} — ${studioHint}`}
+      >
+        <span class="dot"></span>{studioLabel}
+      </span>
+    {/if}
+    {#if project}
+      <button
+        type="button"
+        class="studio-badge sync-badge"
+        class:online={syncActive}
+        disabled={syncBusy}
+        title={`${syncLabel} — ${syncHint}`}
+        aria-label={syncActive ? $translate('chat.syncStop') : $translate('chat.syncStart')}
+        onclick={toggleSync}
+      >
+        <span class="dot"></span>{syncLabel}
+      </button>
+    {/if}
+    {#if agents.length > 0}
+      <div class="lead-select">
+        <span>{$translate('chat.lead')}</span>
+        <Select
+          value={leadKnown ? leadAgentId : ''}
+          label={$translate('chat.lead')}
+          placeholder={$translate('common.none')}
+          disabled={!projectId}
+          options={agents.map((agent) => ({ value: agent.id, label: agent.name }))}
+          onchange={changeLead}
+        />
+      </div>
+    {/if}
   </div>
 </section>
 <section class="chat-layout">
   <div class="thread-list">
     <div class="thread-list-header">
       <h2>{$translate('chat.threadsTitle')}</h2>
-      <button
-        class="primary new-thread"
-        onclick={newThread}
-        disabled={!projectId || creatingThread}
-      >
-        <Plus size={15} />{$translate('chat.newThread')}
+      <button class="new-thread" onclick={newThread} disabled={!projectId || creatingThread}>
+        <Plus size={14} />{$translate('chat.newThread')}
       </button>
     </div>
     <div class="thread-items">
@@ -1035,76 +1104,6 @@
     </div>
   </div>
   <article class="chat-panel">
-    <header>
-      <div class="chat-title-block">
-        <h2>
-          {selectedThread
-            ? displayThreadTitle(selectedThread.title)
-            : $translate('chat.threadsTitle')}
-        </h2>
-        {#if threadSpendTokens > 0 || threadCacheTokens > 0}
-          <p class="thread-tokens">
-            {$translate('common.spend')}
-            {formatTokens(threadSpendTokens, $locale)}{#if threadCacheTokens > 0}
-              <span class="token-cache"
-                >· {$translate('common.cache')} {formatTokens(threadCacheTokens, $locale)}</span
-              >{/if}
-          </p>
-        {/if}
-      </div>
-      {#if studioActionable}
-        <button
-          type="button"
-          class="studio-badge"
-          class:warn={studioStatus.state === 'other'}
-          disabled={openingStudio}
-          title={`${studioLabel} — ${$translate('chat.studioOpen')}`}
-          aria-label={$translate('chat.studioOpen')}
-          onclick={openStudioFromBadge}
-        >
-          <span class="dot"></span>{studioLabel}
-        </button>
-      {:else}
-        <span
-          class="studio-badge"
-          class:online={studioStatus.state === 'matched'}
-          class:warn={studioStatus.state === 'blocked'}
-          title={`${studioLabel} — ${studioHint}`}
-        >
-          <span class="dot"></span>{studioLabel}
-        </span>
-      {/if}
-      {#if project}
-        <button
-          type="button"
-          class="studio-badge sync-badge"
-          class:online={syncActive}
-          disabled={syncBusy}
-          title={`${syncLabel} — ${syncHint}`}
-          aria-label={syncActive ? $translate('chat.syncStop') : $translate('chat.syncStart')}
-          onclick={toggleSync}
-        >
-          <span class="dot"></span>{syncLabel}
-        </button>
-      {/if}
-      {#if agents.length > 0}
-        <label class="lead-select">
-          <span>{$translate('chat.lead')}</span>
-          <select
-            value={leadKnown ? leadAgentId : ''}
-            disabled={!projectId}
-            onchange={(e) => changeLead(e.currentTarget.value)}
-          >
-            {#if !leadKnown}
-              <option value="" disabled selected>{$translate('common.none')}</option>
-            {/if}
-            {#each agents as agent (agent.id)}
-              <option value={agent.id}>{agent.name}</option>
-            {/each}
-          </select>
-        </label>
-      {/if}
-    </header>
     {#if error}
       <div class="chat-error">
         <span>{error}</span>
@@ -1119,9 +1118,25 @@
       {#if loadingMessages}
         <div class="empty"><p>{$translate('common.loading')}</p></div>
       {:else if messages.length === 0 && activeLiveEvents.length === 0}
-        <div class="empty">
-          <MessagesSquare size={28} />
-          <p>{$translate('chat.empty')}</p>
+        <div class="chat-empty">
+          <div class="chat-empty-mark" aria-hidden="true"><MessagesSquare size={24} /></div>
+          <p class="chat-empty-lead">{$translate('chat.empty')}</p>
+          <div class="chat-empty-commands">
+            <p class="instrument">{$translate('chat.commandsTitle')}</p>
+            <div class="chat-empty-grid">
+              {#each SLASH_COMMANDS as cmd (cmd.name)}
+                <button
+                  type="button"
+                  class="chat-empty-command"
+                  disabled={!projectId || !selectedThreadId}
+                  onclick={() => selectSlashCommand(cmd.usage)}
+                >
+                  <code>{cmd.usage}</code>
+                  <span>{$translate(cmd.key)}</span>
+                </button>
+              {/each}
+            </div>
+          </div>
         </div>
       {:else}
         {#each messages as message, index (message.runId + '-' + message.role + '-' + index)}
@@ -1132,12 +1147,17 @@
           {@const isLatestQuestion = isLatestQuestionCard(
             index === messages.length - 1 && activeLiveEvents.length === 0,
           )}
-          <div class={`bubble bubble-${message.role}`}>
+          <div
+            class={`bubble bubble-${message.role}`}
+            class:bubble-completed={message.role === 'agent' && message.status === 'completed'}
+            class:bubble-failed={message.role === 'agent' &&
+              (message.status === 'failed' || message.status === 'cancelled')}
+          >
             <div class="bubble-meta">
               <span class="bubble-label"
                 >{message.role === 'user' ? $translate('chat.you') : $translate('chat.agent')}</span
               >
-              {#if message.role === 'agent' && message.status}
+              {#if message.role === 'agent' && message.status && message.status !== 'completed'}
                 <span class={`status status-${message.status}`}>{statusLabel(message.status)}</span>
               {/if}
               {#if message.role === 'agent' && identity}
@@ -1564,37 +1584,6 @@
           {/each}
         </div>
       {/if}
-      <div class="mode-toggle" role="group" aria-label={$translate('chat.modeLabel')}>
-        <button
-          type="button"
-          class:active={mode === 'do'}
-          onclick={() => (mode = 'do')}
-          title={$translate('chat.modeDoHint')}>{$translate('chat.modeDo')}</button
-        >
-        <button
-          type="button"
-          class:active={mode === 'plan'}
-          onclick={() => (mode = 'plan')}
-          title={$translate('chat.modePlanHint')}>{$translate('chat.modePlan')}</button
-        >
-      </div>
-      {#if tasks.length > 0}
-        <label class="task-select">
-          <span>{$translate('chat.attachTask')}</span>
-          <select bind:value={attachedTaskId}>
-            <option value="">{$translate('chat.noTask')}</option>
-            {#each tasks as task (task.id)}
-              {@const blocked = isTaskBlocked(tasks, task.id)}
-              <option
-                value={task.id}
-                disabled={blocked}
-                title={blocked ? $translate('chat.taskBlockedOptionHint') : undefined}
-                >{blocked ? '🔒 ' : ''}{task.title}</option
-              >
-            {/each}
-          </select>
-        </label>
-      {/if}
       <textarea
         bind:this={composerEl}
         bind:value={draft}
@@ -1617,17 +1606,79 @@
         }}
         onpaste={handlePaste}
       ></textarea>
-      <button
-        class="primary"
-        type="submit"
-        disabled={sending ||
-          uploadingImage ||
-          !draft.trim() ||
-          !projectId ||
-          !selectedThreadId ||
-          attachedTaskBlocked}
-        >{sentRunId ? $translate('chat.queueSend') : $translate('runs.send')}</button
-      >
+      <div class="composer-controls">
+        <input
+          bind:this={fileInputEl}
+          type="file"
+          accept="image/*"
+          multiple
+          hidden
+          onchange={pickImages}
+        />
+        <button
+          type="button"
+          class="composer-tool"
+          title={$translate('chat.attachImage')}
+          aria-label={$translate('chat.attachImage')}
+          disabled={!projectId || !selectedThreadId}
+          onclick={() => fileInputEl?.click()}><ImagePlus size={15} /></button
+        >
+        <button
+          type="button"
+          class="composer-tool"
+          title={$translate('chat.commandsTitle')}
+          aria-label={$translate('chat.commandsTitle')}
+          disabled={!projectId || !selectedThreadId}
+          onclick={openCommands}><TerminalSquare size={15} /></button
+        >
+        <span class="composer-divider"></span>
+        <div class="mode-toggle" role="group" aria-label={$translate('chat.modeLabel')}>
+          <button
+            type="button"
+            class:active={mode === 'do'}
+            onclick={() => (mode = 'do')}
+            title={$translate('chat.modeDoHint')}>{$translate('chat.modeDo')}</button
+          >
+          <button
+            type="button"
+            class:active={mode === 'plan'}
+            onclick={() => (mode = 'plan')}
+            title={$translate('chat.modePlanHint')}>{$translate('chat.modePlan')}</button
+          >
+        </div>
+        {#if tasks.length > 0}
+          <div class="task-select">
+            <Select
+              bind:value={attachedTaskId}
+              label={$translate('chat.attachTask')}
+              options={[
+                { value: '', label: $translate('chat.noTask') },
+                ...tasks.map((task) => {
+                  const blocked = isTaskBlocked(tasks, task.id);
+                  return {
+                    value: task.id,
+                    label: task.title,
+                    disabled: blocked,
+                    hint: blocked ? $translate('chat.taskBlockedOptionHint') : undefined,
+                  };
+                }),
+              ]}
+            />
+          </div>
+        {/if}
+        <span class="composer-hint">{$translate('chat.sendHint')}</span>
+        <button
+          class="primary"
+          type="submit"
+          disabled={sending ||
+            uploadingImage ||
+            !draft.trim() ||
+            !projectId ||
+            !selectedThreadId ||
+            attachedTaskBlocked}
+          >{sentRunId ? $translate('chat.queueSend') : $translate('runs.send')}</button
+        >
+      </div>
     </form>
   </article>
 </section>
@@ -1670,39 +1721,63 @@
 <style>
   .chat-layout {
     display: grid;
-    grid-template-columns: 280px minmax(0, 1fr);
+    grid-template-columns: 244px minmax(0, 1fr);
     flex: 1;
     min-height: 0;
+    overflow: hidden;
     border: 1px solid var(--line);
     border-radius: var(--r-lg);
-    overflow: hidden;
-    background: var(--surface);
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--surface) 82%, transparent),
+      color-mix(in srgb, var(--surface) 55%, transparent)
+    );
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, white 6%, transparent),
+      var(--shadow-2);
   }
   .thread-list {
     display: flex;
     flex-direction: column;
     min-width: 0;
     min-height: 0;
+    padding: var(--sp-3);
     border-right: 1px solid var(--line);
+    background: color-mix(in srgb, var(--surface-2) 45%, transparent);
   }
   .thread-list-header {
     display: flex;
     flex: none;
-    flex-direction: column;
-    gap: 9px;
-    padding: 13px;
-    border-bottom: 1px solid var(--line);
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2);
+    height: 34px;
+    margin-bottom: var(--sp-2);
   }
   .thread-list-header h2 {
     margin: 0;
-    font-size: var(--fs-sm);
     color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    font-weight: 500;
     text-transform: uppercase;
-    letter-spacing: 0.07em;
+    letter-spacing: 0.12em;
   }
   .new-thread {
-    padding: 8px 10px;
-    font-size: var(--fs-sm);
+    min-height: 26px;
+    padding: 0 var(--sp-2);
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    background: var(--surface-2);
+    color: var(--text-dim);
+    box-shadow: none;
+    font-size: var(--fs-xs);
+    font-weight: 500;
+  }
+  .new-thread:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--heat-1) 45%, var(--line));
+    background: var(--surface-3);
+    color: var(--text);
   }
   .thread-items {
     flex: 1;
@@ -1712,20 +1787,28 @@
   .thread-items button {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 3px;
     align-items: flex-start;
     width: 100%;
-    padding: 12px 13px;
+    padding: var(--sp-2) var(--sp-3);
     border: 0;
-    border-bottom: 1px solid var(--line);
+    border-radius: var(--r-md);
     background: transparent;
-    color: var(--text);
+    color: var(--text-dim);
     text-align: left;
     cursor: pointer;
+    transition:
+      background-color var(--dur-fast) var(--ease),
+      color var(--dur-fast) var(--ease);
   }
-  .thread-items button:hover,
+  .thread-items button:hover {
+    background: var(--surface-2);
+    color: var(--text);
+  }
   .thread-items button.active {
     background: var(--surface-2);
+    color: var(--text);
+    box-shadow: inset 2px 0 var(--heat-1);
   }
   .thread-items strong {
     align-self: stretch;
@@ -1745,32 +1828,20 @@
     min-width: 0;
     min-height: 0;
   }
-  .chat-panel > header {
+  .chat-toolbar {
     display: flex;
-    flex: none;
-    flex-wrap: wrap;
     align-items: center;
-    justify-content: space-between;
-    gap: 10px 12px;
-    padding: 15px 18px;
-    border-bottom: 1px solid var(--line);
+    gap: var(--sp-2);
+    margin-left: auto;
+    flex: none;
   }
-  .chat-panel > header h2 {
-    margin: 0;
-    font-size: var(--fs-lg);
-  }
-  .chat-title-block {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-  }
-  /* The thread's lifetime spend, quieter than the title above it — a passive
-     readout, not something that competes for attention on every render. */
   .thread-tokens {
     margin: 0;
-    font-size: var(--fs-2xs);
     color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
   .token-cache {
     color: var(--muted);
@@ -1783,14 +1854,10 @@
     font-size: var(--fs-xs);
     color: var(--muted);
   }
-  .lead-select select {
-    padding: 5px 8px;
-    border-radius: var(--r-sm);
-    border: 1px solid var(--line);
-    background: var(--surface-2);
-    color: var(--text);
-    font: inherit;
-    font-size: var(--fs-sm);
+  .lead-select :global(.sf-select) {
+    width: auto;
+    min-width: 132px;
+    max-width: 200px;
   }
   .chat-error {
     display: flex;
@@ -1924,23 +1991,103 @@
   .message-list {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: var(--sp-5);
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: 16px 18px;
+    padding-block: var(--sp-5) var(--sp-4);
+    padding-inline: max(var(--sp-5), calc((100% - 1080px) / 2));
   }
-  .bubble {
-    max-width: 72%;
-    padding: 10px 13px;
-    border-radius: var(--r-lg);
+  .chat-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--sp-4);
+    flex: 1;
+    min-height: 0;
+    padding: var(--sp-6) var(--sp-4);
+    text-align: center;
+  }
+  .chat-empty-mark {
+    display: grid;
+    place-items: center;
+    width: 56px;
+    height: 56px;
+    border: 1px solid color-mix(in srgb, var(--heat-1) 30%, var(--line));
+    border-radius: var(--r-xl);
+    background: radial-gradient(
+      circle at 50% 120%,
+      color-mix(in srgb, var(--heat-2) 30%, transparent),
+      var(--surface-2) 70%
+    );
+    color: var(--heat-1);
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, white 10%, transparent),
+      0 0 28px -10px color-mix(in srgb, var(--heat-1) 80%, transparent);
+  }
+  .chat-empty-lead {
+    max-width: 46ch;
+    margin: 0;
+    color: var(--text-dim);
+    font-size: var(--fs-lg);
+    line-height: 1.5;
+  }
+  .chat-empty-commands {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+    align-items: center;
+    width: 100%;
+    max-width: 720px;
+    margin-top: var(--sp-2);
+  }
+  .chat-empty-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: var(--sp-2);
+    width: 100%;
+  }
+  .chat-empty-command {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding: var(--sp-3);
     border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--surface);
+    color: var(--text-dim);
+    text-align: left;
+    cursor: pointer;
+    transition:
+      border-color var(--dur-fast) var(--ease),
+      background-color var(--dur-fast) var(--ease),
+      transform var(--dur-fast) var(--ease);
+  }
+  .chat-empty-command:hover:not(:disabled) {
+    transform: translateY(-1px);
+    border-color: color-mix(in srgb, var(--heat-1) 45%, var(--line));
     background: var(--surface-2);
   }
+  .chat-empty-command code {
+    color: var(--heat-1);
+    font-size: var(--fs-xs);
+  }
+  .chat-empty-command span {
+    color: var(--muted);
+    font-size: var(--fs-xs);
+    line-height: 1.4;
+  }
+  .bubble {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    max-width: 780px;
+  }
   .bubble p {
-    margin: 5px 0 0;
+    margin: 0;
     font-size: var(--fs-md);
-    line-height: 1.5;
+    line-height: 1.6;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
@@ -2022,29 +2169,28 @@
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: 8px;
-    font-size: var(--fs-2xs);
+    gap: var(--sp-2);
     color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
   }
   .bubble-label {
-    font-weight: 700;
-    color: var(--text);
+    color: var(--text-dim);
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
   }
   .model-identity {
     display: inline-flex;
     align-items: center;
     gap: 5px;
+    min-width: 0;
     max-width: min(100%, 430px);
-    padding: 3px 7px;
-    border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--accent) 8%, var(--surface));
-    color: var(--text);
-    line-height: 1;
+    color: var(--muted);
   }
   .model-identity :global(svg) {
     flex: none;
-    color: var(--accent);
+    opacity: 0.7;
   }
   .model-identity code {
     min-width: 0;
@@ -2056,18 +2202,55 @@
   }
   .bubble-user {
     align-self: flex-end;
-    background: linear-gradient(
-      145deg,
-      color-mix(in srgb, var(--accent) 20%, var(--surface-2)),
-      var(--surface-2)
-    );
+    align-items: flex-end;
+    max-width: min(68%, 620px);
+    padding: var(--sp-3) var(--sp-4);
+    border: 1px solid color-mix(in srgb, var(--heat-1) 22%, var(--line));
+    border-radius: var(--r-lg);
+    background: var(--surface-2);
   }
   .bubble-agent {
+    position: relative;
     align-self: flex-start;
+    width: 100%;
+    padding-left: var(--sp-4);
+    border-left: 2px solid var(--line);
+    transition: border-color var(--dur-cool) var(--ease);
+  }
+  .bubble-agent.bubble-completed {
+    border-left-color: color-mix(in srgb, var(--ok) 55%, var(--line));
+  }
+  .bubble-agent.bubble-failed {
+    border-left-color: var(--danger);
   }
   .bubble-live {
-    border-style: dashed;
-    opacity: 0.85;
+    border-left-color: var(--heat-1);
+  }
+  .bubble-live::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -2px;
+    width: 2px;
+    background: var(--heat-1);
+    box-shadow: var(--glow-heat);
+  }
+  .bubble-live .bubble-label::after {
+    content: '▊';
+    margin-left: 3px;
+    color: var(--heat-1);
+    animation: caret-blink 1.1s steps(1) infinite;
+  }
+  @keyframes caret-blink {
+    0%,
+    50% {
+      opacity: 1;
+    }
+    50.01%,
+    100% {
+      opacity: 0;
+    }
   }
   .question-card {
     display: flex;
@@ -2146,9 +2329,10 @@
     display: flex;
     flex: none;
     flex-direction: column;
-    gap: 5px;
-    padding: 10px 18px;
-    border-top: 1px solid var(--line);
+    gap: var(--sp-2);
+    margin: 0 var(--sp-5);
+    padding: var(--sp-3) 0 0;
+    border-top: 1px solid var(--line-soft);
   }
   .progress-row {
     display: flex;
@@ -2181,21 +2365,36 @@
     position: relative;
     width: 100%;
     height: 5px;
-    border-radius: var(--r-sm);
+    border-radius: 99px;
     overflow: hidden;
     background: var(--surface-2);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
   }
   .progress-fill {
     height: 100%;
-    border-radius: var(--r-sm);
-    background: var(--accent);
-    transition: width 0.4s ease;
+    border-radius: inherit;
+    background: linear-gradient(
+      90deg,
+      var(--heat-3),
+      var(--heat-2) 40%,
+      var(--heat-1) 75%,
+      var(--heat-0)
+    );
+    box-shadow: 0 0 10px color-mix(in srgb, var(--heat-1) 55%, transparent);
+    transition: width var(--dur-slow) var(--ease);
   }
   .progress-fill.indeterminate {
     position: absolute;
     inset: 0;
-    width: 40% !important;
-    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    width: 42% !important;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      var(--heat-2) 30%,
+      var(--heat-0) 50%,
+      var(--heat-2) 70%,
+      transparent
+    );
     animation: progress-slide 1.4s ease-in-out infinite;
   }
   @keyframes progress-slide {
@@ -2473,12 +2672,109 @@
   }
   .composer {
     position: relative;
-    display: flex;
     flex: none;
-    gap: 8px;
-    align-items: flex-end;
-    padding: 12px;
-    border-top: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+    width: 100%;
+    max-width: 1080px;
+    margin: var(--sp-2) auto var(--sp-3);
+    padding: var(--sp-3) var(--sp-3) var(--sp-2);
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    background: linear-gradient(180deg, var(--surface-2), var(--surface));
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, white 7%, transparent),
+      var(--shadow-2);
+    transition:
+      border-color var(--dur-base) var(--ease),
+      box-shadow var(--dur-base) var(--ease);
+  }
+  .composer::before {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(
+      120deg,
+      transparent 20%,
+      color-mix(in srgb, var(--heat-1) 55%, transparent),
+      transparent 80%
+    );
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--dur-base) var(--ease);
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+  }
+  .composer:focus-within {
+    border-color: color-mix(in srgb, var(--heat-1) 40%, var(--line));
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, white 8%, transparent),
+      var(--shadow-2),
+      0 0 24px -8px color-mix(in srgb, var(--heat-1) 60%, transparent);
+  }
+  .composer:focus-within::before {
+    opacity: 1;
+  }
+  .composer-controls {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+  }
+  .composer-tool {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    flex: none;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    background: var(--surface-2);
+    color: var(--text-dim);
+    cursor: pointer;
+    transition:
+      background-color var(--dur-fast) var(--ease),
+      border-color var(--dur-fast) var(--ease),
+      color var(--dur-fast) var(--ease);
+  }
+  .composer-tool:hover:not(:disabled) {
+    border-color: var(--line);
+    background: var(--surface-3);
+    color: var(--heat-1);
+  }
+  .composer-divider {
+    width: 1px;
+    height: 18px;
+    flex: none;
+    background: var(--line);
+  }
+  .composer-hint {
+    margin-left: auto;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    white-space: nowrap;
+  }
+  .composer-controls > button[type='submit'] {
+    flex: none;
+  }
+  @media (max-width: 900px) {
+    .composer-hint {
+      display: none;
+    }
+    .composer-controls > button[type='submit'] {
+      margin-left: auto;
+    }
   }
   .slash-menu {
     position: absolute;
@@ -2544,64 +2840,60 @@
     white-space: nowrap;
   }
   .task-select {
-    position: relative;
     flex: none;
     color: var(--muted);
   }
-  .task-select > span {
-    position: absolute;
-    bottom: 100%;
-    left: 0;
-    margin-bottom: 4px;
-    font-size: var(--fs-2xs);
-    white-space: nowrap;
-  }
-  .task-select select {
-    padding: 8px;
-    border-radius: var(--r-md);
-    border: 1px solid var(--line);
-    background: var(--surface-2);
-    color: var(--text);
-    font: inherit;
-    font-size: var(--fs-sm);
-    max-width: 160px;
+  .task-select :global(.sf-select) {
+    width: auto;
+    min-width: 120px;
+    max-width: 200px;
+    min-height: 28px;
+    font-size: var(--fs-xs);
   }
   .composer textarea {
-    flex: 1;
-    resize: vertical;
-    min-height: 2.5rem;
-    font: inherit;
-    padding: 8px 10px;
-    border-radius: var(--r-md);
-    border: 1px solid var(--line);
-    background: var(--surface-2);
+    width: 100%;
+    min-height: 3rem;
+    max-height: 38vh;
+    padding: 0;
+    border: 0;
+    outline: 0;
+    resize: none;
+    background: transparent;
     color: inherit;
+    font: inherit;
+    font-size: var(--fs-md);
+    line-height: 1.55;
   }
-  .composer > button {
-    white-space: nowrap;
+  .composer textarea::placeholder {
+    color: var(--muted);
+  }
+  .composer textarea:focus-visible {
+    outline: none;
+    box-shadow: none;
   }
   .mode-toggle {
     display: inline-flex;
     flex: none;
-    align-self: flex-end;
     border: 1px solid var(--line);
-    border-radius: var(--r-md);
+    border-radius: var(--r-sm);
     overflow: hidden;
   }
   .mode-toggle button {
-    padding: 8px 10px;
+    height: 26px;
+    padding: 0 var(--sp-3);
     border: 0;
     background: var(--surface-2);
     color: var(--muted);
     font: inherit;
-    font-size: var(--fs-sm);
+    font-size: var(--fs-xs);
+    font-weight: 500;
     cursor: pointer;
   }
   .mode-toggle button + button {
     border-left: 1px solid var(--line);
   }
   .mode-toggle button.active {
-    background: color-mix(in srgb, var(--accent) 26%, var(--surface-2));
+    background: color-mix(in srgb, var(--heat-1) 22%, var(--surface-2));
     color: var(--text);
     font-weight: 600;
   }

@@ -149,7 +149,7 @@
     {#each columns as column (column.key)}
       <div
         class="board-column"
-        role="list"
+        role="group"
         aria-label={$translate(column.label as TranslationKey)}
         ondragover={(event) => event.preventDefault()}
         ondrop={(event) => handleDrop(event, column.key)}
@@ -158,49 +158,55 @@
           <h2>{$translate(column.label as TranslationKey)}</h2>
           <span>{(grouped[column.key] ?? []).length}</span>
         </header>
-        {#each grouped[column.key] ?? [] as task (task.id)}
-          {@const depsBlocked = isTaskBlocked(tasks, task.id)}
-          <article
-            class="board-card"
-            class:is-blocked={task.status === 'blocked'}
-            class:is-deps-blocked={depsBlocked}
-            role="listitem"
-            draggable="true"
-            ondragstart={(event) => handleDragStart(event, task.id)}
-          >
-            <div class="board-card-top">
-              <span class="priority">P{task.priority}</span>
-              <button
-                type="button"
-                class="delete-task"
-                aria-label={$translate('tasks.delete')}
-                title={$translate('tasks.delete')}
-                onclick={() => onDeleteTask(task.id)}><X size={13} /></button
-              >
-            </div>
-            <h3>
-              {#if depsBlocked}
-                <Lock size={12} aria-label={$translate('tasks.depsBlockedHint')} />
-              {/if}
-              {task.title}
-            </h3>
-            {#if task.description}<p>{task.description}</p>{/if}
-            {#if task.dependencies.length > 0}
-              <div class="dependency-list">
-                <span class="dependency-label">{$translate('tasks.dependencies')}</span>
-                {#each task.dependencies as dependsOnId (dependsOnId)}
-                  {@const chip = dependencyChip(task.projectId, dependsOnId)}
-                  <span class="dependency-chip status-{chip.status}"
-                    >{#if chip.status === 'missing'}{$translate(
-                        'tasks.status.missing',
-                      )}{:else}{chip.label} · {taskStatusLabel(chip.status)}{/if}</span
-                  >
-                {/each}
+        <div
+          class="board-cards"
+          role="list"
+          aria-label={$translate(column.label as TranslationKey)}
+        >
+          {#each grouped[column.key] ?? [] as task (task.id)}
+            {@const depsBlocked = isTaskBlocked(tasks, task.id)}
+            <article
+              class="board-card"
+              class:is-blocked={task.status === 'blocked'}
+              class:is-deps-blocked={depsBlocked}
+              role="listitem"
+              draggable="true"
+              ondragstart={(event) => handleDragStart(event, task.id)}
+            >
+              <div class="board-card-top">
+                <span class="priority">P{task.priority}</span>
+                <button
+                  type="button"
+                  class="delete-task"
+                  aria-label={$translate('tasks.delete')}
+                  title={$translate('tasks.delete')}
+                  onclick={() => onDeleteTask(task.id)}><X size={13} /></button
+                >
               </div>
-            {/if}
-            {#if task.blockedReason}<code>{task.blockedReason}</code>{/if}
-          </article>
-        {/each}
+              <h3>
+                {#if depsBlocked}
+                  <Lock size={12} aria-label={$translate('tasks.depsBlockedHint')} />
+                {/if}
+                {task.title}
+              </h3>
+              {#if task.description}<p>{task.description}</p>{/if}
+              {#if task.dependencies.length > 0}
+                <div class="dependency-list">
+                  <span class="dependency-label">{$translate('tasks.dependencies')}</span>
+                  {#each task.dependencies as dependsOnId (dependsOnId)}
+                    {@const chip = dependencyChip(task.projectId, dependsOnId)}
+                    <span class="dependency-chip status-{chip.status}"
+                      >{#if chip.status === 'missing'}{$translate(
+                          'tasks.status.missing',
+                        )}{:else}{chip.label} · {taskStatusLabel(chip.status)}{/if}</span
+                    >
+                  {/each}
+                </div>
+              {/if}
+              {#if task.blockedReason}<code>{task.blockedReason}</code>{/if}
+            </article>
+          {/each}
+        </div>
       </div>
     {/each}
   </section>
@@ -250,17 +256,33 @@
     color: var(--text);
   }
   .board {
-    display: grid;
-    grid-template-columns: repeat(6, minmax(200px, 1fr));
-    gap: 12px;
+    display: flex;
+    flex: 1;
+    gap: var(--sp-3);
+    min-height: 0;
+    padding-bottom: var(--sp-2);
     overflow-x: auto;
+    overflow-y: hidden;
+    scroll-snap-type: x proximity;
   }
   .board-column {
-    min-height: 420px;
-    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    flex: 0 0 268px;
+    min-height: 0;
+    padding: var(--sp-3);
     border: 1px solid var(--line);
     border-radius: var(--r-lg);
     background: color-mix(in srgb, var(--surface) 70%, transparent);
+    scroll-snap-align: start;
+  }
+  .board-column > header {
+    flex: none;
+  }
+  .board-cards {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
   }
   .board-column > header {
     display: flex;
@@ -388,14 +410,9 @@
     color: var(--accent);
     font-size: var(--fs-2xs);
   }
-  @media (max-width: 1100px) {
-    .board {
-      grid-template-columns: repeat(3, minmax(220px, 1fr));
-    }
-  }
   @media (max-width: 640px) {
-    .board {
-      grid-template-columns: minmax(0, 1fr);
+    .board-column {
+      flex-basis: 84vw;
     }
   }
 </style>

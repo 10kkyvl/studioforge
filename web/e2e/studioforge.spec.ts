@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { join } from 'node:path';
-import { startDaemon, stopDaemon, type DaemonHandle } from './helpers';
+import { chooseOption, startDaemon, stopDaemon, type DaemonHandle } from './helpers';
 
 let handle: DaemonHandle;
 let baseURL = '';
@@ -70,10 +70,8 @@ test('first run, locale, projects, live run, and core navigation', async ({ page
   // Registering a project drops the operator straight into its chat, so the
   // new project is confirmed by the project switcher rather than by a card.
   await expect(page.getByRole('heading', { name: 'Chat', level: 1 })).toBeVisible();
-  await expect(page.getByRole('combobox', { name: 'Project', exact: true })).toHaveValue(
-    await page
-      .getByRole('option', { name: 'Fresh Project', exact: true })
-      .evaluate((option: HTMLOptionElement) => option.value),
+  await expect(page.getByRole('combobox', { name: 'Project', exact: true })).toContainText(
+    'Fresh Project',
   );
   await page.getByRole('button', { name: 'Projects', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Fresh Project', exact: true })).toBeVisible();
@@ -86,9 +84,7 @@ test('first run, locale, projects, live run, and core navigation', async ({ page
   await page.getByRole('button', { name: 'Activity', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Global activity', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Tasks', exact: true }).click();
-  await page
-    .getByRole('combobox', { name: 'Project', exact: true })
-    .selectOption({ label: 'Skyline Obby' });
+  await chooseOption(page, 'Project', 'Skyline Obby');
   await expect(page.getByTestId('tasks-view')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Task DAG', exact: true })).toBeVisible();
   await expect(
@@ -97,14 +93,12 @@ test('first run, locale, projects, live run, and core navigation', async ({ page
   await page.getByRole('button', { name: 'Studio sessions', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Studio sessions', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Team builder', exact: true }).click();
-  await page
-    .getByRole('combobox', { name: 'Project', exact: true })
-    .selectOption({ label: 'Fresh Project' });
+  await chooseOption(page, 'Project', 'Fresh Project');
   await expect(page.getByRole('heading', { name: 'Default Agent', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Add agent', exact: true }).click();
   const agentForm = page.locator('form.create-agent');
   await agentForm.getByLabel('Agent name').fill('Fresh Runner');
-  await agentForm.getByLabel('Provider').selectOption('mock');
+  await chooseOption(agentForm, 'Provider', 'Demo (no AI)');
   await agentForm.getByRole('button', { name: 'Create agent', exact: true }).click();
   const agentCard = page
     .locator('article.agent-card')

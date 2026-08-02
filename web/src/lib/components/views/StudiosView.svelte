@@ -1,5 +1,6 @@
 <script lang="ts">
   import { translate } from '$lib/i18n';
+  import Select from '$lib/components/ui/Select.svelte';
   import type { Project, StudioSession } from '$lib/types';
 
   export let studios: StudioSession[];
@@ -64,13 +65,15 @@
           </div>
         </dl>
         <label
-          >{$translate('studios.bind')}<select
+          >{$translate('studios.bind')}<Select
             value={studio.projectId ?? ''}
-            onchange={(event) => onBind(studio.id, event.currentTarget.value)}
-            ><option value="">{$translate('common.none')}</option>{#each projects as project}<option
-                value={project.id}>{project.name}</option
-              >{/each}</select
-          ></label
+            label={$translate('studios.bind')}
+            options={[
+              { value: '', label: $translate('common.none') },
+              ...projects.map((project) => ({ value: project.id, label: project.name })),
+            ]}
+            onchange={(next) => onBind(studio.id, next)}
+          /></label
         >
         {#if studio.projectId && studio.name}
           <button

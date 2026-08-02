@@ -33,15 +33,17 @@
   import {
     detectLocale,
     formatDate,
+    formatMoney,
     locale,
     translate,
     type Locale,
     type TranslationKey,
   } from '$lib/i18n';
-  import { normalizeFontSize, setThemeColorMeta, themeColorFor } from '$lib/theme';
+  import { applyTheme, normalizeFontSize } from '$lib/theme';
   import { setPendingLeadAgent } from '$lib/uiIntents';
   import { completionTarget } from '$lib/wizard';
   import type { Agent, AppSettings, Project, Run, RunEvent, Snapshot } from '$lib/types';
+  import Select from '$lib/components/ui/Select.svelte';
   import FirstRunWizard from '$lib/components/FirstRunWizard.svelte';
   import NewProjectDialog from '$lib/components/NewProjectDialog.svelte';
   import ActivityView from '$lib/components/views/ActivityView.svelte';
@@ -160,6 +162,13 @@
   $: selectedRun = snapshot?.runs.find((run) => run.id === selectedRunId);
   $: selectedEvents = events.filter((event) => event.runId === selectedRunId).slice(-250);
   $: showProjectSwitch = !globalViews.includes(view);
+  $: liveRunCount =
+    snapshot?.runs.filter((run) => ['starting', 'running', 'cancelling'].includes(run.status))
+      .length ?? 0;
+  $: budgetRatio =
+    selectedProject && selectedProject.budgetLimit > 0
+      ? Math.min(1, selectedProject.budgetUsed / selectedProject.budgetLimit)
+      : 0;
 
   onMount(() => {
     const storedTheme = localStorage.getItem('studioforge-theme') ?? 'system';
@@ -378,8 +387,7 @@
       document.documentElement.classList.add('theme-transition');
       window.setTimeout(() => document.documentElement.classList.remove('theme-transition'), 260);
     }
-    document.documentElement.dataset.theme = value;
-    setThemeColorMeta(themeColorFor(value));
+    applyTheme(value);
   }
   function setFontSize(value: string) {
     fontSize = normalizeFontSize(value);
@@ -579,21 +587,28 @@
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-icon">SF</div>
-        <div><strong>{brand.name}</strong><small>{$translate('app.tagline')}</small></div>
+        <div><strong>{brand.name}</strong></div>
       </div>
       <nav aria-label={brand.name}>
         {#each navGroups as group}
+          {@const activeOffset = group.items.findIndex((item) => item.id === view)}
           {#if group.label}<p class="nav-group-label">{$translate(group.label)}</p>{/if}
-          {#each group.items as item}
-            <button
-              class:active={view === item.id}
-              onclick={() => (view = item.id)}
-              title={`Alt+${item.index + 1}`}
-              aria-current={view === item.id ? 'page' : undefined}
-            >
-              <item.icon size={18} /><span>{$translate(item.key)}</span>
-            </button>
-          {/each}
+          <div
+            class="nav-group"
+            class:has-active={activeOffset >= 0}
+            style={activeOffset >= 0 ? `--active-offset:${activeOffset}` : null}
+          >
+            {#each group.items as item}
+              <button
+                class:active={view === item.id}
+                onclick={() => (view = item.id)}
+                title={`Alt+${item.index + 1}`}
+                aria-current={view === item.id ? 'page' : undefined}
+              >
+                <item.icon size={17} /><span>{$translate(item.key)}</span>
+              </button>
+            {/each}
+          </div>
         {/each}
       </nav>
       <div class="sidebar-footer">
@@ -617,13 +632,38 @@
     <div class="workspace">
       <header class="topbar">
         {#if showProjectSwitch}
-          <label class="project-switch"
-            ><span>{$translate('common.project')}</span><select
+          <div class="project-switch">
+            <span>{$translate('common.project')}</span>
+            <Select
               bind:value={selectedProjectId}
-              aria-label={$translate('common.project')}
-              >{#each activeProjects as project}<option value={project.id}>{project.name}</option
-                >{/each}</select
-            ></label
+              label={$translate('common.project')}
+              options={activeProjects.map((project) => ({
+                value: project.id,
+                label: project.name,
+              }))}
+            />
+          </div>
+        {/if}
+        {#if showProjectSwitch && selectedProject}
+          <div
+            class="context-gauge"
+            title={`${$translate('common.budget')}: ${formatMoney(selectedProject.budgetUsed, $locale)} / ${formatMoney(selectedProject.budgetLimit, $locale)}`}
+          >
+            <span class="instrument">{$translate('common.budget')}</span>
+            <span class="gauge-track"
+              ><i class="gauge-fill" style={`width:${(budgetRatio * 100).toFixed(1)}%`}></i></span
+            >
+            <strong class="mono"
+              >{formatMoney(selectedProject.budgetUsed, $locale)}<span class="gauge-limit"
+                >&nbsp;/ {formatMoney(selectedProject.budgetLimit, $locale)}</span
+              ></strong
+            >
+          </div>
+        {/if}
+        {#if liveRunCount > 0}
+          <span class="live-pill"
+            ><span class="status-dot status-running"></span>{liveRunCount}
+            <span class="live-pill-label">{$translate('topbar.liveRuns')}</span></span
           >
         {/if}
         <div class="top-actions">
@@ -661,7 +701,11 @@
           >
         </div>{/if}
 
-      <main class="content" class:chat={view === 'chat'}>
+      <main
+        class="content"
+        class:chat={view === 'chat'}
+        class:fill={view === 'tasks' || view === 'runs'}
+      >
         {#key view}
           <div class="view-transition">
             {#if view === 'chat'}

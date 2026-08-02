@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Select from '$lib/components/ui/Select.svelte';
   import {
     formatContextLength,
     groupCuratedByCategory,
@@ -35,10 +36,10 @@
     return modelById.get(id)?.name ?? id;
   }
 
-  function onCuratedChange(event: Event & { currentTarget: HTMLSelectElement }) {
-    if (event.currentTarget.value && event.currentTarget.value !== value) {
+  function onCuratedChange(next: string) {
+    if (next && next !== value) {
       allowUnverified = false;
-      value = event.currentTarget.value;
+      value = next;
     }
   }
 
@@ -55,20 +56,24 @@
   {:else if error}
     <p class="path-status" data-status="error">{error}</p>
   {:else if grouped.length > 0}
-    <select value={curatedSelectValue} onchange={onCuratedChange}>
-      <option value="">{$translate('openrouter.picker.custom')}</option>
-      {#each grouped as group (group.category)}
-        <optgroup label={group.category}>
-          {#each group.items as item (item.id)}
-            <option value={item.id} disabled={!item.available && item.verified}>
-              {displayName(item.id)} — {item.recommendation}{item.free
-                ? ` · ${$translate('openrouter.freeTag')}`
-                : ''}{!item.available ? ` (${$translate('openrouter.unavailable')})` : ''}
-            </option>
-          {/each}
-        </optgroup>
-      {/each}
-    </select>
+    <Select
+      value={curatedSelectValue}
+      label={$translate('common.model')}
+      options={[
+        { value: '', label: $translate('openrouter.picker.custom') },
+        ...grouped.flatMap((group) =>
+          group.items.map((item) => ({
+            value: item.id,
+            label: displayName(item.id),
+            disabled: !item.available && item.verified,
+            hint: `${group.category} · ${item.recommendation}${
+              item.free ? ` · ${$translate('openrouter.freeTag')}` : ''
+            }${!item.available ? ` (${$translate('openrouter.unavailable')})` : ''}`,
+          })),
+        ),
+      ]}
+      onchange={onCuratedChange}
+    />
   {/if}
   <input
     value={value ?? ''}
@@ -106,7 +111,6 @@
     flex-direction: column;
     gap: 6px;
   }
-  .openrouter-picker select,
   .openrouter-picker input {
     min-width: 0;
     padding: 9px;

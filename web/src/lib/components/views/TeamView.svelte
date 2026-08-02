@@ -1,7 +1,8 @@
 <script lang="ts">
+  import Select from '$lib/components/ui/Select.svelte';
   import { onMount } from 'svelte';
   import { Bot, Play, Plus, Save } from '@lucide/svelte';
-  import { formatMoney, locale, translate } from '$lib/i18n';
+  import { formatMoney, locale, translate, type TranslationKey } from '$lib/i18n';
   import { isLegacyProvider, modelsFor } from '$lib/models';
   import { getOpenRouterModels } from '$lib/openrouter';
   import OpenRouterModelPicker from '$lib/components/OpenRouterModelPicker.svelte';
@@ -69,6 +70,22 @@
     draft = { ...blankDraft };
     showCreate = false;
   }
+  const EFFORTS = ['low', 'medium', 'high', 'xhigh'] as const;
+  $: providerOptions = [
+    { value: 'claude', label: 'Claude Code' },
+    { value: 'openrouter', label: 'OpenRouter' },
+    { value: 'nvidia', label: 'NVIDIA NIM' },
+    { value: 'mock', label: $translate('provider.mock') },
+  ];
+  $: effortOptions = EFFORTS.map((level) => ({
+    value: level,
+    label: $translate(`effort.${level}` as TranslationKey),
+  }));
+  $: permissionOptions = [
+    { value: 'read-only', label: $translate('perm.readOnly') },
+    { value: 'workspace-write', label: $translate('perm.workspaceWrite') },
+    { value: 'danger-full-access', label: $translate('perm.dangerFull') },
+  ];
 </script>
 
 <section class="page-heading">
@@ -93,12 +110,11 @@
     <label>{$translate('team.name')}<input bind:value={draft.name} required /></label>
     <label>{$translate('team.role')}<input bind:value={draft.role} required /></label>
     <label
-      >{$translate('team.provider')}<select bind:value={draft.provider}
-        ><option value="claude">Claude Code</option><option value="openrouter">OpenRouter</option
-        ><option value="nvidia">NVIDIA NIM</option><option value="mock"
-          >{$translate('provider.mock')}</option
-        ></select
-      ></label
+      >{$translate('team.provider')}<Select
+        bind:value={draft.provider}
+        label={$translate('team.provider')}
+        options={providerOptions}
+      /></label
     >
     {#if draft.provider === 'openrouter'}
       <label class="field-span-2"
@@ -123,20 +139,18 @@
       >
     {/if}
     <label
-      >{$translate('team.effort')}<select bind:value={draft.effort}
-        ><option value="low">{$translate('effort.low')}</option><option value="medium"
-          >{$translate('effort.medium')}</option
-        ><option value="high">{$translate('effort.high')}</option><option value="xhigh"
-          >{$translate('effort.xhigh')}</option
-        ></select
-      ></label
+      >{$translate('team.effort')}<Select
+        bind:value={draft.effort}
+        label={$translate('team.effort')}
+        options={effortOptions}
+      /></label
     >
     <label
-      >{$translate('team.permission')}<select bind:value={draft.permission}
-        ><option value="read-only">{$translate('perm.readOnly')}</option><option
-          value="workspace-write">{$translate('perm.workspaceWrite')}</option
-        ><option value="danger-full-access">{$translate('perm.dangerFull')}</option></select
-      ></label
+      >{$translate('team.permission')}<Select
+        bind:value={draft.permission}
+        label={$translate('team.permission')}
+        options={permissionOptions}
+      /></label
     >
     <p class="path-hint" class:danger-hint={draft.permission === 'danger-full-access'}>
       {$translate(permissionHint(draft.permission))}
@@ -193,13 +207,11 @@
         }}
       >
         <label
-          >{$translate('team.provider')}<select bind:value={agent.provider}
-            ><option value="claude">Claude Code</option><option value="openrouter"
-              >OpenRouter</option
-            ><option value="nvidia">NVIDIA NIM</option><option value="mock"
-              >{$translate('provider.mock')}</option
-            ></select
-          ></label
+          >{$translate('team.provider')}<Select
+            bind:value={agent.provider}
+            label={$translate('team.provider')}
+            options={providerOptions}
+          /></label
         >
         {#if agent.provider === 'openrouter'}
           <label class="field-span-2"
@@ -224,20 +236,18 @@
           >
         {/if}
         <label
-          >{$translate('team.effort')}<select bind:value={agent.effort}
-            ><option value="low">{$translate('effort.low')}</option><option value="medium"
-              >{$translate('effort.medium')}</option
-            ><option value="high">{$translate('effort.high')}</option><option value="xhigh"
-              >{$translate('effort.xhigh')}</option
-            ></select
-          ></label
+          >{$translate('team.effort')}<Select
+            bind:value={agent.effort}
+            label={$translate('team.effort')}
+            options={effortOptions}
+          /></label
         >
         <label
-          >{$translate('team.permission')}<select bind:value={agent.permission}
-            ><option value="read-only">{$translate('perm.readOnly')}</option><option
-              value="workspace-write">{$translate('perm.workspaceWrite')}</option
-            ><option value="danger-full-access">{$translate('perm.dangerFull')}</option></select
-          ></label
+          >{$translate('team.permission')}<Select
+            bind:value={agent.permission}
+            label={$translate('team.permission')}
+            options={permissionOptions}
+          /></label
         >
         <p class="path-hint" class:danger-hint={agent.permission === 'danger-full-access'}>
           {$translate(permissionHint(agent.permission))}

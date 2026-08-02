@@ -70,6 +70,7 @@
         class:active={selectedRunId === run.id}
         role="button"
         tabindex="0"
+        aria-current={selectedRunId === run.id ? 'true' : undefined}
         onclick={() => (selectedRunId = run.id)}
         onkeydown={(event) => {
           if (event.key === 'Enter' || event.key === ' ') {
@@ -225,7 +226,7 @@
   .playtest-panel {
     margin: 0.5rem 0;
     padding: 0.5rem 0.7rem;
-    border-radius: var(--radius-sm, 6px);
+    border-radius: var(--r-sm);
     background: var(--surface-2);
     font-size: var(--fs-sm);
   }

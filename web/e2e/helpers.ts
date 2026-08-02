@@ -1,3 +1,4 @@
+import { expect, type Locator, type Page } from '@playwright/test';
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
@@ -80,4 +81,18 @@ export async function stopDaemon(handle: DaemonHandle): Promise<void> {
   }
   if (dataDir) rmSync(dataDir, { recursive: true, force: true });
   if (binary) rmSync(resolve(binary, '..'), { recursive: true, force: true });
+}
+
+export async function chooseOption(
+  scope: Page | Locator,
+  comboboxName: string,
+  optionLabel: string,
+): Promise<void> {
+  const combobox = scope.getByRole('combobox', { name: comboboxName, exact: true });
+  await combobox.click();
+  // The listbox is portalled to document.body so it is never clipped by a
+  // scrolling ancestor, which also puts it outside any scoping locator.
+  const page = 'goto' in scope ? scope : scope.page();
+  await page.getByRole('option', { name: optionLabel, exact: true }).click();
+  await expect(combobox).toContainText(optionLabel);
 }

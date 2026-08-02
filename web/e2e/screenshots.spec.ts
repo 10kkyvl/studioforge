@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { startDaemon, stopDaemon, type DaemonHandle } from './helpers';
+import { chooseOption, startDaemon, stopDaemon, type DaemonHandle } from './helpers';
 
 test.use({ locale: 'en-US' });
 
@@ -95,18 +95,9 @@ test('capture documentation screenshots', async ({ page, browser }) => {
 
   await page.getByRole('button', { name: 'Chat', exact: true }).click();
   await expect(page.locator('.chat-layout')).toBeVisible();
-  await page
-    .getByRole('combobox', { name: 'Project', exact: true })
-    .selectOption({ label: 'Skyline Obby' });
+  await chooseOption(page, 'Project', 'Skyline Obby');
   await expect(page.getByRole('heading', { name: 'Chat', level: 1 })).toBeVisible();
-  const leadSelect = page.getByRole('combobox', { name: 'Lead agent', exact: true });
-  await expect(leadSelect).toBeVisible();
-  await leadSelect.selectOption({ label: 'Forge Lead' });
-  await expect(leadSelect).toHaveValue(
-    await page
-      .locator('.lead-select option', { hasText: 'Forge Lead' })
-      .evaluate((option: HTMLOptionElement) => option.value),
-  );
+  await chooseOption(page, 'Lead agent', 'Forge Lead');
 
   const composer = page.locator('.composer textarea');
   await composer.fill('Add collectible coins with a pickup sound to the first three checkpoints');

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   applyStoredTheme,
+  applyTheme,
   normalizeFontSize,
   resolveTheme,
   setThemeColorMeta,
@@ -29,6 +30,7 @@ function stubStorage(initial: Record<string, string> = {}) {
 afterEach(() => {
   vi.unstubAllGlobals();
   document.documentElement.removeAttribute('data-theme');
+  document.documentElement.removeAttribute('data-scheme');
   document.documentElement.removeAttribute('data-font-size');
   document.querySelectorAll('meta[name="theme-color"]').forEach((el) => el.remove());
 });
@@ -54,11 +56,11 @@ describe('resolveTheme', () => {
 
 describe('themeColorFor', () => {
   it('picks the dark meta color for dark themes', () => {
-    expect(themeColorFor('dark')).toBe('#0a0e14');
+    expect(themeColorFor('dark')).toBe('#0b0e15');
   });
 
   it('picks the light meta color for light themes', () => {
-    expect(themeColorFor('light')).toBe('#f4f6f9');
+    expect(themeColorFor('light')).toBe('#f2f4f8');
   });
 });
 
@@ -94,14 +96,35 @@ describe('applyStoredTheme', () => {
     expect(document.documentElement.dataset.theme).toBe('light');
     expect(document.documentElement.dataset.fontSize).toBe('large');
     expect(document.querySelector('meta[name="theme-color"]')?.getAttribute('content')).toBe(
-      '#f4f6f9',
+      '#f2f4f8',
     );
   });
 
   it('degrades to the system default when storage is empty or throws', () => {
     stubStorage();
+    stubMatchMedia(false);
     applyStoredTheme();
     expect(document.documentElement.dataset.theme).toBe('system');
     expect(document.documentElement.dataset.fontSize).toBe('comfortable');
+  });
+});
+
+describe('applyTheme', () => {
+  it('records the resolved scheme so the palette is selected by one attribute', () => {
+    stubMatchMedia(false);
+    applyTheme('light');
+    expect(document.documentElement.dataset.theme).toBe('light');
+    expect(document.documentElement.dataset.scheme).toBe('light');
+  });
+
+  it('resolves "system" against the OS preference rather than passing it through', () => {
+    stubMatchMedia(true);
+    applyTheme('system');
+    expect(document.documentElement.dataset.theme).toBe('system');
+    expect(document.documentElement.dataset.scheme).toBe('light');
+
+    stubMatchMedia(false);
+    applyTheme('system');
+    expect(document.documentElement.dataset.scheme).toBe('dark');
   });
 });

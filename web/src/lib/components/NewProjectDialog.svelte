@@ -14,6 +14,12 @@
   export let onSubmit: () => void;
 </script>
 
+<svelte:window
+  on:keydown={(event) => {
+    if (event.key === 'Escape' && !busy) onClose();
+  }}
+/>
+
 <div class="modal-backdrop">
   <dialog open class="project-modal" aria-labelledby="new-project-title">
     <form

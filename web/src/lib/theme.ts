@@ -5,8 +5,10 @@ export const THEME_KEY = 'studioforge-theme';
 export const FONT_SIZE_KEY = 'studioforge-font-size';
 const FONT_SIZES: readonly FontSize[] = ['compact', 'comfortable', 'large'];
 
-const THEME_COLOR_DARK = '#0a0e14';
-const THEME_COLOR_LIGHT = '#f4f6f9';
+const THEME_COLOR_DARK = '#0b0e15';
+const THEME_COLOR_LIGHT = '#f2f4f8';
+
+let schemeWatcherBound = false;
 
 export function resolveTheme(value: string): ResolvedTheme {
   if (value === 'light') return 'light';
@@ -32,6 +34,23 @@ export function setThemeColorMeta(content: string): void {
   document.head.appendChild(meta);
 }
 
+export function applyTheme(theme: string): void {
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.dataset.scheme = resolveTheme(theme);
+  setThemeColorMeta(themeColorFor(theme));
+}
+
+export function watchSystemScheme(): void {
+  if (schemeWatcherBound || typeof matchMedia !== 'function') return;
+  const query = matchMedia('(prefers-color-scheme: light)');
+  if (typeof query.addEventListener !== 'function') return;
+  query.addEventListener('change', () => {
+    const theme = document.documentElement.dataset.theme ?? 'system';
+    if (theme === 'system') applyTheme(theme);
+  });
+  schemeWatcherBound = true;
+}
+
 function readStorage(key: string): string | null {
   try {
     return localStorage.getItem(key);
@@ -42,8 +61,9 @@ function readStorage(key: string): string | null {
 
 export function applyStoredTheme(): void {
   const theme = readStorage(THEME_KEY) ?? 'system';
-  const fontSize = normalizeFontSize(readStorage(FONT_SIZE_KEY) ?? 'comfortable');
-  document.documentElement.dataset.theme = theme;
-  document.documentElement.dataset.fontSize = fontSize;
-  setThemeColorMeta(themeColorFor(theme));
+  document.documentElement.dataset.fontSize = normalizeFontSize(
+    readStorage(FONT_SIZE_KEY) ?? 'comfortable',
+  );
+  applyTheme(theme);
+  watchSystemScheme();
 }

@@ -8,7 +8,117 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ## [Unreleased]
 
+### Changed
+
+- **Every screen spent its first 130 pixels announcing which screen it was.** An
+  eyebrow, a 40px title and a subtitle sat above each view, so the chat — the
+  surface the operator actually works on — opened as a bordered box inside a
+  padded page inside a grey field, scrolling internally while a third of the
+  window said "Chat". The title block is now a compact sticky toolbar carrying
+  the view name, its context and its actions in one row, and Chat, Runs and
+  Tasks fill the window height and own their own scrolling. The Kanban board no
+  longer overflows off-screen with its horizontal scrollbar parked below the
+  fold: columns are a fixed width, scroll vertically inside themselves, and the
+  board scrolls sideways with snap points (`web/src/app.css`,
+  `web/src/routes/+page.svelte`, `web/src/lib/components/views/TasksView.svelte`).
+
+- **A running agent looked exactly like a finished one.** `.status-running` and
+  `.status-completed` were both green, so the one thing this program exists to
+  show — an agent working on your project right now — was distinguishable only
+  by reading the label. Status is now temperature: work in flight is molten
+  (`--heat-1`) and glows, completed work has cooled to green, and the transition
+  between them is a 600ms cool-down rather than a swap. The run progress rail,
+  the live message's edge and the status dots all read from the same ramp, and a
+  streaming reply carries a blinking caret instead of a dashed border
+  (`web/src/app.css`, `web/src/lib/components/views/ChatView.svelte`).
+
+- **The interface asked for Inter and shipped nothing.** `font-family` named a
+  typeface that was never bundled, no `@font-face` existed and the binary is
+  offline, so the app actually rendered in Segoe UI on Windows and SF on macOS —
+  a different design on each machine and an intended one on neither. IBM Plex
+  Sans and IBM Plex Mono are now self-hosted (latin, latin-ext and Cyrillic
+  subsets, 232 KB total) and embedded with the rest of the frontend; Plex Mono
+  carries telemetry, identifiers, money and the uppercase instrument labels. The
+  binary redistributes those font files, so IBM's SIL Open Font License ships
+  beside them rather than being left implicit (`web/static/fonts/`,
+  `web/static/fonts/LICENSE.txt`, `web/src/app.css`, `web/src/app.html`).
+
+- **Chat said "Chat" twice and tagged every message four times.** The view header
+  and the panel header were separate rows carrying the same title, and each
+  message wore a role chip, a status chip, a model pill and a timestamp — the
+  status chip reading "Completed" on every message that had completed normally.
+  The two headers are one, the model identity is quiet monospace rather than a
+  pill, and the status chip appears only when the status is worth interrupting
+  for. Agent replies are no longer boxed at 72% width but set against a coloured
+  left rule, which gives long markdown output room to be read. The composer's
+  four differently-sized controls are a single surface: the text area on top, the
+  mode toggle, task attachment and Send on one baseline below it
+  (`web/src/lib/components/views/ChatView.svelte`).
+
+- **The light palette was written out twice and could only drift.** The same 20
+  tokens appeared under `html[data-theme='light']` and again inside a
+  `prefers-color-scheme` block for `data-theme='system'`. `theme.ts` now resolves
+  the choice and records it as `data-scheme`, so the palette is defined once;
+  a `matchMedia` listener keeps "system" following the OS live, which also fixes
+  the `theme-color` meta tag not updating when the OS theme changed
+  (`web/src/lib/theme.ts`, `web/src/app.css`).
+
+- **On a wide monitor the interface was mostly empty background.** Card grids
+  were hard-coded to three or four columns, so a 1920px window showed the same
+  three stretched cards as a 1280px one; the chat transcript and its composer ran
+  the full width of the window, which is unreadable and looks unfinished. Grids
+  now fill the available width with `auto-fill`, and the transcript and composer
+  share a centred 1080px column. The workspace has material rather than flat
+  colour: a blueprint grid fading down the surface, a forge glow banked at the
+  bottom of the rail, inner highlights along panel edges and a heat-gradient rim
+  that lights up when the composer takes focus (`web/src/app.css`,
+  `web/src/lib/components/views/ChatView.svelte`).
+
+- **The composer offered a text box and nothing else.** Images could only arrive
+  by paste, with no visible way to attach one, and the slash commands were
+  discoverable only by typing `/` and knowing to. There is now an attach button
+  and a commands button on the composer's control row, a keyboard hint, and an
+  empty chat opens onto the command palette as clickable cards rather than a
+  single line of grey text. The project budget rides in the context bar as a
+  gauge, and a pill appears there counting runs in flight
+  (`web/src/lib/components/views/ChatView.svelte`, `web/src/routes/+page.svelte`).
+
+- **Every dropdown was an operating-system widget wearing the wrong colours.**
+  The 16 `<select>` elements rendered their popup through the OS, so on a dark
+  interface the list appeared as white rows with a blue system highlight, in the
+  system font, ignoring every token the rest of the app is built from. They are
+  now one `Select` component: a `role="combobox"` trigger and a portalled
+  `role="listbox"`, with arrow-key navigation, Home/End, type-ahead, Escape,
+  click-outside, a checkmark on the current value and a drop-up flip when there
+  is no room below. The popup is portalled to `document.body` so it is never
+  clipped by a scrolling ancestor, and clamped to the viewport's right edge.
+  Checkboxes, number inputs and `<summary>` markers are styled rather than left
+  native for the same reason. Playwright's `selectOption` only drives real
+  `<select>` elements, so the specs now go through a `chooseOption` helper that
+  opens the combobox and clicks the option; `getByRole('combobox')` and
+  `getByRole('option')` keep working because the ARIA roles are real
+  (`web/src/lib/components/ui/Select.svelte`, `web/src/app.css`,
+  `web/e2e/helpers.ts`).
+
+- **An agent card's editor asked for four 150px columns inside a 230px card.**
+  The grid could not honour that, so the permission explainer was squeezed into
+  a one-word-per-line ribbon down the side of the card. The editor now fits its
+  columns to the available width and the explainer, the enable toggle and the
+  buttons span the full row (`web/src/app.css`).
+
+- **A focused composer drew two rings.** The container lit its border on
+  `:focus-within` while the textarea inside it separately picked up the global
+  `:focus-visible` outline, so focusing the field produced a box inside a box.
+  The inner ring is suppressed where a container already shows focus
+  (`web/src/lib/components/views/ChatView.svelte`).
+
+- Escape now closes the new-project dialog, modals animate in rather than
+  appearing, table headers stay put while their rows scroll, and the run event
+  log is striped and column-aligned instead of a wall of undifferentiated JSON
+  (`web/src/lib/components/NewProjectDialog.svelte`, `web/src/app.css`).
+
 ### Fixed
+
 
 - **The playtest reported `passed` when all it had shown was the absence of eight
   substrings.** A script that silently does nothing still prints a banner on
