@@ -2,8 +2,11 @@ import type { TranslationKey } from './i18n';
 import type {
   ChatMessage,
   ChatThread,
+  Checkpoint,
   DetectedPaths,
+  ProjectDiff,
   RunDiff,
+  RunDiffStructured,
   RunEvent,
   Snapshot,
   StudioStatus,
@@ -154,6 +157,18 @@ export const setCloudPlace = (projectId: string, cloudPlace: string): Promise<vo
 export const getPace = (projectId: string) =>
   request<{ typicalSeconds: number; samples: number }>(`/projects/${projectId}/pace`);
 export const getRunDiff = (runId: string) => request<RunDiff>(`/runs/${runId}/diff`);
+export const getRunDiffStructured = (runId: string) =>
+  request<RunDiffStructured>(`/runs/${runId}/diff?format=structured`);
+export const getProjectCheckpoints = (projectId: string) =>
+  request<{ checkpoints: Checkpoint[] }>(`/projects/${projectId}/checkpoints`).then(
+    (body) => body.checkpoints,
+  );
+export const getProjectDiff = (projectId: string, from: string, to?: string) =>
+  request<ProjectDiff>(
+    `/projects/${projectId}/diff?from=${encodeURIComponent(from)}${
+      to ? `&to=${encodeURIComponent(to)}` : ''
+    }`,
+  );
 export const rollbackRun = (runId: string) =>
   post<{ branch: string; commitHash: string }>(`/runs/${runId}/rollback`, {});
 export const getStudioStatus = (projectId?: string) =>
@@ -240,6 +255,7 @@ function openSharedStream(after?: number) {
     'message',
     'question',
     'tool',
+    'file_edit',
     'artifact',
     'usage',
     'result',

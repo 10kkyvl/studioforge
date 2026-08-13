@@ -112,6 +112,15 @@ export type Run = TokenUsage & {
   parentRunId?: string;
   correctionDepth: number;
 };
+export type CheckpointSummary = {
+  commitHash: string;
+  branch: string;
+  label: string;
+  createdAt: string;
+};
+export type Checkpoint = CheckpointSummary & {
+  runId: string;
+};
 export type RunDiff = {
   diff: string;
   status?: string;
@@ -119,12 +128,49 @@ export type RunDiff = {
   // Set when the run called a Studio MCP tool that changed the open place
   // directly; that change never reaches git, so it is never in `diff`.
   studioDirectEdits?: boolean;
-  checkpoint?: {
-    commitHash: string;
-    branch: string;
-    label: string;
-    createdAt: string;
-  };
+  checkpoint?: CheckpointSummary;
+};
+export type DiffLineType = 'context' | 'add' | 'delete';
+export type DiffLine = {
+  type: DiffLineType;
+  oldNo: number | null;
+  newNo: number | null;
+  text: string;
+};
+export type DiffHunk = {
+  header: string;
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  lines: DiffLine[];
+};
+export type DiffFileStatus = 'modified' | 'added' | 'deleted' | 'renamed' | 'copied';
+export type DiffFile = {
+  path: string;
+  oldPath: string | null;
+  status: DiffFileStatus;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  hunks: DiffHunk[];
+};
+export type DiffStats = {
+  filesChanged: number;
+  additions: number;
+  deletions: number;
+};
+export type StructuredDiff = {
+  stats: DiffStats;
+  files: DiffFile[];
+};
+export type RunDiffStructured = StructuredDiff & {
+  studioDirectEdits?: boolean;
+  note?: string;
+  checkpoint?: CheckpointSummary;
+};
+export type ProjectDiff = StructuredDiff & {
+  note?: string;
 };
 export type RunEvent = {
   id: number;

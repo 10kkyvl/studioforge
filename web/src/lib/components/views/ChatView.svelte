@@ -6,9 +6,13 @@
     attachmentUrl,
     createTask,
     createThread,
+    friendlyError,
     getLead,
     getPace,
+    getProjectCheckpoints,
+    getProjectDiff,
     getRunDiff,
+    getRunDiffStructured,
     getStudioStatus,
     getThreadMessages,
     getThreads,
@@ -26,9 +30,11 @@
   import { aggregateOpenRouterMessages } from '$lib/openrouterStream';
   import { parseAttachments } from '$lib/attachments';
   import Markdown from '$lib/components/Markdown.svelte';
+  import StructuredDiff from '$lib/components/StructuredDiff.svelte';
   import Select from '$lib/components/ui/Select.svelte';
   import { foregroundRun, liveThreadRuns, queuedBehindForeground } from '$lib/runQueue';
   import { endsRun, mcpWithheldMessage } from '$lib/runStatus';
+  import { LiveDiffDebounce, fileEditEventCount } from '$lib/liveDiff';
   import {
     extractQuestionFence,
     isStuckEscalation,
@@ -50,9 +56,12 @@
     Agent,
     ChatMessage,
     ChatThread,
+    Checkpoint,
     Project,
+    ProjectDiff,
     Run,
     RunDiff,
+    RunDiffStructured,
     RunEvent,
     StudioStatus,
     Task,
@@ -113,6 +122,21 @@
   let rollingBack = false;
   let rollbackError = '';
   let rollbackResult: { branch: string; commitHash: string } | null = null;
+  let liveDiff: RunDiffStructured | null = null;
+  let seenFileEditCount = 0;
+  let liveDiffDebounce = new LiveDiffDebounce();
+  let liveDiffTimer: ReturnType<typeof setTimeout> | undefined;
+  let checkpointsLoading = false;
+  let checkpointsLoaded = false;
+  let checkpointsError = '';
+  let projectCheckpoints: Checkpoint[] = [];
+  let threadDiff: ProjectDiff | null = null;
+  let threadDiffLoading = false;
+  let rangeFrom = '';
+  let rangeTo = 'HEAD';
+  let rangeDiff: ProjectDiff | null = null;
+  let rangeDiffLoading = false;
+  let rangeDiffError = '';
   let loadedProjectId: string | undefined;
   // Bumped once per project switch. Every async load below captures it before
   // its await and only applies the result if it is still current afterward —
@@ -189,6 +213,7 @@
     void loadStudioStatus();
     attachedTaskId = '';
     clearPendingAttachments();
+    resetCheckpointsState();
   } else if (!projectId && loadedProjectId) {
     loadedProjectId = undefined;
     projectGeneration += 1;
@@ -204,6 +229,7 @@
     studioStatus = STUDIO_OFFLINE;
     attachedTaskId = '';
     clearPendingAttachments();
+    resetCheckpointsState();
   }
 
   onMount(() => {
@@ -219,6 +245,7 @@
   onDestroy(() => {
     if (progressInterval) clearInterval(progressInterval);
     if (studioInterval) clearInterval(studioInterval);
+    if (liveDiffTimer) clearTimeout(liveDiffTimer);
     clearPendingAttachments();
   });
 
@@ -663,8 +690,14 @@
     sentRunId = currentForegroundRun?.id ?? null;
     sendStartMs = currentForegroundRun ? Date.parse(currentForegroundRun.createdAt) : 0;
     stopping = false;
+    resetLiveDiff();
   }
   $: activeRunEvents = sentRunId ? liveEvents.filter((event) => event.runId === sentRunId) : [];
+  $: liveFileEditCount = sentRunId ? fileEditEventCount(activeRunEvents, sentRunId) : 0;
+  $: if (sentRunId && liveFileEditCount > seenFileEditCount) {
+    seenFileEditCount = liveFileEditCount;
+    scheduleLiveDiffFetch(sentRunId);
+  }
   $: liveRunStatus = activeRunEvents.reduce<string>((status, event) => {
     if (event.type !== 'status' || event.rawType !== 'scheduler.state') return status;
     const payload = event.payload;
@@ -757,6 +790,7 @@
     runDiff = null;
     loadingDiff = false;
     resetRollbackState();
+    resetLiveDiff();
     const active = foregroundRun(liveThreadRuns(runs, submittedRuns, threadId, endedRunIds));
     sentRunId = active?.id ?? null;
     sendStartMs = active ? Date.parse(active.createdAt) : 0;
@@ -791,6 +825,8 @@
     selectedThreadId = id;
     commandInfo = '';
     restoreActiveRun(id);
+    threadDiff = null;
+    if (checkpointsLoaded) void loadThreadDiff();
     await loadMessages(id);
     // Opening a thread lands on its newest message regardless of where the
     // previous thread was scrolled to.
@@ -864,6 +900,148 @@
     }
   }
 
+  function resetLiveDiff() {
+    liveDiff = null;
+    seenFileEditCount = 0;
+    liveDiffDebounce.reset();
+    if (liveDiffTimer) clearTimeout(liveDiffTimer);
+    liveDiffTimer = undefined;
+  }
+
+  async function fetchLiveDiff(runId: string) {
+    try {
+      const result = await getRunDiffStructured(runId);
+      if (sentRunId === runId) liveDiff = result;
+    } catch {}
+  }
+
+  function scheduleLiveDiffFetch(runId: string) {
+    const decision = liveDiffDebounce.onFileEdit(Date.now());
+    if (decision.kind === 'fetch-now') {
+      void fetchLiveDiff(runId);
+      return;
+    }
+    if (liveDiffTimer) clearTimeout(liveDiffTimer);
+    const fireAt = decision.fireAt;
+    liveDiffTimer = setTimeout(
+      () => {
+        if (liveDiffDebounce.consume(fireAt)) void fetchLiveDiff(runId);
+      },
+      Math.max(0, fireAt - Date.now()),
+    );
+  }
+
+  function resetCheckpointsState() {
+    checkpointsLoading = false;
+    checkpointsLoaded = false;
+    checkpointsError = '';
+    projectCheckpoints = [];
+    threadDiff = null;
+    threadDiffLoading = false;
+    rangeFrom = '';
+    rangeTo = 'HEAD';
+    rangeDiff = null;
+    rangeDiffLoading = false;
+    rangeDiffError = '';
+  }
+
+  function threadRunIdSet(threadId: string): Set<string> {
+    const byId = new Map<string, Run>();
+    for (const run of submittedRuns) byId.set(run.id, run);
+    for (const run of runs) byId.set(run.id, run);
+    const ids = new Set<string>();
+    for (const run of byId.values()) if (run.threadId === threadId) ids.add(run.id);
+    return ids;
+  }
+
+  function earliestThreadCheckpoint(threadId: string): Checkpoint | undefined {
+    const ids = threadRunIdSet(threadId);
+    return [...projectCheckpoints]
+      .filter((checkpoint) => ids.has(checkpoint.runId))
+      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))[0];
+  }
+
+  async function loadThreadDiff() {
+    if (!projectId || !selectedThreadId) return;
+    const threadAtLoad = selectedThreadId;
+    const earliest = earliestThreadCheckpoint(threadAtLoad);
+    if (!earliest) {
+      threadDiff = null;
+      return;
+    }
+    threadDiffLoading = true;
+    try {
+      const result = await getProjectDiff(projectId, earliest.commitHash, 'HEAD');
+      if (selectedThreadId === threadAtLoad) threadDiff = result;
+    } catch (cause) {
+      if (selectedThreadId === threadAtLoad) {
+        threadDiff = {
+          stats: { filesChanged: 0, additions: 0, deletions: 0 },
+          files: [],
+          note: friendlyError(cause, $translate),
+        };
+      }
+    } finally {
+      if (selectedThreadId === threadAtLoad) threadDiffLoading = false;
+    }
+  }
+
+  async function loadProjectCheckpoints() {
+    if (!projectId || checkpointsLoaded || checkpointsLoading) return;
+    const projectAtLoad = projectId;
+    checkpointsLoading = true;
+    checkpointsError = '';
+    try {
+      const result = await getProjectCheckpoints(projectAtLoad);
+      if (projectId !== projectAtLoad) return;
+      projectCheckpoints = result;
+      checkpointsLoaded = true;
+      const oldest = [...result].sort(
+        (a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt),
+      )[0];
+      rangeFrom = oldest?.commitHash ?? '';
+      rangeTo = 'HEAD';
+      await loadThreadDiff();
+    } catch (cause) {
+      if (projectId === projectAtLoad) {
+        checkpointsError =
+          cause instanceof APIError
+            ? friendlyError(cause, $translate)
+            : $translate('chat.diffCheckpointsLoadError');
+      }
+    } finally {
+      if (projectId === projectAtLoad) checkpointsLoading = false;
+    }
+  }
+
+  function handleRangeDetailsToggle(event: Event) {
+    if ((event.currentTarget as HTMLDetailsElement).open) void loadProjectCheckpoints();
+  }
+
+  function checkpointOptionLabel(checkpoint: Checkpoint): string {
+    return `${checkpoint.commitHash.slice(0, 7)} · ${formatDate(checkpoint.createdAt, $locale)} · ${checkpoint.runId.slice(0, 8)}`;
+  }
+
+  async function applyRangeDiff() {
+    if (!projectId || !rangeFrom || rangeDiffLoading) return;
+    rangeDiffLoading = true;
+    rangeDiffError = '';
+    rangeDiff = null;
+    try {
+      rangeDiff = await getProjectDiff(projectId, rangeFrom, rangeTo);
+    } catch (cause) {
+      if (cause instanceof APIError && cause.code === 'unknown_checkpoint') {
+        rangeDiffError = $translate('chat.diffRangeErrorUnknown');
+      } else if (cause instanceof APIError && cause.code === 'invalid_range') {
+        rangeDiffError = $translate('chat.diffRangeErrorInvalid');
+      } else {
+        rangeDiffError = friendlyError(cause, $translate);
+      }
+    } finally {
+      rangeDiffLoading = false;
+    }
+  }
+
   async function doRollback() {
     if (!sentRunId || rollingBack) return;
     rollingBack = true;
@@ -916,6 +1094,8 @@
       runDiff = null;
       loadingDiff = false;
       resetRollbackState();
+      resetLiveDiff();
+      threadDiff = null;
       atBottom = true;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -1370,6 +1550,20 @@
             </div>
           {/if}
         {/each}
+        {#if sentRunId && liveDiff}
+          <div class="live-diff-card">
+            <p class="live-diff-heading">{$translate('chat.liveDiffHeading')}</p>
+            {#if liveDiff.studioDirectEdits}
+              <p class="diff-studio-notice">{$translate('chat.diffStudioDirect')}</p>
+            {/if}
+            <StructuredDiff
+              stats={liveDiff.stats}
+              files={liveDiff.files}
+              note={liveDiff.note ?? ''}
+              compact
+            />
+          </div>
+        {/if}
       {/if}
     </div>
     {#if !atBottom}
@@ -1530,6 +1724,86 @@
           {/if}
         </div>
       {/if}
+    {/if}
+    {#if projectId && selectedThreadId}
+      <details class="diff-panel diff-range-panel" ontoggle={handleRangeDetailsToggle}>
+        <summary>{$translate('chat.diffRangeSection')}</summary>
+        <div class="diff-range-body">
+          <div class="diff-range-section">
+            <p class="diff-range-subtitle">{$translate('chat.diffThreadTitle')}</p>
+            {#if checkpointsLoading || threadDiffLoading}
+              <p class="diff-muted">{$translate('common.loading')}</p>
+            {:else if checkpointsError}
+              <p class="diff-muted">{checkpointsError}</p>
+            {:else if threadDiff}
+              <StructuredDiff
+                stats={threadDiff.stats}
+                files={threadDiff.files}
+                note={threadDiff.note ?? ''}
+                emptyMessage={$translate('chat.diffRangeEmpty')}
+              />
+            {:else if checkpointsLoaded}
+              <p class="diff-muted">{$translate('chat.diffRangeEmpty')}</p>
+            {/if}
+          </div>
+          <div class="diff-range-section">
+            <p class="diff-range-subtitle">{$translate('chat.diffRangeTitle')}</p>
+            {#if checkpointsLoading}
+              <p class="diff-muted">{$translate('common.loading')}</p>
+            {:else if checkpointsError}
+              <p class="diff-muted">{checkpointsError}</p>
+            {:else if checkpointsLoaded && projectCheckpoints.length === 0}
+              <p class="diff-muted">{$translate('chat.diffRangeEmpty')}</p>
+            {:else if checkpointsLoaded}
+              <div class="diff-range-picker">
+                <label class="diff-range-field">
+                  <span>{$translate('chat.diffRangeFrom')}</span>
+                  <Select
+                    bind:value={rangeFrom}
+                    options={projectCheckpoints.map((checkpoint) => ({
+                      value: checkpoint.commitHash,
+                      label: checkpointOptionLabel(checkpoint),
+                    }))}
+                  />
+                </label>
+                <label class="diff-range-field">
+                  <span>{$translate('chat.diffRangeTo')}</span>
+                  <Select
+                    bind:value={rangeTo}
+                    options={[
+                      { value: 'HEAD', label: $translate('chat.diffRangeHead') },
+                      ...projectCheckpoints.map((checkpoint) => ({
+                        value: checkpoint.commitHash,
+                        label: checkpointOptionLabel(checkpoint),
+                      })),
+                    ]}
+                  />
+                </label>
+                <button
+                  type="button"
+                  class="diff-range-apply"
+                  disabled={rangeDiffLoading || !rangeFrom || !rangeTo}
+                  onclick={applyRangeDiff}
+                >
+                  {rangeDiffLoading
+                    ? $translate('common.loading')
+                    : $translate('chat.diffRangeApply')}
+                </button>
+              </div>
+              {#if rangeDiffError}
+                <p class="diff-muted">{rangeDiffError}</p>
+              {:else if rangeDiff}
+                <StructuredDiff
+                  stats={rangeDiff.stats}
+                  files={rangeDiff.files}
+                  note={rangeDiff.note ?? ''}
+                  emptyMessage={$translate('chat.diffRangeEmpty')}
+                />
+              {/if}
+            {/if}
+          </div>
+        </div>
+      </details>
     {/if}
     {#if attachedTask}
       <div class="attached-task-chip" class:blocked={attachedTaskBlocked}>
@@ -2555,6 +2829,71 @@
     color: var(--warning);
     font-size: var(--fs-xs);
     line-height: 1.45;
+  }
+  .live-diff-card {
+    align-self: flex-start;
+    width: 100%;
+    max-width: 780px;
+    margin-top: 4px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+  }
+  .live-diff-heading {
+    margin: 0 0 6px;
+    color: var(--text-dim);
+    font-size: var(--fs-2xs);
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .diff-range-panel {
+    margin-top: 14px;
+  }
+  .diff-range-body {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    margin-top: 8px;
+  }
+  .diff-range-subtitle {
+    margin: 0 0 6px;
+    color: var(--text-dim);
+    font-size: var(--fs-xs);
+    font-weight: 500;
+  }
+  .diff-range-picker {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .diff-range-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 220px;
+    color: var(--muted);
+    font-size: var(--fs-2xs);
+  }
+  .diff-range-apply {
+    height: 30px;
+    padding: 0 14px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    background: var(--surface-3);
+    color: var(--text);
+    font-size: var(--fs-xs);
+    cursor: pointer;
+  }
+  .diff-range-apply:hover:not(:disabled) {
+    border-color: var(--text-dim);
+  }
+  .diff-range-apply:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
   .rollback-row {
     margin: 8px 18px 0;
