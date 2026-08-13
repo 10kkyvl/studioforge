@@ -8,6 +8,69 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ## [Unreleased]
 
+### Added
+
+- **The per-run diff can now be requested as structured data instead of one
+  opaque string.** `internal/gitops/diffparse.Parse` turns unified-diff text
+  into `{stats: {filesChanged, additions, deletions}, files: [{path, oldPath,
+  status, additions, deletions, binary, hunks}]}`, covering modified, added,
+  deleted, renamed, and copied files, mode-only changes, binary files, empty
+  diffs, and `\ No newline at end of file` markers — with unit tests over
+  fixture text and no dependency on a real git repository.
+  `GET /api/v1/runs/{id}/diff?format=structured` returns this model in place
+  of the raw `diff` string; without the parameter the response is unchanged
+  byte-for-byte, and `note`/`checkpoint`/`studioDirectEdits` behave
+  identically either way, including the "not a git repository" empty state
+  (`internal/gitops/diffparse`, `internal/api/diff.go`).
+
+- **Diffing is no longer limited to one run at a time.**
+  `gitops.Client.DiffRange(ctx, root, from, to)` diffs two arbitrary refs
+  after checking each resolves to a real commit (`ErrUnknownRef`) and that
+  `from` is an ancestor of `to` (`ErrNotAncestor`), the same empty-result
+  behavior as `DiffHead`/`DiffCommit` when the project is not a git repo at
+  all. `GET /api/v1/projects/{id}/diff?from=<ref>&to=<ref|HEAD>` exposes it,
+  answering with the same structured model as the per-run diff; `from` is
+  required (400 `missing_from`), `to` defaults to `HEAD`, an unrecognized ref
+  returns 404 `unknown_checkpoint` before git ever runs (each ref must be
+  `"HEAD"` or a commit hash present in the project's own `checkpoints`
+  table), and a non-ancestor range returns 400 `invalid_range` — no raw git
+  stderr reaches the response either way.
+  `GET /api/v1/projects/{id}/checkpoints` lists that project's recorded
+  checkpoints, newest first, as `{commitHash, branch, label, createdAt,
+  runId}` (`database.Store.CheckpointsForProject`, `internal/gitops/git.go`,
+  `internal/api/diff.go`).
+
+- Both `docs/api/openapi.yaml` and `internal/api/openapi.yaml` document the
+  new routes and the `format=structured` query parameter.
+
+- **The chat now shows what a run is changing while it is still running.**
+  The scheduler publishes a transient (unpersisted, live-only) `file_edit`
+  run event — raw type `scheduler.file_edit`, payload `{"tools": [...]}` —
+  whenever a provider event carries a file-edit tool call, on both Claude's
+  nested `tool_use` blocks and the OpenRouter/NVIDIA agent loop's
+  `tool.call` events, reusing the same file-edit tool list stuck-detection
+  already uses so the two never drift apart. The chat listens for it and
+  keeps one "changes so far" card in the live stream: one row per changed
+  file with its cumulative `+added −deleted` counts and status
+  (added/deleted/renamed), each row expanding into that file's hunks. The
+  card fetches the structured run diff behind a trailing debounce — the
+  first edit fetches immediately, bursts coalesce — never one `git diff`
+  per tool result, and the counts match the finished run's diff panel by
+  construction because both read the same endpoint. Studio MCP edits never
+  reach git and are not counted; the existing direct-edits notice covers
+  them (`internal/scheduler/file_edit.go`, `web/src/lib/liveDiff.ts`,
+  `web/src/lib/components/StructuredDiff.svelte`,
+  `web/src/lib/components/views/ChatView.svelte`).
+
+- **The chat's diff panel gained a range view.** A collapsed "changes across
+  runs" section under the per-run panel offers "changes in this
+  conversation" — the thread's earliest checkpoint diffed against `HEAD` —
+  and an explicit picker over the project's recorded checkpoints, each
+  labelled with its commit, run and timestamp, rendering through the same
+  structured-diff component as the live card. Named backend errors surface
+  as readable messages, and an empty range shows the same "no changes"
+  state as the per-run panel (`web/src/lib/components/views/ChatView.svelte`).
+
 ### Changed
 
 - **Every screen spent its first 130 pixels announcing which screen it was.** An

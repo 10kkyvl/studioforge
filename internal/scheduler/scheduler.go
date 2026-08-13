@@ -738,6 +738,10 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 			// per-run StuckDetectionEnabled opt-out must never also silence the
 			// warning that it changed Studio directly.
 			m.trackStudioMutation(e, event)
+			// Also unconditional: a live "the agent is editing" signal is a
+			// fact about what just happened, not something the stuck-detection
+			// opt-out should silence either.
+			m.trackFileEdit(e, event)
 			// Stuck detection never fires on top of the agent's own natural
 			// question — that already has its own waiting_decision path once
 			// this turn ends, and racing two escalation mechanisms against the

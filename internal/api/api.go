@@ -69,6 +69,7 @@ type StudioOpenCheck struct {
 type GitOps interface {
 	DiffHead(ctx context.Context, projectPath string) (string, error)
 	DiffCommit(ctx context.Context, projectPath, commit string) (string, error)
+	DiffRange(ctx context.Context, projectPath, from, to string) (string, error)
 	Status(ctx context.Context, projectPath string) (string, error)
 	SafeRollback(ctx context.Context, projectPath, target string) (string, error)
 	Tag(ctx context.Context, projectPath, name string) error
@@ -189,6 +190,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/runs/{id}/{action}", s.runAction)
 	mux.HandleFunc("GET /api/v1/runs/{id}/diff", s.runDiff)
 	mux.HandleFunc("POST /api/v1/runs/{id}/rollback", s.rollbackRun)
+	mux.HandleFunc("GET /api/v1/projects/{id}/checkpoints", s.projectCheckpoints)
+	mux.HandleFunc("GET /api/v1/projects/{id}/diff", s.projectDiff)
 	mux.HandleFunc("GET /api/v1/projects/{id}/git/status", s.gitStatus)
 	mux.HandleFunc("POST /api/v1/projects/{id}/git/tag", s.gitTag)
 	mux.HandleFunc("POST /api/v1/studios/{id}/bind", s.bindStudio)

@@ -20,6 +20,9 @@ func (g *realGit) DiffHead(ctx context.Context, path string) (string, error) {
 func (g *realGit) DiffCommit(ctx context.Context, path, commit string) (string, error) {
 	return g.client.DiffCommit(ctx, path, commit)
 }
+func (g *realGit) DiffRange(ctx context.Context, path, from, to string) (string, error) {
+	return g.client.DiffRange(ctx, path, from, to)
+}
 func (g *realGit) Status(ctx context.Context, path string) (string, error) {
 	return g.client.Status(ctx, path)
 }
@@ -33,17 +36,25 @@ func (g *realGit) Tag(ctx context.Context, path, name string) error {
 type fakeGitOps struct {
 	statusOut      string
 	diffCommitOut  string
+	diffRangeOut   string
+	diffRangeErr   error
 	rollbackBranch string
 	rollbackErr    error
 	tagErr         error
 	gotCommit      string
 	gotTagName     string
+	gotFrom        string
+	gotTo          string
 }
 
 func (f *fakeGitOps) DiffHead(ctx context.Context, path string) (string, error) { return "", nil }
 func (f *fakeGitOps) DiffCommit(ctx context.Context, path, commit string) (string, error) {
 	f.gotCommit = commit
 	return f.diffCommitOut, nil
+}
+func (f *fakeGitOps) DiffRange(ctx context.Context, path, from, to string) (string, error) {
+	f.gotFrom, f.gotTo = from, to
+	return f.diffRangeOut, f.diffRangeErr
 }
 func (f *fakeGitOps) Status(ctx context.Context, path string) (string, error) {
 	return f.statusOut, nil

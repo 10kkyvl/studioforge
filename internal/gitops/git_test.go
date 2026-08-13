@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -118,6 +119,91 @@ func TestDiffCommitNotARepoIsEmpty(t *testing.T) {
 	root := t.TempDir()
 	client := New()
 	diff, err := client.DiffCommit(context.Background(), root, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff != "" {
+		t.Fatalf("diff=%s", diff)
+	}
+}
+func TestDiffRangeShowsChangesBetweenTwoCommits(t *testing.T) {
+	root := t.TempDir()
+	git(t, root, "init")
+	git(t, root, "config", "user.email", "test@example.invalid")
+	git(t, root, "config", "user.name", "StudioForge Test")
+	file := filepath.Join(root, "game.lua")
+	_ = os.WriteFile(file, []byte("v1"), 0o600)
+	git(t, root, "add", "game.lua")
+	git(t, root, "commit", "-m", "one")
+	from := git(t, root, "rev-parse", "HEAD")
+	_ = os.WriteFile(file, []byte("v2"), 0o600)
+	git(t, root, "commit", "-am", "two")
+	to := git(t, root, "rev-parse", "HEAD")
+	client := New()
+	diff, err := client.DiffRange(context.Background(), root, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(diff, "-v1") || !strings.Contains(diff, "+v2") {
+		t.Fatalf("diff=%s", diff)
+	}
+}
+func TestDiffRangeToHEADWorks(t *testing.T) {
+	root := t.TempDir()
+	git(t, root, "init")
+	git(t, root, "config", "user.email", "test@example.invalid")
+	git(t, root, "config", "user.name", "StudioForge Test")
+	file := filepath.Join(root, "game.lua")
+	_ = os.WriteFile(file, []byte("v1"), 0o600)
+	git(t, root, "add", "game.lua")
+	git(t, root, "commit", "-m", "one")
+	from := git(t, root, "rev-parse", "HEAD")
+	_ = os.WriteFile(file, []byte("v2"), 0o600)
+	git(t, root, "commit", "-am", "two")
+	client := New()
+	diff, err := client.DiffRange(context.Background(), root, from, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(diff, "-v1") || !strings.Contains(diff, "+v2") {
+		t.Fatalf("diff=%s", diff)
+	}
+}
+func TestDiffRangeUnknownRefReturnsErrUnknownRef(t *testing.T) {
+	root := t.TempDir()
+	git(t, root, "init")
+	git(t, root, "config", "user.email", "test@example.invalid")
+	git(t, root, "config", "user.name", "StudioForge Test")
+	_ = os.WriteFile(filepath.Join(root, "game.lua"), []byte("v1"), 0o600)
+	git(t, root, "add", "game.lua")
+	git(t, root, "commit", "-m", "one")
+	client := New()
+	if _, err := client.DiffRange(context.Background(), root, "0000000000000000000000000000000000000000", "HEAD"); !errors.Is(err, ErrUnknownRef) {
+		t.Fatalf("err=%v, want ErrUnknownRef", err)
+	}
+}
+func TestDiffRangeNotAncestorReturnsErrNotAncestor(t *testing.T) {
+	root := t.TempDir()
+	git(t, root, "init")
+	git(t, root, "config", "user.email", "test@example.invalid")
+	git(t, root, "config", "user.name", "StudioForge Test")
+	file := filepath.Join(root, "game.lua")
+	_ = os.WriteFile(file, []byte("v1"), 0o600)
+	git(t, root, "add", "game.lua")
+	git(t, root, "commit", "-m", "one")
+	first := git(t, root, "rev-parse", "HEAD")
+	_ = os.WriteFile(file, []byte("v2"), 0o600)
+	git(t, root, "commit", "-am", "two")
+	second := git(t, root, "rev-parse", "HEAD")
+	client := New()
+	if _, err := client.DiffRange(context.Background(), root, second, first); !errors.Is(err, ErrNotAncestor) {
+		t.Fatalf("err=%v, want ErrNotAncestor", err)
+	}
+}
+func TestDiffRangeNotARepoIsEmpty(t *testing.T) {
+	root := t.TempDir()
+	client := New()
+	diff, err := client.DiffRange(context.Background(), root, "HEAD", "HEAD")
 	if err != nil {
 		t.Fatal(err)
 	}

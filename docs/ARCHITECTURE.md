@@ -173,6 +173,20 @@ plugin loading or dynamic linking.
   endpoints, all in `internal/api/git.go`. Rollback also refuses (409) while the project's write lease
   is held by another run — a best-effort, check-then-act guard against a `SafeRollback` racing a run
   still writing to the same project.
+- `internal/gitops/diffparse` — `Parse(text string) Diff` turns raw unified-diff text into a typed model
+  (`Stats{FilesChanged,Additions,Deletions}`, `Files[]{Path,OldPath,Status,Additions,Deletions,Binary,
+  Hunks}`, `Hunks[]{Header,OldStart,OldLines,NewStart,NewLines,Lines}`), with no git dependency of its
+  own so it is unit-tested purely against fixture text. `GET /api/v1/runs/{id}/diff?format=structured`
+  runs it over whatever `DiffHead`/`DiffCommit` returned instead of handing back the raw string;
+  `note`/`checkpoint`/`studioDirectEdits` behave identically to the default (unparsed) response either
+  way. `Client.DiffRange(ctx, root, from, to)` diffs two arbitrary refs after validating each resolves
+  to a real commit (`ErrUnknownRef`) and that `from` is an ancestor of `to`
+  (`ErrNotAncestor`) — same empty-diff-on-non-repo behavior as `DiffHead`/`DiffCommit`. It backs
+  `GET /api/v1/projects/{id}/diff?from=&to=` (`to` defaults to `HEAD`), which always answers with the
+  structured model; `from`/`to` must each be `"HEAD"` or a commit hash present in the project's
+  `checkpoints` table, otherwise the handler returns 404 `unknown_checkpoint` without reaching git at
+  all. `GET /api/v1/projects/{id}/checkpoints` (`database.Store.CheckpointsForProject`) lists that same
+  table's rows for a project, newest first, as `{commitHash,branch,label,createdAt,runId}`.
 
 ### Project state and prompts
 
@@ -493,6 +507,18 @@ correction lineage.
 11. **SSE to UI** — `GET /api/v1/events` first replays any events after the client's `Last-Event-ID` (or an
     `after` query parameter) from the database, then subscribes to the hub for new ones, sending a
     heartbeat comment every 15 seconds and disconnecting a client whose 256-event buffer overflows.
+
+Not every event is persisted. `events.Hub.PublishTransient` broadcasts straight to live subscribers
+without an `AppendEvents` write or an assigned `id`, for events whose only value is arriving live — a
+reload would find nothing to replay and that's fine. Streamed message text (`*.message.partial`) is the
+original case; the scheduler's own `trackFileEdit` (`internal/scheduler/file_edit.go`) adds a second:
+whenever a fully-buffered provider event carries a file-edit tool call (`Edit`/`Write`/`MultiEdit` on
+Claude, `create_file`/`replace_exact_text`/`apply_patch` on the OpenRouter/NVIDIA agent loop — the same
+list `isFileEditTool` in `internal/scheduler/stuck.go` already uses for stuck-detection's progress
+signal), it publishes `Type: "file_edit"`, raw type `scheduler.file_edit`, payload
+`{"tools": [...]}` naming just the file-edit tools seen on that event. Called unconditionally from the
+run loop, the same as `trackStudioMutation` — a per-run stuck-detection opt-out has no bearing on
+whether this live "the agent is editing" signal fires.
 
 A note on the `status` event type: it is shared. The scheduler emits its own lifecycle changes under
 raw type `scheduler.state` (and the initial queueing under `scheduler.queued`), but provider adapters

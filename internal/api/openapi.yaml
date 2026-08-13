@@ -142,9 +142,13 @@ paths:
         exists, else the working tree against HEAD; the response also
         carries studioDirectEdits, set when the run called a Studio MCP
         tool that changed the open place directly (never reflected in this
-        diff)
+        diff). With ?format=structured the response carries a parsed
+        {stats, files} model (per-file hunks and lines) instead of the
+        default raw "diff" string; note/checkpoint/studioDirectEdits behave
+        identically either way
       parameters:
         - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: format, in: query, required: false, schema: {type: string, enum: [structured]}}
       responses: {"200": {description: Diff}}
   /runs/{id}/rollback:
     post:
@@ -155,6 +159,26 @@ paths:
         "200": {description: Rollback branch and restored commit hash}
         "400": {description: The run has no recorded checkpoint}
         "409": {description: The project's write lease is held by another run, or the rollback itself failed}
+  /projects/{id}/checkpoints:
+    get:
+      summary: A project's recorded git checkpoints, newest first (empty array, never null)
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses: {"200": {description: Checkpoints}}
+  /projects/{id}/diff:
+    get:
+      summary: >-
+        Structured diff (the #8 {stats, files} model) between two refs; to
+        defaults to HEAD when omitted. Each ref must be "HEAD" or a
+        commitHash recorded in the project's checkpoints table
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: from, in: query, required: true, schema: {type: string}}
+        - {name: to, in: query, required: false, schema: {type: string, default: HEAD}}
+      responses:
+        "200": {description: Diff}
+        "400": {description: "from is required, or from is not an ancestor of to (invalid_range)"}
+        "404": {description: Unknown checkpoint reference (unknown_checkpoint)}
   /projects/{id}/git/status:
     get:
       summary: A project's `git status --short --branch` (empty status when it is not a Git repo)

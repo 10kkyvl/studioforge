@@ -14,6 +14,9 @@ func (a *gitAdapter) DiffHead(ctx context.Context, projectPath string) (string, 
 func (a *gitAdapter) DiffCommit(ctx context.Context, projectPath, commit string) (string, error) {
 	return a.client.DiffCommit(ctx, projectPath, commit)
 }
+func (a *gitAdapter) DiffRange(ctx context.Context, projectPath, from, to string) (string, error) {
+	return a.client.DiffRange(ctx, projectPath, from, to)
+}
 func (a *gitAdapter) Status(ctx context.Context, projectPath string) (string, error) {
 	return a.client.Status(ctx, projectPath)
 }

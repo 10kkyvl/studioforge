@@ -29,3 +29,28 @@ func (s *Store) CheckpointForRun(ctx context.Context, runID string) (models.Chec
 	c.CreatedAt = parseTime(created)
 	return c, nil
 }
+
+// CheckpointsForProject returns every checkpoint recorded for a project,
+// newest first, so a range-diff picker can list them alongside the run and
+// timestamp each one belongs to.
+func (s *Store) CheckpointsForProject(ctx context.Context, projectID string) ([]models.Checkpoint, error) {
+	rows, err := s.db.SQL.QueryContext(ctx, `SELECT id,project_id,COALESCE(run_id,''),commit_hash,branch,label,created_at FROM checkpoints WHERE project_id=? ORDER BY created_at DESC`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	checkpoints := []models.Checkpoint{}
+	for rows.Next() {
+		var c models.Checkpoint
+		var created string
+		if err := rows.Scan(&c.ID, &c.ProjectID, &c.RunID, &c.CommitHash, &c.Branch, &c.Label, &created); err != nil {
+			return nil, err
+		}
+		c.CreatedAt = parseTime(created)
+		checkpoints = append(checkpoints, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return checkpoints, nil
+}

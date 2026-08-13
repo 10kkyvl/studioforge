@@ -50,6 +50,33 @@ func (c *Client) DiffCommit(ctx context.Context, root, commit string) (string, e
 	}
 	return c.run(ctx, root, "diff", commit)
 }
+
+// ErrUnknownRef is returned by DiffRange when either ref does not resolve to
+// a commit in the project's repository.
+var ErrUnknownRef = errors.New("unknown git ref")
+
+// ErrNotAncestor is returned by DiffRange when from is not an ancestor of to,
+// so a range diff between them would not describe a coherent forward change.
+var ErrNotAncestor = errors.New("from is not an ancestor of to")
+
+// DiffRange returns the diff between two arbitrary refs (commit hashes or
+// "HEAD"), after validating both resolve to real commits and that from is an
+// ancestor of to. Like DiffHead/DiffCommit it returns "" cleanly, with no
+// error, when root is not a git repository at all.
+func (c *Client) DiffRange(ctx context.Context, root, from, to string) (string, error) {
+	if _, err := c.run(ctx, root, "rev-parse", "--git-dir"); err != nil {
+		return "", nil
+	}
+	for _, ref := range []string{from, to} {
+		if _, err := c.run(ctx, root, "cat-file", "-e", ref+"^{commit}"); err != nil {
+			return "", fmt.Errorf("%w: %s", ErrUnknownRef, ref)
+		}
+	}
+	if _, err := c.run(ctx, root, "merge-base", "--is-ancestor", from, to); err != nil {
+		return "", fmt.Errorf("%w: %s is not an ancestor of %s", ErrNotAncestor, from, to)
+	}
+	return c.run(ctx, root, "diff", from, to)
+}
 func (c *Client) Checkpoint(ctx context.Context, root, message string) (string, error) {
 	if strings.TrimSpace(message) == "" {
 		return "", errors.New("checkpoint message is required")

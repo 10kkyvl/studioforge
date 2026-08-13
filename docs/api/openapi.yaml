@@ -22,3 +22,27 @@ paths:
     post:
       summary: Idempotent run creation
       responses: {"201": {description: Queued}}
+  /runs/{id}/diff:
+    get:
+      summary: Diff for a run; ?format=structured returns a parsed {stats, files} model instead of a raw diff string
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: format, in: query, required: false, schema: {type: string, enum: [structured]}}
+      responses: {"200": {description: Diff}}
+  /projects/{id}/checkpoints:
+    get:
+      summary: A project's recorded git checkpoints, newest first
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses: {"200": {description: Checkpoints}}
+  /projects/{id}/diff:
+    get:
+      summary: Structured diff between two refs ("HEAD" or a checkpoint commitHash); to defaults to HEAD
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: from, in: query, required: true, schema: {type: string}}
+        - {name: to, in: query, required: false, schema: {type: string, default: HEAD}}
+      responses:
+        "200": {description: Diff}
+        "400": {description: Missing from, or from is not an ancestor of to}
+        "404": {description: Unknown checkpoint reference}
