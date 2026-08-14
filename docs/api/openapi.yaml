@@ -29,6 +29,19 @@ paths:
         - {name: id, in: path, required: true, schema: {type: string}}
         - {name: format, in: query, required: false, schema: {type: string, enum: [structured]}}
       responses: {"200": {description: Diff}}
+  /runs/{id}/rollback:
+    post:
+      summary: >-
+        Restore a run's checkpoint; an empty body (or one naming no
+        files/hunks) does a full non-destructive rollback onto a new branch,
+        while a body naming files and/or hunks reverts just that selection in
+        place behind its own safety commit
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "200": {description: "Full: branch, commitHash. Selective: commitHash, safetyCommit, revertedFiles, revertedHunks"}
+        "400": {description: "No checkpoint recorded (no_checkpoint), or an unknown selection (invalid_selection)"}
+        "409": {description: "project_busy, git_unavailable, not_git_repo, dirty_worktree, later_change_conflict, patch_check_failed, or rollback_failed"}
   /projects/{id}/checkpoints:
     get:
       summary: A project's recorded git checkpoints, newest first

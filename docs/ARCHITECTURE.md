@@ -165,18 +165,31 @@ plugin loading or dynamic linking.
   HEAD` and `git diff <commit>` respectively (returning an empty diff, not an error, when `root` isn't a
   Git repo), `Status`, `SafeRollback` (creates and switches to a new
   `studioforge/rollback-<UTC timestamp>` branch — the original branch is never touched, reset, or
-  force-pushed), and `Tag` are all wired through a `GitOps` interface declared in `internal/api` and a
-  thin adapter over `gitops.New()` built in `internal/app`. `GET /api/v1/runs/{id}/diff`
+  force-pushed), `SelectiveRollback`, and `Tag` are all wired through a `GitOps` interface declared in
+  `internal/api` and a thin adapter over `gitops.New()` built in `internal/app`. `GET /api/v1/runs/{id}/diff`
   (`internal/api/diff.go`) uses `CheckpointForRun` to diff against that run's own checkpoint commit when
   one exists, falling back to `DiffHead` otherwise; `GET /api/v1/projects/{id}/git/status`,
   `POST /api/v1/runs/{id}/rollback`, and `POST /api/v1/projects/{id}/git/tag` are the remaining
   endpoints, all in `internal/api/git.go`. Rollback also refuses (409) while the project's write lease
   is held by another run — a best-effort, check-then-act guard against a `SafeRollback` racing a run
   still writing to the same project.
+- `SelectiveRollback(ctx, root, checkpoint, nextCheckpoint, files, hunks)` reverts only a named
+  selection instead of the whole checkpoint: `git checkout <checkpoint> -- <path>` (or `git rm`, for a
+  file the run added) per file, and a patch reconstructed from the structured diff model reverse-applied
+  per hunk via `git apply -R`, each validated first with `git apply --check -R`
+  (`ErrPatchCheckFailed` on failure, never forced). It refuses `ErrDirtyWorktree` when the worktree
+  carries changes unrelated to the run, `ErrLaterChanges` when `nextCheckpoint` (the project's next
+  recorded checkpoint after this one, from `database.Store.CheckpointsForProject`) shows a selected path
+  already changed again, and `ErrNotGitRepo`/`ErrSelectionUnknown` matching the same-named conditions.
+  `internal/api/git.go`'s `rollbackRun` maps each to a distinct HTTP error and, on success, persists the
+  safety commit `SelectiveRollback` takes first as a `checkpoints` row with no linked run — a partial
+  rollback is checkpointed the same way a run is, so it is itself undoable.
 - `internal/gitops/diffparse` — `Parse(text string) Diff` turns raw unified-diff text into a typed model
   (`Stats{FilesChanged,Additions,Deletions}`, `Files[]{Path,OldPath,Status,Additions,Deletions,Binary,
   Hunks}`, `Hunks[]{Header,OldStart,OldLines,NewStart,NewLines,Lines}`), with no git dependency of its
-  own so it is unit-tested purely against fixture text. `GET /api/v1/runs/{id}/diff?format=structured`
+  own so it is unit-tested purely against fixture text. A `DiffLine`'s trailing `\ No newline at end of
+  file` marker is preserved as `NoNewline` on that line (`noNewline` in the JSON response) instead of
+  being dropped during parsing. `GET /api/v1/runs/{id}/diff?format=structured`
   runs it over whatever `DiffHead`/`DiffCommit` returned instead of handing back the raw string;
   `note`/`checkpoint`/`studioDirectEdits` behave identically to the default (unparsed) response either
   way. `Client.DiffRange(ctx, root, from, to)` diffs two arbitrary refs after validating each resolves

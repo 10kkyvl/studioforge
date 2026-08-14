@@ -60,10 +60,11 @@ type DiffHunk struct {
 // no corresponding line number (an added line has no OldNo, a deleted line
 // has no NewNo).
 type DiffLine struct {
-	Type  string `json:"type"`
-	OldNo *int   `json:"oldNo"`
-	NewNo *int   `json:"newNo"`
-	Text  string `json:"text"`
+	Type      string `json:"type"`
+	OldNo     *int   `json:"oldNo"`
+	NewNo     *int   `json:"newNo"`
+	Text      string `json:"text"`
+	NoNewline bool   `json:"noNewline,omitempty"`
 }
 
 // Line type values Parse assigns to DiffLine.Type.
@@ -154,6 +155,9 @@ func Parse(text string) Diff {
 			hunk = &DiffHunk{Header: line, OldStart: oldStart, OldLines: oldLines, NewStart: newStart, NewLines: newLines, Lines: []DiffLine{}}
 			oldLineNo, newLineNo = oldStart, newStart
 		case strings.HasPrefix(line, "\\ No newline at end of file"):
+			if hunk != nil && len(hunk.Lines) > 0 {
+				hunk.Lines[len(hunk.Lines)-1].NoNewline = true
+			}
 		case hunk != nil && strings.HasPrefix(line, "+"):
 			n := newLineNo
 			hunk.Lines = append(hunk.Lines, DiffLine{Type: LineAdd, NewNo: &n, Text: strings.TrimPrefix(line, "+")})

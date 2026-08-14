@@ -21,6 +21,16 @@ func (c *Client) run(ctx context.Context, root string, args ...string) (string, 
 	}
 	return strings.TrimSpace(string(out)), nil
 }
+func (c *Client) runStdin(ctx context.Context, root, stdin string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, c.Executable, args...)
+	cmd.Dir = root
+	cmd.Stdin = strings.NewReader(stdin)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
 func (c *Client) Detect(ctx context.Context, root string) (bool, error) {
 	_, err := c.run(ctx, root, "rev-parse", "--show-toplevel")
 	if err != nil {

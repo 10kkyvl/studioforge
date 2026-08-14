@@ -24,6 +24,7 @@ import (
 	"github.com/10kkyvl/studioforge/internal/diagnostics"
 	"github.com/10kkyvl/studioforge/internal/events"
 	"github.com/10kkyvl/studioforge/internal/gitcheckpoint"
+	"github.com/10kkyvl/studioforge/internal/gitops"
 	"github.com/10kkyvl/studioforge/internal/memory"
 	"github.com/10kkyvl/studioforge/internal/models"
 	"github.com/10kkyvl/studioforge/internal/platform/toolpath"
@@ -72,6 +73,7 @@ type GitOps interface {
 	DiffRange(ctx context.Context, projectPath, from, to string) (string, error)
 	Status(ctx context.Context, projectPath string) (string, error)
 	SafeRollback(ctx context.Context, projectPath, target string) (string, error)
+	SelectiveRollback(ctx context.Context, projectPath, checkpoint, nextCheckpoint string, files []string, hunks []gitops.HunkSelection) (gitops.SelectiveRollbackResult, error)
 	Tag(ctx context.Context, projectPath, name string) error
 }
 

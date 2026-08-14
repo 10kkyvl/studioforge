@@ -152,13 +152,41 @@ paths:
       responses: {"200": {description: Diff}}
   /runs/{id}/rollback:
     post:
-      summary: Non-destructively restore a run's checkpoint commit onto a new studioforge/rollback-<timestamp> branch
+      summary: >-
+        Restore a run's checkpoint. An empty body (or one with no files/hunks)
+        non-destructively restores the whole checkpoint commit onto a new
+        studioforge/rollback-<timestamp> branch; a body naming files and/or
+        hunks instead reverts only that selection in place, taking its own
+        safety commit first
       parameters:
         - {name: id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                files: {type: array, items: {type: string}, description: Whole-file paths to revert, by the run's own diff}
+                hunks:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      path: {type: string}
+                      index: {type: integer, description: 0-based hunk position within that file's diff}
       responses:
-        "200": {description: Rollback branch and restored commit hash}
-        "400": {description: The run has no recorded checkpoint}
-        "409": {description: The project's write lease is held by another run, or the rollback itself failed}
+        "200": {description: "Full rollback: branch and restored commit hash. Selective: commitHash, safetyCommit, revertedFiles, revertedHunks"}
+        "400": {description: "The run has no recorded checkpoint (no_checkpoint), or a selection does not match the run's diff (invalid_selection)"}
+        "409":
+          description: >-
+            The project's write lease is held by another run (project_busy);
+            git is unavailable (git_unavailable) or not a repository
+            (not_git_repo); the worktree has unresolved merge conflicts
+            (dirty_worktree); a later checkpoint already changed a selected
+            path (later_change_conflict); the selected hunks no longer apply
+            cleanly (patch_check_failed); or the rollback itself failed
+            (rollback_failed)
   /projects/{id}/checkpoints:
     get:
       summary: A project's recorded git checkpoints, newest first (empty array, never null)

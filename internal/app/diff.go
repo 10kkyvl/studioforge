@@ -23,6 +23,9 @@ func (a *gitAdapter) Status(ctx context.Context, projectPath string) (string, er
 func (a *gitAdapter) SafeRollback(ctx context.Context, projectPath, target string) (string, error) {
 	return a.client.SafeRollback(ctx, projectPath, target)
 }
+func (a *gitAdapter) SelectiveRollback(ctx context.Context, projectPath, checkpoint, nextCheckpoint string, files []string, hunks []gitops.HunkSelection) (gitops.SelectiveRollbackResult, error) {
+	return a.client.SelectiveRollback(ctx, projectPath, checkpoint, nextCheckpoint, files, hunks)
+}
 func (a *gitAdapter) Tag(ctx context.Context, projectPath, name string) error {
 	return a.client.Tag(ctx, projectPath, name)
 }

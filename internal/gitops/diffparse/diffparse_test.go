@@ -202,7 +202,7 @@ func TestParseEmptyDiffReturnsEmptyNonNilFiles(t *testing.T) {
 	}
 }
 
-func TestParseNoNewlineAtEndOfFileMarkerIsIgnored(t *testing.T) {
+func TestParseNoNewlineAtEndOfFileMarkerSetsFlag(t *testing.T) {
 	text := `diff --git a/src/NoNewline.luau b/src/NoNewline.luau
 index abc1234..def5678 100644
 --- a/src/NoNewline.luau
@@ -222,10 +222,10 @@ index abc1234..def5678 100644
 	if len(h.Lines) != 2 {
 		t.Fatalf("no-newline markers must not become lines, got %d: %+v", len(h.Lines), h.Lines)
 	}
-	if h.Lines[0].Type != LineDelete || h.Lines[0].Text != "old text" {
+	if h.Lines[0].Type != LineDelete || h.Lines[0].Text != "old text" || !h.Lines[0].NoNewline {
 		t.Fatalf("delete line=%+v", h.Lines[0])
 	}
-	if h.Lines[1].Type != LineAdd || h.Lines[1].Text != "new text" {
+	if h.Lines[1].Type != LineAdd || h.Lines[1].Text != "new text" || !h.Lines[1].NoNewline {
 		t.Fatalf("add line=%+v", h.Lines[1])
 	}
 }

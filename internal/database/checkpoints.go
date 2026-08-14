@@ -14,8 +14,12 @@ func (s *Store) CreateCheckpoint(ctx context.Context, checkpoint models.Checkpoi
 	if checkpoint.CreatedAt.IsZero() {
 		checkpoint.CreatedAt = time.Now().UTC()
 	}
+	var runID any
+	if checkpoint.RunID != "" {
+		runID = checkpoint.RunID
+	}
 	_, err := s.db.SQL.ExecContext(ctx, `INSERT INTO checkpoints(id,project_id,run_id,commit_hash,branch,label,created_at)
-VALUES(?,?,?,?,?,?,?)`, checkpoint.ID, checkpoint.ProjectID, checkpoint.RunID, checkpoint.CommitHash, checkpoint.Branch, checkpoint.Label, formatTime(checkpoint.CreatedAt))
+VALUES(?,?,?,?,?,?,?)`, checkpoint.ID, checkpoint.ProjectID, runID, checkpoint.CommitHash, checkpoint.Branch, checkpoint.Label, formatTime(checkpoint.CreatedAt))
 	return err
 }
 

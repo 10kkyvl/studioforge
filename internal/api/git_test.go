@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -29,22 +30,30 @@ func (g *realGit) Status(ctx context.Context, path string) (string, error) {
 func (g *realGit) SafeRollback(ctx context.Context, path, target string) (string, error) {
 	return g.client.SafeRollback(ctx, path, target)
 }
+func (g *realGit) SelectiveRollback(ctx context.Context, path, checkpoint, nextCheckpoint string, files []string, hunks []gitops.HunkSelection) (gitops.SelectiveRollbackResult, error) {
+	return g.client.SelectiveRollback(ctx, path, checkpoint, nextCheckpoint, files, hunks)
+}
 func (g *realGit) Tag(ctx context.Context, path, name string) error {
 	return g.client.Tag(ctx, path, name)
 }
 
 type fakeGitOps struct {
-	statusOut      string
-	diffCommitOut  string
-	diffRangeOut   string
-	diffRangeErr   error
-	rollbackBranch string
-	rollbackErr    error
-	tagErr         error
-	gotCommit      string
-	gotTagName     string
-	gotFrom        string
-	gotTo          string
+	statusOut         string
+	diffCommitOut     string
+	diffRangeOut      string
+	diffRangeErr      error
+	rollbackBranch    string
+	rollbackErr       error
+	tagErr            error
+	gotCommit         string
+	gotTagName        string
+	gotFrom           string
+	gotTo             string
+	selectiveResult   gitops.SelectiveRollbackResult
+	selectiveErr      error
+	gotFiles          []string
+	gotHunks          []gitops.HunkSelection
+	gotNextCheckpoint string
 }
 
 func (f *fakeGitOps) DiffHead(ctx context.Context, path string) (string, error) { return "", nil }
@@ -62,6 +71,13 @@ func (f *fakeGitOps) Status(ctx context.Context, path string) (string, error) {
 func (f *fakeGitOps) SafeRollback(ctx context.Context, path, target string) (string, error) {
 	f.gotCommit = target
 	return f.rollbackBranch, f.rollbackErr
+}
+func (f *fakeGitOps) SelectiveRollback(ctx context.Context, path, checkpoint, nextCheckpoint string, files []string, hunks []gitops.HunkSelection) (gitops.SelectiveRollbackResult, error) {
+	f.gotCommit = checkpoint
+	f.gotNextCheckpoint = nextCheckpoint
+	f.gotFiles = files
+	f.gotHunks = hunks
+	return f.selectiveResult, f.selectiveErr
 }
 func (f *fakeGitOps) Tag(ctx context.Context, path, name string) error {
 	f.gotTagName = name
@@ -208,6 +224,124 @@ func TestRollbackSuccessReturnsBranchAndCommit(t *testing.T) {
 	}
 	if fake.gotCommit != "deadbeef" {
 		t.Fatalf("SafeRollback got commit=%q, want deadbeef", fake.gotCommit)
+	}
+}
+
+func TestRollbackWithTrulyEmptyBodyStillUsesFullRollback(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	fake := &fakeGitOps{rollbackBranch: "studioforge/rollback-empty"}
+	a.server.git = fake
+	if err := a.store.CreateCheckpoint(context.Background(), models.Checkpoint{ProjectID: "demo-obby", RunID: "demo-obby-history", CommitHash: "deadbeef", Branch: "main", Label: "before"}); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/runs/demo-obby-history/rollback", nil)
+	req.Header.Set("Origin", "http://127.0.0.1:1234")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	a.handler.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Branch     string `json:"branch"`
+		CommitHash string `json:"commitHash"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Branch != fake.rollbackBranch || body.CommitHash != "deadbeef" {
+		t.Fatalf("body=%+v", body)
+	}
+}
+
+func TestSelectiveRollbackErrorMapping(t *testing.T) {
+	cases := []struct {
+		name   string
+		err    error
+		status int
+		code   string
+	}{
+		{"selection", gitops.ErrSelectionUnknown, 400, "invalid_selection"},
+		{"dirty", gitops.ErrDirtyWorktree, 409, "dirty_worktree"},
+		{"later", gitops.ErrLaterChanges, 409, "later_change_conflict"},
+		{"patch", gitops.ErrPatchCheckFailed, 409, "patch_check_failed"},
+		{"notrepo", gitops.ErrNotGitRepo, 409, "not_git_repo"},
+		{"other", errors.New("boom"), 409, "rollback_failed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newTestAPI(t)
+			cookie := bootstrapCookie(t, a)
+			fake := &fakeGitOps{selectiveErr: tc.err}
+			a.server.git = fake
+			if err := a.store.CreateCheckpoint(context.Background(), models.Checkpoint{ProjectID: "demo-obby", RunID: "demo-obby-history", CommitHash: "deadbeef", Branch: "main", Label: "before"}); err != nil {
+				t.Fatal(err)
+			}
+			rec := postJSON(t, a, cookie, "/api/v1/runs/demo-obby-history/rollback", map[string]any{"files": []string{"a.lua"}})
+			if rec.Code != tc.status {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tc.code) {
+				t.Fatalf("body=%s", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestSelectiveRollbackHappyPathPassesNextCheckpointAndReturnsShape(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	fake := &fakeGitOps{selectiveResult: gitops.SelectiveRollbackResult{SafetyCommit: "safe123", RevertedFiles: 2, RevertedHunks: 1}}
+	a.server.git = fake
+	base := time.Now().UTC().Add(-time.Hour)
+	if err := a.store.CreateCheckpoint(context.Background(), models.Checkpoint{ProjectID: "demo-obby", RunID: "demo-obby-history", CommitHash: "deadbeef", Branch: "main", Label: "before", CreatedAt: base}); err != nil {
+		t.Fatal(err)
+	}
+	laterRun, _, err := a.store.CreateRun(context.Background(), models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", ModelAlias: "balanced"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.store.CreateCheckpoint(context.Background(), models.Checkpoint{ProjectID: "demo-obby", RunID: laterRun.ID, CommitHash: "laterc0mmit", Branch: "main", Label: "later", CreatedAt: base.Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	rec := postJSON(t, a, cookie, "/api/v1/runs/demo-obby-history/rollback", map[string]any{"files": []string{"a.lua"}, "hunks": []map[string]any{{"path": "b.lua", "index": 1}}})
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.gotNextCheckpoint != "laterc0mmit" {
+		t.Fatalf("gotNextCheckpoint=%q", fake.gotNextCheckpoint)
+	}
+	if len(fake.gotFiles) != 1 || fake.gotFiles[0] != "a.lua" {
+		t.Fatalf("gotFiles=%v", fake.gotFiles)
+	}
+	if len(fake.gotHunks) != 1 || fake.gotHunks[0] != (gitops.HunkSelection{Path: "b.lua", Index: 1}) {
+		t.Fatalf("gotHunks=%v", fake.gotHunks)
+	}
+	var body struct {
+		CommitHash    string `json:"commitHash"`
+		SafetyCommit  string `json:"safetyCommit"`
+		RevertedFiles int    `json:"revertedFiles"`
+		RevertedHunks int    `json:"revertedHunks"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.CommitHash != "deadbeef" || body.SafetyCommit != "safe123" || body.RevertedFiles != 2 || body.RevertedHunks != 1 {
+		t.Fatalf("body=%+v", body)
+	}
+	checkpoints, err := a.store.CheckpointsForProject(context.Background(), "demo-obby")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, c := range checkpoints {
+		if c.CommitHash == "safe123" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected the safety commit to be persisted as a checkpoint")
 	}
 }
 
