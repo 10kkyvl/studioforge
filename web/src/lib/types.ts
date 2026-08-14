@@ -136,6 +136,7 @@ export type DiffLine = {
   oldNo: number | null;
   newNo: number | null;
   text: string;
+  noNewline?: boolean;
 };
 export type DiffHunk = {
   header: string;
@@ -171,6 +172,16 @@ export type RunDiffStructured = StructuredDiff & {
 };
 export type ProjectDiff = StructuredDiff & {
   note?: string;
+};
+export type RollbackSelection = {
+  files: string[];
+  hunks: { path: string; index: number }[];
+};
+export type SelectiveRollbackResult = {
+  commitHash: string;
+  safetyCommit?: string;
+  revertedFiles: number;
+  revertedHunks: number;
 };
 export type RunEvent = {
   id: number;

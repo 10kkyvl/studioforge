@@ -5,9 +5,11 @@ import type {
   Checkpoint,
   DetectedPaths,
   ProjectDiff,
+  RollbackSelection,
   RunDiff,
   RunDiffStructured,
   RunEvent,
+  SelectiveRollbackResult,
   Snapshot,
   StudioStatus,
   SyncStatus,
@@ -171,6 +173,8 @@ export const getProjectDiff = (projectId: string, from: string, to?: string) =>
   );
 export const rollbackRun = (runId: string) =>
   post<{ branch: string; commitHash: string }>(`/runs/${runId}/rollback`, {});
+export const rollbackRunSelective = (runId: string, selection: RollbackSelection) =>
+  post<SelectiveRollbackResult>(`/runs/${runId}/rollback`, selection);
 export const getStudioStatus = (projectId?: string) =>
   request<StudioStatus>(
     projectId ? `/studio-status?project=${encodeURIComponent(projectId)}` : '/studio-status',

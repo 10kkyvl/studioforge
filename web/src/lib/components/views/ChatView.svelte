@@ -18,6 +18,7 @@
     getThreads,
     post,
     rollbackRun,
+    rollbackRunSelective,
     setLead,
     startSync,
     stopSync,
@@ -43,6 +44,12 @@
   } from '$lib/questionCard';
   import { isStaleGeneration } from '$lib/staleness';
   import {
+    emptySelection,
+    selectionCount,
+    toApiSelection,
+    type RollbackSelectionState,
+  } from '$lib/rollbackSelection';
+  import {
     cacheTokens,
     formatDate,
     formatTokens,
@@ -60,9 +67,9 @@
     Project,
     ProjectDiff,
     Run,
-    RunDiff,
     RunDiffStructured,
     RunEvent,
+    SelectiveRollbackResult,
     StudioStatus,
     Task,
     TokenUsage,
@@ -116,12 +123,18 @@
   // leaves them too small to actually read — a Studio capture is a whole
   // viewport scaled into 220px. Clicking one opens it at full size.
   let lightboxSrc: string | null = null;
-  let runDiff: RunDiff | null = null;
+  let runDiff: RunDiffStructured | null = null;
+  let runDiffRunId: string | null = null;
   let loadingDiff = false;
   let confirmingRollback = false;
   let rollingBack = false;
   let rollbackError = '';
   let rollbackResult: { branch: string; commitHash: string } | null = null;
+  let selectiveSelection: RollbackSelectionState = emptySelection();
+  let confirmingSelectiveRollback = false;
+  let selectiveRollingBack = false;
+  let selectiveRollbackError = '';
+  let selectiveRollbackResult: SelectiveRollbackResult | null = null;
   let liveDiff: RunDiffStructured | null = null;
   let seenFileEditCount = 0;
   let liveDiffDebounce = new LiveDiffDebounce();
@@ -788,6 +801,7 @@
 
   function restoreActiveRun(threadId: string) {
     runDiff = null;
+    runDiffRunId = null;
     loadingDiff = false;
     resetRollbackState();
     resetLiveDiff();
@@ -886,18 +900,31 @@
     rollingBack = false;
     rollbackError = '';
     rollbackResult = null;
+    confirmingSelectiveRollback = false;
+    selectiveRollingBack = false;
+    selectiveRollbackError = '';
+    selectiveRollbackResult = null;
+    selectiveSelection = emptySelection();
   }
 
   async function loadRunDiff(runId: string) {
     loadingDiff = true;
     resetRollbackState();
     try {
-      runDiff = await getRunDiff(runId);
+      runDiff = await getRunDiffStructured(runId);
+      runDiffRunId = runId;
     } catch (cause) {
-      if (cause instanceof APIError) runDiff = null;
+      if (cause instanceof APIError) {
+        runDiff = null;
+        runDiffRunId = null;
+      }
     } finally {
       loadingDiff = false;
     }
+  }
+
+  function fetchRunDiffPatch(runId: string): Promise<string> {
+    return getRunDiff(runId).then((result) => result.diff);
   }
 
   function resetLiveDiff() {
@@ -1055,6 +1082,49 @@
     }
   }
 
+  function selectiveRollbackErrorMessage(cause: unknown): string {
+    if (cause instanceof APIError) {
+      switch (cause.code) {
+        case 'invalid_selection':
+          return $translate('error.rollbackInvalidSelection');
+        case 'dirty_worktree':
+          return $translate('error.rollbackDirty');
+        case 'later_change_conflict':
+          return $translate('error.rollbackLaterChange');
+        case 'patch_check_failed':
+          return $translate('error.rollbackPatchCheck');
+        case 'not_git_repo':
+          return $translate('error.rollbackNotGitRepo');
+        default:
+          return cause.message;
+      }
+    }
+    return cause instanceof Error ? cause.message : String(cause);
+  }
+
+  function selectionSummaryLabel(count: { files: number; hunks: number }): string {
+    const parts: string[] = [];
+    if (count.files > 0) parts.push(`${count.files} ${$translate('chat.revertSelectedFiles')}`);
+    if (count.hunks > 0) parts.push(`${count.hunks} ${$translate('chat.revertSelectedHunks')}`);
+    return parts.join(', ');
+  }
+
+  async function doSelectiveRollback() {
+    if (!runDiffRunId || selectiveRollingBack) return;
+    const targetRunId = runDiffRunId;
+    selectiveRollingBack = true;
+    selectiveRollbackError = '';
+    try {
+      const result = await rollbackRunSelective(targetRunId, toApiSelection(selectiveSelection));
+      await loadRunDiff(targetRunId);
+      selectiveRollbackResult = result;
+    } catch (cause) {
+      selectiveRollbackError = selectiveRollbackErrorMessage(cause);
+    } finally {
+      selectiveRollingBack = false;
+    }
+  }
+
   async function changeLead(agentId: string) {
     if (!projectId) return;
     const previous = leadAgentId;
@@ -1092,6 +1162,7 @@
       messages = [];
       sentRunId = null;
       runDiff = null;
+      runDiffRunId = null;
       loadingDiff = false;
       resetRollbackState();
       resetLiveDiff();
@@ -1149,6 +1220,7 @@
       submittedRuns = [...submittedRuns.filter((item) => item.id !== run.id), run];
       if (queueing) commandInfo = $translate('chat.queuedAdded');
       runDiff = null;
+      runDiffRunId = null;
       resetRollbackState();
       onSent(run.id);
     } catch (cause) {
@@ -1663,15 +1735,16 @@
       {#if runDiff.studioDirectEdits}
         <p class="diff-studio-notice">{$translate('chat.diffStudioDirect')}</p>
       {/if}
-      {#if runDiff.diff.trim() !== '' && !runDiff.note}
-        <details class="diff-panel">
-          <summary>{$translate('chat.diffChangedFiles')}</summary>
-          <pre class="diff-pre">{runDiff.diff}</pre>
-        </details>
-      {:else if runDiff.note}
-        <p class="diff-muted">{runDiff.note}</p>
-      {:else if !runDiff.studioDirectEdits}
-        <p class="diff-muted">{$translate('chat.diffNoChanges')}</p>
+      {#if !(runDiff.studioDirectEdits && runDiff.files.length === 0 && !runDiff.note)}
+        <StructuredDiff
+          stats={runDiff.stats}
+          files={runDiff.files}
+          note={runDiff.note ?? ''}
+          getRawPatch={runDiffRunId ? () => fetchRunDiffPatch(runDiffRunId as string) : null}
+          patchFileName={runDiffRunId ? `run-${runDiffRunId}.patch` : 'changes.patch'}
+          selectable
+          bind:selection={selectiveSelection}
+        />
       {/if}
       {#if runDiff.checkpoint}
         <div class="rollback-row">
@@ -1723,6 +1796,57 @@
             </button>
           {/if}
         </div>
+        {@const selCount = selectionCount(selectiveSelection)}
+        {#if selectiveRollbackResult || selCount.files > 0 || selCount.hunks > 0}
+          <div class="rollback-row selective-rollback-row">
+            {#if selectiveRollbackResult}
+              <p class="rollback-success">
+                {$translate('chat.revertDone')}: {selectionSummaryLabel({
+                  files: selectiveRollbackResult.revertedFiles,
+                  hunks: selectiveRollbackResult.revertedHunks,
+                })}
+                {#if selectiveRollbackResult.safetyCommit}
+                  <code>{selectiveRollbackResult.safetyCommit.slice(0, 7)}</code>
+                {/if}
+              </p>
+            {:else if confirmingSelectiveRollback}
+              <div class="rollback-confirm">
+                <p class="rollback-confirm-text">{$translate('chat.revertConfirm')}</p>
+                {#if selectiveRollbackError}
+                  <p class="rollback-error">{selectiveRollbackError}</p>
+                {/if}
+                <div class="rollback-actions">
+                  <button
+                    type="button"
+                    onclick={() => (confirmingSelectiveRollback = false)}
+                    disabled={selectiveRollingBack}
+                  >
+                    {$translate('common.cancel')}
+                  </button>
+                  <button
+                    type="button"
+                    class="rollback-confirm-button"
+                    disabled={selectiveRollingBack}
+                    onclick={doSelectiveRollback}
+                  >
+                    {selectiveRollingBack
+                      ? $translate('chat.rollbackWorking')
+                      : $translate('chat.revertSelected')}
+                  </button>
+                </div>
+              </div>
+            {:else}
+              <button
+                type="button"
+                class="rollback-button"
+                onclick={() => (confirmingSelectiveRollback = true)}
+              >
+                {$translate('chat.revertSelected')}
+                {selectionSummaryLabel(selCount)}
+              </button>
+            {/if}
+          </div>
+        {/if}
       {/if}
     {/if}
     {#if projectId && selectedThreadId}
@@ -2800,21 +2924,6 @@
   .diff-panel summary:hover {
     color: var(--text);
   }
-  .diff-pre {
-    margin: 8px 0 0;
-    max-height: 260px;
-    padding: 10px 12px;
-    border: 1px solid var(--line);
-    border-radius: var(--r-md);
-    background: var(--surface-2);
-    color: var(--text);
-    font-family: 'Cascadia Code', Consolas, monospace;
-    font-size: var(--fs-xs);
-    line-height: 1.5;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    overflow-y: auto;
-  }
   .diff-muted {
     margin: 10px 18px 0;
     color: var(--muted);
@@ -2897,6 +3006,9 @@
   }
   .rollback-row {
     margin: 8px 18px 0;
+  }
+  .selective-rollback-row {
+    margin-top: 6px;
   }
   .rollback-button {
     padding: 3px 12px;

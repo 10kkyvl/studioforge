@@ -71,6 +71,60 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   as readable messages, and an empty range shows the same "no changes"
   state as the per-run panel (`web/src/lib/components/views/ChatView.svelte`).
 
+- **The structured diff panel replaced the flat `<pre>`.** A summary line
+  (files changed, total `+N −M`) sits above a per-file list with a status
+  badge (added/modified/deleted/renamed/copied) and its own `+N −M`; clicking
+  a file scrolls to its hunks. Files stay expanded by default when a run
+  touched five or fewer of them, collapsed otherwise, and a deleted or
+  binary file renders as a single row with no hunk area. Luau (`.lua`/
+  `.luau`), JSON, and Markdown get per-line syntax highlighting that
+  composes with the add/delete row backgrounds instead of fighting them;
+  every other extension still renders as plain text. A modified line pair
+  also gets word-level intra-line highlighting, pointing at the changed
+  span (`16` → `24`) instead of marking the whole line. Highlighting is
+  applied client-side only — the API response is unchanged either way
+  (`web/src/lib/components/StructuredDiff.svelte`).
+
+- **Unified/split view and context collapsing.** A toggle on the diff panel
+  switches between unified and a side-by-side split that aligns matching
+  lines and renders add-only/delete-only rows with an empty opposite cell;
+  the choice persists across reloads (`localStorage`, key
+  `studioforge-diff-view`) and split falls back to unified below a 700px
+  viewport. Runs of more than 3 unchanged context lines collapse into an
+  expandable "⋯ N unchanged lines" row (`web/src/lib/components/StructuredDiff.svelte`).
+
+- **Export from the diff panel.** Copy the whole-run patch or a single
+  file's patch to the clipboard, download the whole-run patch as
+  `run-<id>.patch` (accepted by `git apply` elsewhere), and copy a changed
+  file's path, each with its own confirmation affordance
+  (`web/src/lib/components/StructuredDiff.svelte`).
+
+- **Selective rollback: revert a single file or hunk instead of the whole
+  run.** `POST /api/v1/runs/{id}/rollback` now accepts an optional body,
+  `{"files": [...], "hunks": [{"path","index"}]}`; an empty body keeps
+  today's full-checkpoint rollback onto a new branch. A named selection
+  instead reverts in place — `git checkout <checkpoint> -- <path>` for a
+  modified or deleted file, `git rm` for one the run added, and a
+  reconstructed patch reverse-applied per hunk via `git apply -R`, always
+  validated first with `git apply --check -R`. A full-worktree safety
+  commit (a `checkpoints` row with no run) is taken before any partial
+  rollback, so it is itself undoable. Refusals are distinct and named: 400
+  `invalid_selection` for a selection that doesn't match the run's diff;
+  409 `dirty_worktree` for unrelated uncommitted changes, `later_change_conflict`
+  when a later run already touched the same path (naming that run),
+  `patch_check_failed` when a reconstructed patch no longer applies, and
+  `not_git_repo` matching the diff panel's own git-repo check. The diff
+  panel gained per-file and per-hunk checkboxes and a "Revert N files, M
+  hunks" footer with a confirmation step (`internal/api/git.go`,
+  `internal/gitops/git.go`, `web/src/lib/components/StructuredDiff.svelte`).
+
+- `internal/gitops/diffparse.DiffLine` now preserves a `\ No newline at end
+  of file` marker as `noNewline` on the preceding line instead of dropping
+  it, exposed through the structured diff API unchanged otherwise.
+
+- Both `docs/api/openapi.yaml` and `internal/api/openapi.yaml` document the
+  optional rollback request body and its new named error responses.
+
 ### Changed
 
 - **Every screen spent its first 130 pixels announcing which screen it was.** An
