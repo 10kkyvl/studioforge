@@ -35,6 +35,35 @@ func TestHelperProcess(t *testing.T) {
 			time.Sleep(time.Second)
 		}
 	}
+	if marker := os.Getenv("STUDIOFORGE_HELPER_SPAWN_ORPHAN"); marker != "" {
+		child := exec.Command(os.Args[0], "-test.run=TestHelperProcess")
+		child.Env = append(os.Environ(), "STUDIOFORGE_HELPER=1", "STUDIOFORGE_HELPER_CHILD_MARKER="+marker)
+		if err := child.Start(); err != nil {
+			os.Exit(9)
+		}
+		// Give the grandchild a moment of real wall-clock time to start
+		// writing before this process exits, so the test can observe it
+		// alive before the job (or, in the unconfined control, nothing)
+		// reaps it. It is still orphaned: once this process exits, it is no
+		// longer any tracked process's child, which is what defeats
+		// taskkill /T's parent-PID walk.
+		time.Sleep(300 * time.Millisecond)
+		os.Exit(0)
+	}
+	if raw := os.Getenv("STUDIOFORGE_HELPER_SPAWN_MANY"); raw != "" {
+		n, _ := strconv.Atoi(raw)
+		failures := 0
+		for i := 0; i < n; i++ {
+			child := exec.Command(os.Args[0], "-test.run=TestHelperProcess")
+			child.Env = append(os.Environ(), "STUDIOFORGE_HELPER=1", "STUDIOFORGE_HELPER_HANG=1")
+			if err := child.Start(); err != nil {
+				failures++
+				continue
+			}
+		}
+		fmt.Printf("SPAWN_FAILURES=%d\n", failures)
+		os.Exit(0)
+	}
 	if os.Getenv("STUDIOFORGE_HELPER_HANG") == "1" {
 		for {
 			time.Sleep(time.Second)
@@ -161,7 +190,12 @@ func TestSupervisorTerminatesProcessTree(t *testing.T) {
 		t.Fatal("process was not terminated")
 	}
 }
-func TestStartSetsWaitDelayOnlyForMaxRuntime(t *testing.T) {
+
+// TestStartSetsWaitDelayForMaxRuntimeButNotUnconfined asserts the unconfined
+// case only: WaitDelay is set when MaxRuntime > 0, and stays unset otherwise.
+// Confinement also sets WaitDelay (see confine_test.go); that is intentional
+// and covered separately, not by this test.
+func TestStartSetsWaitDelayForMaxRuntimeButNotUnconfined(t *testing.T) {
 	supervisor := NewSupervisor()
 	defer supervisor.Close(context.Background())
 

@@ -125,6 +125,59 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 - Both `docs/api/openapi.yaml` and `internal/api/openapi.yaml` document the
   optional rollback request body and its new named error responses.
 
+- **`run_command` — the one tool an agent uses to choose what runs — now
+  executes inside real, platform-specific OS confinement, not just the
+  command-identity allowlist that existed before.** On Windows, a confined
+  command is created suspended and assigned to a Windows Job Object before
+  its first instruction ever runs (`internal/processes/confine_windows.go`),
+  capped at 128 active processes and 8 GiB job memory, killed with the job
+  and on an unhandled exception, with `CREATE_BREAKAWAY_FROM_JOB` refused;
+  killing goes through the job rather than `taskkill /T`, which loses
+  orphaned grandchildren that `TestConfinementReapsOrphanedGrandchild`
+  proves the job reaps and a `taskkill /T`-based kill does not. Resuming the
+  suspended child tries the undocumented `ntdll!NtResumeProcess` first,
+  falling back automatically to the documented `Toolhelp`-based thread
+  enumeration on any failure — see
+  [ADR 0005](docs/adr/0005-run-command-confinement.md) for why the
+  undocumented call was judged acceptable and which alternatives (assigning
+  to the job after `cmd.Start()`, calling `windows.CreateProcess` directly,
+  a sponsor process using `SysProcAttr.ParentProcess`) were considered and
+  rejected. **The filesystem is not confined on Windows** — a job object
+  bounds processes and memory, not file writes, and there is no filesystem
+  sandbox on Windows without a driver, which StudioForge does not ship. On
+  macOS, a confined command runs under a generated `sandbox-exec` profile
+  (`internal/processes/confine_darwin.go`) that denies writes by default
+  and allows them only under the project root, the temp directory, and the
+  build caches ordinary tooling needs (`~/Library/Caches`,
+  `~/Library/Developer`, `~/.cache`, `~/.npm`, `~/.cargo`, `~/go/pkg/mod`,
+  `~/go/pkg/sumdb`); reads are unrestricted and network egress is
+  deliberately untouched, tracked separately as #29. Paths reach the
+  profile as `-D` parameters, never interpolated into the profile text.
+  Linux has no implementation: `workspace-write` refuses to start a command
+  rather than run it unconfined, and `STUDIOFORGE_ALLOW_UNCONFINED=1` is the
+  named escape hatch for contributors and CI
+  (`internal/processes/confine_other.go`); a specification for a real
+  implementation is written down, not built, in
+  [ADR 0005](docs/adr/0005-run-command-confinement.md#linux-specification-not-implemented).
+  Confinement is scoped to exactly the one place a model chooses what to
+  run — `rojo serve`/`build`/`plugin install`, the Claude Code CLI, the
+  Studio MCP shim, StudioForge's own `git` checkpoints, diagnostic probes,
+  and the Roblox Studio GUI launch are all deliberately excluded, each for
+  its own stated reason (see [docs/SECURITY.md](docs/SECURITY.md#process-confinement-for-run_command)) —
+  so, plainly, `git` run by an agent through `run_command` is confined
+  while `git` run by StudioForge on its own behalf is not. Per profile,
+  `workspace-write` requests the full policy and **fails closed** if it
+  cannot be established; `danger-full-access` requests reaping only, with
+  no filesystem or resource policy, and does not hard-fail, since that
+  profile claims no boundary to fail closed on; `read-only` never reaches
+  this, since `run_command` isn't registered there. Measured on one machine
+  (AMD Ryzen 5 3600, Windows 10 Pro build 19045, `-benchtime 20x`):
+  confinement adds roughly 0.3–0.6 ms per command over unconfined, with the
+  job-assignment step itself around 0.05 ms via the `NtResumeProcess` fast
+  path (about 40 ms via the documented fallback). `studioforge doctor` now
+  reports a `confinement` check describing exactly what is and is not
+  enforced on the running platform.
+
 ### Changed
 
 - **Every screen spent its first 130 pixels announcing which screen it was.** An

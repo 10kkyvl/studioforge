@@ -48,6 +48,8 @@ jobs:
           fi
       - run: go vet ./...
       - run: go test ./...
+        env:
+          STUDIOFORGE_ALLOW_UNCONFINED: '1'
   race:
     runs-on: ubuntu-latest
     steps:
@@ -55,6 +57,15 @@ jobs:
       - uses: actions/setup-go@v5
         with: {go-version: '1.26.x', cache: true}
       - run: go test -race ./...
+        env:
+          STUDIOFORGE_ALLOW_UNCONFINED: '1'
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: '1.25.x', cache: true}
+      - run: go test ./internal/processes/...
   build:
     strategy:
       matrix:

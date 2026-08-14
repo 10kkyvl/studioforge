@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/10kkyvl/studioforge/internal/database"
@@ -160,6 +161,33 @@ func TestRunDependencyNvidiaKeyStateStatus(t *testing.T) {
 				t.Errorf("status = %q, want %q (message=%q)", got.Status, c.want, got.Message)
 			}
 		})
+	}
+}
+
+func TestRunConfinementCheckPresent(t *testing.T) {
+	d := &Doctor{DataDir: t.TempDir()}
+	report := d.Run(context.Background())
+
+	var found bool
+	for _, check := range report.Checks {
+		if check.Name != "confinement" {
+			continue
+		}
+		found = true
+		if runtime.GOOS == "windows" {
+			if check.Status != "ok" {
+				t.Errorf("status = %q, want ok on windows (message=%q)", check.Status, check.Message)
+			}
+			if !strings.Contains(check.Message, "filesystem is NOT confined") {
+				t.Errorf("message = %q, want it to say the filesystem is not confined on windows", check.Message)
+			}
+		}
+		if check.Message == "" {
+			t.Error("expected a non-empty confinement message")
+		}
+	}
+	if !found {
+		t.Fatal("expected a confinement check")
 	}
 }
 

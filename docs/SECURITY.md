@@ -104,16 +104,187 @@ directly, and does not open any listener other than the one loopback (or explici
   — an allowlisted name found in the workspace is the agent's own file, not the tool. This matters
   because the process supervisor performs no validation of its own; whatever reaches it runs.
   `danger-full-access` is unaffected, being explicitly the profile for arbitrary commands.
-- **The `workspace-write` command allowlist is a barrier, not a sandbox.** It refuses the direct
-  escapes — inline code execution (`node -e`, `node --eval`, `node -p`, `python -c`, `python3 -c`
-  and their long forms), `go run`, and `npx`, which fetches and runs an arbitrary package — so an
-  allowlisted interpreter cannot be turned into "run this source text". What it cannot do is contain
-  the allowlisted build tools themselves: a profile that can both write files and run `go test`,
-  `npm run`, `make` or `cargo` can always arrange to execute code by writing it into a test file, an
-  npm script or a Makefile recipe first. Treat `workspace-write` as "this agent can run code in this
-  project", not as isolation, and reserve `danger-full-access` for when you also want it reaching
-  outside the project. Real isolation would need an OS-level sandbox, which StudioForge does not
-  currently implement — see [docs/KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
+- **The `workspace-write` command allowlist is a barrier on command identity, not a sandbox on what
+  an allowed command can do.** It refuses the direct escapes — inline code execution (`node -e`,
+  `node --eval`, `node -p`, `python -c`, `python3 -c` and their long forms), `go run`, and `npx`,
+  which fetches and runs an arbitrary package — so an allowlisted interpreter cannot be turned into
+  "run this source text". What it cannot do is contain the allowlisted build tools themselves: a
+  profile that can both write files and run `go test`, `npm run`, `make` or `cargo` can always
+  arrange to execute code by writing it into a test file, an npm script or a Makefile recipe first.
+  Treat the allowlist as "this agent can run code in this project", not as isolation on its own —
+  the actual OS-level boundary around what a `run_command` process can then do is described next.
+
+## Process confinement for `run_command`
+
+`run_command` is the one place in StudioForge where a model chooses what
+executable and arguments actually run. Every other subprocess StudioForge
+starts has its argv chosen by StudioForge itself, or — for the Claude Code
+CLI — *is* the agent and carries its own permission model, so real OS-level
+confinement (`internal/processes`) is scoped to exactly that one tool, and
+deliberately not applied anywhere else:
+
+- **`rojo serve`/`rojo build`/`rojo plugin install`** run with argv fixed by
+  StudioForge, not chosen by a model; `plugin install` also writes into
+  `~/Documents/Roblox/Plugins`, outside any project root a confinement
+  policy could reasonably scope to.
+- **The Claude Code CLI** is not confined by this mechanism. It *is* the
+  agent, and it carries its own permission model (`--permission-mode`, the
+  generated settings file above). On Windows, job-object membership is
+  inherited by every descendant process a job member spawns — so confining
+  the `claude` process itself would silently apply StudioForge's own
+  process/memory caps to every tool call Claude makes, including ones that
+  have nothing to do with `run_command`. That is a different, broader
+  scope than this mechanism is meant to have.
+- **The Studio MCP shim** (`studioforge mcp-shim`) does local IPC with an
+  already-open Roblox Studio and needs Studio's own directories; it is not
+  a model-chosen command.
+- **StudioForge's own `git` checkpoints and operations**
+  (`internal/gitcheckpoint`, `internal/gitops`) need `~/.gitconfig` and
+  whatever credential helper the operator has configured, which a
+  project-scoped confinement policy would break.
+- **Diagnostic probes and the browser launcher** run fixed commands
+  StudioForge itself decided to run.
+- **The Roblox Studio GUI launch** (`RobloxStudioBeta.exe -task EditFile
+  -localPlaceFile <path>`) is deliberately started detached: killing the
+  job or process group that started it would kill Studio when StudioForge
+  exits, which is the opposite of what "Open in Studio" is for.
+
+State the resulting asymmetry plainly, since it is easy to read as an
+inconsistency rather than a design choice: **`git` run by an agent through
+`run_command` is confined by the policy below; `git` run by StudioForge on
+its own behalf, for a checkpoint, is not.**
+
+### Windows: a Job Object per confined command
+
+The child process is created suspended (`CREATE_SUSPENDED`) and assigned to
+a Windows Job Object before its first instruction ever runs
+(`internal/processes/confine_windows.go`), so there is no window in which
+the child — or a grandchild it spawns immediately on start — can escape
+before confinement takes effect. The job enforces:
+
+- 128 active processes (`JOB_OBJECT_LIMIT_ACTIVE_PROCESS`)
+- 8 GiB job memory (`JOB_OBJECT_LIMIT_JOB_MEMORY`)
+- kill-on-job-close (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`)
+- die-on-unhandled-exception (`JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION`)
+
+`BREAKAWAY_OK`/`SILENT_BREAKAWAY_OK` are never set on the job, so a child
+requesting `CREATE_BREAKAWAY_FROM_JOB` fails. Killing a confined command
+terminates the job (`TerminateJobObject`) rather than using `taskkill /T`,
+which walks parent PIDs and therefore loses an orphaned grandchild that
+reparented itself — `internal/processes/confine_windows_test.go` proves an
+orphaned grandchild is reaped through the job, and the same test fails
+without it.
+
+**The filesystem is NOT confined on Windows.** A job object bounds
+processes and memory; it does nothing about file writes. There is no
+filesystem sandbox on Windows without a kernel driver, and StudioForge does
+not ship one. Do not read "confined" as implying a filesystem boundary on
+Windows — it does not exist here.
+
+Resuming the suspended child uses the undocumented
+`ntdll!NtResumeProcess`, which resumes every thread of a process by handle
+in one call, falling back automatically to the documented
+`CreateToolhelp32Snapshot`-based thread enumeration
+(`resumeMainThread`) on any failure. See
+[ADR 0005](adr/0005-run-command-confinement.md) for why the undocumented
+call was judged acceptable, and for the alternatives that were considered
+and rejected (assigning to the job after `cmd.Start()`, calling
+`windows.CreateProcess` directly, and a sponsor process using
+`SysProcAttr.ParentProcess`, kept on record as the fallback design if
+thread enumeration ever proves unreliable).
+
+**Measured cost** (AMD Ryzen 5 3600, 12 logical CPUs, Windows 10 Pro build
+19045, `go test -bench -benchtime 20x`): starting a command unconfined
+costs about 7.4 ms; starting the same command confined costs about
+7.7–8.0 ms — confinement adds roughly **0.3–0.6 ms per command**. The job
+assignment step itself (`Attach`, dominated by resuming the suspended
+thread) costs about 0.05 ms with the `NtResumeProcess` fast path; if that
+call is ever unavailable, the documented fallback costs closer to 40 ms per
+command instead, since it scales with total system thread count rather than
+with the child being resumed.
+
+### macOS: `sandbox-exec` with a generated profile
+
+A confined command runs under `/usr/bin/sandbox-exec` with an SBPL
+(Sandbox Profile Language) profile StudioForge writes per run
+(`internal/processes/confine_darwin.go`, `sandbox_profile.go`). Writes are
+denied by default (`(deny file-write*)`) and allowed only under:
+
+- the project root
+- the temp directory
+- `~/Library/Caches`, `~/Library/Developer`, `~/.cache`, `~/.npm`,
+  `~/.cargo`, `~/go/pkg/mod`, `~/go/pkg/sumdb` — the build caches ordinary
+  tooling needs to run at all
+- the usual `/dev` entries (`/dev/null`, `/dev/zero`, `/dev/random`,
+  `/dev/urandom`, `/dev/tty`, `/dev/dtracehelper`, and `/dev/fd/*`)
+
+Reads are not restricted, and network egress is deliberately untouched —
+that is issue #29, tracked separately, not an oversight here. Paths reach
+the profile as `-D ROOT=…`/`-D HOME=…`/`-D TMP=…` parameters to
+`sandbox-exec`, referenced in the profile only via `(param "...")`, and are
+never interpolated into the profile text itself, so a path containing SBPL
+metacharacters cannot corrupt the policy.
+
+`sandbox-exec` has been deprecated by Apple since macOS 10.10, and SBPL was
+never officially documented — Apple could remove or break it in any future
+release. Document this dependency honestly rather than treating it as
+permanent: `studioforge doctor`'s `confinement` check does not just check
+that the binary exists, it actually compiles and runs a trivial profile
+(`(version 1)(allow default)`), so an operator learns whether `sandbox-exec`
+still works on their machine before a run needs it, not from a mid-run
+failure.
+
+**Verification status.** As of this writing, the macOS implementation has
+been type-checked and cross-compiled locally, not yet exercised against
+real macOS hardware within this repository's own test history. The `macos`
+CI job (`go test ./internal/processes/...` on `macos-latest`) is what
+actually runs it on real hardware; treat that job's results, not this
+document, as the evidence of record for whether it works.
+
+### Linux: not implemented
+
+There is no confinement implementation on Linux. `workspace-write` **fails
+closed**: it refuses to start a `run_command` process rather than run it
+unconfined. `STUDIOFORGE_ALLOW_UNCONFINED=1` is the named escape hatch for
+contributors and CI that need the test suite to run without a real
+implementation (`internal/processes/confine_other.go`), and the error text
+names it directly so nobody has to go looking for it. A specification for
+what a real implementation would do — a user namespace plus a bind-mounted
+view of the project, or a seccomp-bpf filter, and why the former is
+recommended over the latter as the primary mechanism — is written down in
+[ADR 0005](adr/0005-run-command-confinement.md#linux-specification-not-implemented).
+It is a plan, clearly labelled as not implemented, not a shipped feature.
+
+### Per permission profile
+
+- **`read-only`** — `run_command` is not registered at all on this
+  profile, so nothing described above is ever reached.
+- **`workspace-write`** — requests the full policy above and **fails
+  closed**: if confinement cannot be established (job creation fails,
+  `sandbox-exec` is missing or fails its probe, the platform has no
+  implementation), the command is refused rather than run unconfined.
+- **`danger-full-access`** — requests reaping only, so nothing outlives a
+  cancelled run, with no filesystem or resource policy on top of that, and
+  does **not** hard-fail if even reaping cannot be set up cleanly. This
+  profile claims no confinement boundary in the first place, so there is
+  none to fail closed on — it is, by design, the profile for arbitrary
+  commands with the full filesystem permissions of the user account.
+
+`studioforge doctor` reports a `confinement` check (`ProbeConfinement` in
+`internal/processes`, surfaced by `internal/diagnostics`) describing, in
+plain language, what is and is not enforced on the platform it is running
+on, so an operator learns this before a run rather than from a mid-run
+`run_command` failure.
+
+This section describes `run_command` confinement specifically. It is a
+different mechanism, with a different scope, from the Claude Code
+`PreToolUse` path guard described under
+[Local file access](#local-file-access) and
+[Command execution](#command-execution) below — that mechanism narrows what
+Claude's own file tools can touch and is enforced by Claude Code itself,
+not by an OS boundary, and it does not apply to `run_command` at all, since
+OpenRouter and NVIDIA runs (the only ones with a `run_command` tool) do not
+go through Claude Code.
 
 ## Roblox Studio access
 
@@ -206,7 +377,11 @@ directly, and does not open any listener other than the one loopback (or explici
     (everything is auto-approved, including arbitrary commands Claude chooses to run). Plan mode
     (the chat "Plan" toggle) always forces `--permission-mode plan` regardless of the agent's
     profile. Claude Code enforces this itself; StudioForge applies no OS-level sandbox around the
-    Claude process on any tier. What it does add, on `read-only` and `workspace-write` only, is a
+    Claude process on any tier — deliberately: the platform-specific confinement described in
+    [Process confinement for `run_command`](#process-confinement-for-run_command) above is scoped to
+    that one tool precisely because confining the Claude CLI process would, on Windows, silently
+    apply StudioForge's own job limits to every tool call Claude makes, not just shell commands. What
+    it does add, on `read-only` and `workspace-write` only, is a
     generated settings file with a `PreToolUse` path guard and credential-store deny rules (see
     [Local file access](#local-file-access)) — enforced by Claude Code, not by the operating system,
     and not covering `Bash`. On `danger-full-access` even that does not apply: `bypassPermissions`

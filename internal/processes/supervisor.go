@@ -19,6 +19,7 @@ type Spec struct {
 	ID, Kind, ProjectID, RunID, Executable, WorkingDirectory string
 	Args, Environment                                        []string
 	MaxRuntime                                               time.Duration
+	Confine                                                  ConfinementPolicy
 }
 type Line struct {
 	Stream string
@@ -31,16 +32,19 @@ type Result struct {
 	Err                 error
 }
 type Process struct {
-	spec         Spec
-	cmd          *exec.Cmd
-	lines        chan Line
-	done         chan struct{}
-	cancel       context.CancelFunc
-	mu           sync.RWMutex
-	result       Result
-	once         sync.Once
-	droppedLines atomic.Int64
-	collectors   sync.WaitGroup
+	spec              Spec
+	cmd               *exec.Cmd
+	lines             chan Line
+	done              chan struct{}
+	cancel            context.CancelFunc
+	mu                sync.RWMutex
+	result            Result
+	once              sync.Once
+	droppedLines      atomic.Int64
+	collectors        sync.WaitGroup
+	confinement       Confinement
+	confMu            sync.Mutex
+	confinementClosed bool
 }
 type Supervisor struct {
 	mu        sync.Mutex
@@ -50,6 +54,7 @@ type Supervisor struct {
 }
 
 func NewSupervisor() *Supervisor {
+	sweepStaleProfiles()
 	return &Supervisor{processes: map[string]*Process{}, reserving: map[string]struct{}{}}
 }
 
@@ -76,15 +81,27 @@ func (s *Supervisor) Start(parent context.Context, spec Spec) (*Process, error) 
 		cmd.Env = append([]string(nil), spec.Environment...)
 	}
 	configureProcessTree(cmd)
+	conf, err := applyConfinement(cmd, spec)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("confine %s: %w", spec.Kind, err)
+	}
+	p := &Process{spec: spec, cmd: cmd, lines: make(chan Line, 256), done: make(chan struct{}), cancel: cancel, result: Result{ExitCode: -1}, confinement: conf}
 	if spec.MaxRuntime > 0 {
-		cmd.Cancel = func() error { return forceKillTree(cmd) }
+		cmd.Cancel = func() error { return p.forceKill() }
+	}
+	// A confined process must also get a WaitDelay: if a grandchild survives
+	// and holds the output pipes open, cmd.Wait's own WaitDelay handling is
+	// what forces those pipes closed so the reaper's p.collectors.Wait below
+	// can return and confinement can be closed.
+	if spec.MaxRuntime > 0 || conf != nil {
 		cmd.WaitDelay = 5 * time.Second
 	}
-	p := &Process{spec: spec, cmd: cmd, lines: make(chan Line, 256), done: make(chan struct{}), cancel: cancel, result: Result{ExitCode: -1}}
 
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()
+		p.closeConfinement()
 		cancel()
 		return nil, errors.New("process supervisor is shutting down")
 	}
@@ -92,6 +109,7 @@ func (s *Supervisor) Start(parent context.Context, spec Spec) (*Process, error) 
 	_, hasReservation := s.reserving[spec.ID]
 	if hasProcess || hasReservation {
 		s.mu.Unlock()
+		p.closeConfinement()
 		cancel()
 		return nil, fmt.Errorf("process %s already exists", spec.ID)
 	}
@@ -101,21 +119,36 @@ func (s *Supervisor) Start(parent context.Context, spec Spec) (*Process, error) 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		s.unreserve(spec.ID)
+		p.closeConfinement()
 		cancel()
 		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		s.unreserve(spec.ID)
+		p.closeConfinement()
 		cancel()
 		return nil, fmt.Errorf("stderr pipe: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
 		s.unreserve(spec.ID)
+		p.closeConfinement()
 		cancel()
 		return nil, fmt.Errorf("start %s: %w", spec.Kind, err)
 	}
 	p.result.StartedAt = time.Now().UTC()
+
+	if conf != nil {
+		if err := conf.Attach(cmd); err != nil {
+			_ = conf.Kill()
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			_ = conf.Close()
+			s.unreserve(spec.ID)
+			cancel()
+			return nil, fmt.Errorf("confine %s: %w", spec.Kind, err)
+		}
+	}
 
 	s.mu.Lock()
 	delete(s.reserving, spec.ID)
@@ -131,6 +164,12 @@ func (s *Supervisor) Start(parent context.Context, spec Spec) (*Process, error) 
 	go func() {
 		err := cmd.Wait()
 		p.collectors.Wait()
+		// Confinement must be closed only after collectors have drained: on
+		// Windows, closing the job handle (KILL_ON_JOB_CLOSE) is what reaps a
+		// grandchild still holding the output pipes, and cmd.Wait's WaitDelay
+		// above is what makes collectors.Wait return in that case. Closing
+		// confinement earlier would race the drain and truncate output.
+		p.closeConfinement()
 		p.mu.Lock()
 		p.result.Err = err
 		p.result.ExitedAt = time.Now().UTC()
@@ -205,7 +244,7 @@ func (p *Process) Terminate(grace time.Duration) error {
 		case <-p.done:
 			return
 		case <-timer.C:
-			_ = forceKillTree(p.cmd)
+			_ = p.forceKill()
 			p.cancel()
 			// Wait for the reaper goroutine to finish so a nil return from
 			// Terminate reliably means the process has actually been
@@ -220,6 +259,30 @@ func (p *Process) Terminate(grace time.Duration) error {
 		}
 	})
 	return result
+}
+
+// forceKill prefers killing through confinement, since on some platforms that
+// is what reaps the whole confined tree (not just the process group);
+// forceKillTree is the fallback when there is no confinement, or when killing
+// through it fails.
+func (p *Process) forceKill() error {
+	if p.confinement != nil {
+		if err := p.confinement.Kill(); err == nil {
+			return nil
+		}
+	}
+	return forceKillTree(p.cmd)
+}
+
+func (p *Process) closeConfinement() {
+	p.confMu.Lock()
+	defer p.confMu.Unlock()
+	if p.confinementClosed || p.confinement == nil {
+		p.confinementClosed = true
+		return
+	}
+	p.confinementClosed = true
+	_ = p.confinement.Close()
 }
 
 // ConfigureTree prepares a command the supervisor does not own so it can later

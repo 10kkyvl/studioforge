@@ -22,6 +22,7 @@ StudioForge is a free, open-source app that sits between you and AI coding model
 - **Watch a run as it happens, and undo it.** Every step an agent takes streams into the chat live; StudioForge checkpoints your project in Git before it touches anything, so you can see the diff and roll back a run you don't like.
 - **Use free AI models.** StudioForge works with OpenRouter's free-tier models and NVIDIA's free hosted models out of the box — you only need a free API key, not a paid subscription. Claude Code is also supported if you already use it.
 - **Keep everything local.** Your project files, your Roblox Studio, your Git history — all on your computer. StudioForge is a program you run yourself; nobody else's server sees your project.
+- **Run agent-started commands inside a real OS-level boundary.** On Windows, a command an agent runs is confined to a Windows Job Object (capped process/memory limits, killed with the run, no escape); on macOS, its file writes are confined to the project by a generated `sandbox-exec` profile. Scope and platform limits are stated plainly, not oversold — see [docs/SECURITY.md](docs/SECURITY.md#process-confinement-for-run_command).
 
 ## See it in action
 

@@ -17,6 +17,7 @@ import (
 	"github.com/10kkyvl/studioforge/internal/config"
 	"github.com/10kkyvl/studioforge/internal/database"
 	"github.com/10kkyvl/studioforge/internal/models"
+	"github.com/10kkyvl/studioforge/internal/processes"
 	"github.com/10kkyvl/studioforge/internal/providers/claudecode"
 	"github.com/10kkyvl/studioforge/internal/providers/openrouter/catalog"
 	"github.com/10kkyvl/studioforge/internal/roblox/mcp"
@@ -116,7 +117,30 @@ func (d *Doctor) Run(ctx context.Context) models.Diagnostics {
 	} else {
 		report.Checks = append(report.Checks, models.Check{Name: "dataDirectory", Status: "ok", Message: "Data directory is writable"})
 	}
+	report.Checks = append(report.Checks, confinementCheck())
 	return report
+}
+
+// confinementCheck reports whether OS confinement (internal/processes,
+// ConfineAgent) can actually be established on this platform, so an operator
+// learns that before a run starts rather than from a mid-run run_command
+// failure. What "confined" means differs by platform, so the message says so
+// plainly rather than implying a uniform boundary.
+func confinementCheck() models.Check {
+	const help = "See the confinement documentation for what StudioForge enforces per platform."
+	var scope string
+	switch runtime.GOOS {
+	case "windows":
+		scope = "On Windows, a run's processes and memory are confined to a job object and killed with the run; the filesystem is NOT confined."
+	case "darwin":
+		scope = "On macOS, a run's filesystem writes are confined to the project root via sandbox-exec."
+	default:
+		scope = "OS confinement has no implementation on this platform."
+	}
+	if err := processes.ProbeConfinement(); err != nil {
+		return models.Check{Name: "confinement", Status: "error", Message: scope + " Confinement is unavailable: " + err.Error(), Help: help}
+	}
+	return models.Check{Name: "confinement", Status: "ok", Message: scope, Help: help}
 }
 
 func keyStateStatus(keyState string) string {

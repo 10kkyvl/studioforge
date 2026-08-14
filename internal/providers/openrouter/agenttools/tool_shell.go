@@ -111,6 +111,18 @@ func resolveWorkspaceCommand(exe, workspaceRoot string) (string, string) {
 	return absolute, ""
 }
 
+// confinementFor picks the OS-level box a command started by the agent runs in.
+// workspace-write claims a containment boundary, so it gets the full policy and
+// fails closed when the platform cannot provide it. danger-full-access claims no
+// boundary at all — it still gets reaping, so a cancelled run leaves nothing
+// behind, but no filesystem or resource policy and no hard failure.
+func confinementFor(profile Profile, root string) processes.ConfinementPolicy {
+	if profile == ProfileDanger {
+		return processes.ConfinementPolicy{Mode: processes.ConfineReap}
+	}
+	return processes.ConfinementPolicy{Mode: processes.ConfineAgent, WritableRoots: []string{root}}
+}
+
 // checkWorkspaceCommand applies the workspace-write restrictions to an already
 // tokenized command line. An empty return means the command may run.
 //
@@ -200,6 +212,7 @@ func (s *ToolSet) runCommandTool() Tool {
 				WorkingDirectory: opts.Workspace.Root(),
 				Environment:      processes.MinimalEnvironment(nil),
 				MaxRuntime:       opts.CommandTimeout,
+				Confine:          confinementFor(s.profile, opts.Workspace.Root()),
 			})
 			if err != nil {
 				return errResult("start command: %v", err)
