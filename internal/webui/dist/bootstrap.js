@@ -7,7 +7,7 @@
 
 					Promise.all([
 						import("/_app/immutable/entry/start.DGROMnvn.js"),
-						import("/_app/immutable/entry/app.CMCIafsP.js")
+						import("/_app/immutable/entry/app.zv4VrW0T.js")
 					]).then(([kit, app]) => {
 						kit.start(app, element);
 					});
