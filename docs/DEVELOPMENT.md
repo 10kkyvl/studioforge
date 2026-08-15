@@ -6,7 +6,7 @@ together and [CONTRIBUTING.md](../CONTRIBUTING.md) for the contribution workflow
 
 ## Local setup
 
-Requirements: Go 1.25.12+ and Node.js 22+. Node is a build-time dependency only — the production binary
+Requirements: Go 1.25.13+ and Node.js 22+. Node is a build-time dependency only — the production binary
 embeds the compiled frontend and needs no Node.js at runtime.
 
 ```powershell
@@ -32,7 +32,7 @@ verbatim.
 ## Dependency management
 
 - **Go modules**: standard `go.mod`/`go.sum` at the repository root (module
-  `github.com/10kkyvl/studioforge`, `go 1.25.12`). The only direct dependency is
+  `github.com/10kkyvl/studioforge`, `go 1.25.13`). The only direct dependency is
   `modernc.org/sqlite` (pure Go, no CGO); everything else in `go.sum` is its transitive closure.
 - **npm**: `web/package.json` plus a **committed** `web/package-lock.json`. Always install with
   `npm ci` (not `npm install`) so the lockfile is respected exactly, both locally and in CI.

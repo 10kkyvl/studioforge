@@ -17,7 +17,7 @@ around them.
 
 | Tool | Version | Needed to build from source | Needed to run a packaged binary |
 | --- | --- | --- | --- |
-| Go | 1.25.12 or newer | Yes | No |
+| Go | 1.25.13 or newer | Yes | No |
 | Node.js | 22 or newer | Yes | No |
 | npm | (bundled with Node.js) | Yes | No |
 | Git | any recent version | Yes (clone the repo; also used for checkpoints) | Optional (only if you want Git checkpoints for your project) |

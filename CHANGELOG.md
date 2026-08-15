@@ -550,6 +550,32 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   the `.agent/*` files and not the run's memory selection, which was chosen against a message the
   subagent never sees (`internal/api/api.go`).
 
+### Fixed
+
+- **A Windows drive prefix is now refused as a command name on every host, not
+  just on Windows.** `checkCommandIsPlainName` leaned on `filepath.VolumeName`,
+  which returns nothing on Linux because `C:git` is a legitimate filename there.
+  The command was still refused — it simply fell through to the allowlist and was
+  rejected for the wrong reason, so the refusal an operator reads depended on
+  which OS the daemon happened to run on. The volume check is now host-independent
+  (`internal/providers/openrouter/agenttools/tool_shell.go`).
+
+### Security
+
+- **Raised the Go floor from 1.25.12 to 1.25.13.** `govulncheck` reported five
+  reachable Go standard-library vulnerabilities against 1.25.12 — `net/url`
+  (GO-2026-6218), `crypto/tls` (GO-2026-6090), `net/http` (GO-2026-6089 and
+  GO-2026-5026) and `encoding/asn1` (GO-2026-5972), all reachable through the
+  daemon's HTTP server, the OpenRouter and NVIDIA clients, and the portable
+  export path. All five are fixed in 1.25.13, where `govulncheck` reports none.
+- **Updated the frontend dependency tree** to clear the high-severity `undici`
+  advisories (response desynchronization via the retry interceptor, cross-user
+  information disclosure via cache directives, CRLF injection via a blob body
+  type, cookie attribute injection) along with moderate `postcss` and `nanoid`
+  advisories. Only `web/package-lock.json` moved; no declared dependency range
+  changed. One moderate advisory remains, since clearing it would require moving
+  `@sveltejs/kit` outside its stated range.
+
 ## [0.5.0-rc.3] - 2026-07-25
 
 ### Added

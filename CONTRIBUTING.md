@@ -16,7 +16,7 @@ cd studioforge
 ./scripts/dev.sh --mock --no-open      # or ./scripts/dev.ps1 on Windows
 ```
 
-You need Go 1.25.12+, Node.js 22+, npm, and Git. Claude Code, an OpenRouter API key, Roblox Studio, and Rojo are optional — the `--mock` demo and the test suite run without any of them.
+You need Go 1.25.13+, Node.js 22+, npm, and Git. Claude Code, an OpenRouter API key, Roblox Studio, and Rojo are optional — the `--mock` demo and the test suite run without any of them.
 
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full command reference and directory layout.
 

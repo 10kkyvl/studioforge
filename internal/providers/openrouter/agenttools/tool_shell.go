@@ -69,8 +69,20 @@ func allowlistName(exe string) string {
 // PATH; the moment a path is accepted, the allowlist checks only the last
 // segment of it, so `./git.cmd` — a file the agent is allowed to write, since
 // writing files is what workspace-write means — passes as git.
+// hasVolumePrefix recognises a Windows drive prefix on any host, because
+// filepath.VolumeName does not: on Linux `C:git` is a legitimate filename, so
+// the refusal would depend on which OS the daemon happens to run on. A command
+// that names a volume is not a bare executable name anywhere.
+func hasVolumePrefix(exe string) bool {
+	if len(exe) < 2 || exe[1] != ':' {
+		return false
+	}
+	c := exe[0]
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
 func checkCommandIsPlainName(exe string) string {
-	if strings.ContainsAny(exe, `/\`) || filepath.VolumeName(exe) != "" {
+	if strings.ContainsAny(exe, `/\`) || filepath.VolumeName(exe) != "" || hasVolumePrefix(exe) {
 		return fmt.Sprintf("command must be a bare executable name in workspace-write profile, not a path: %s (use danger-full-access to run a specific file)", exe)
 	}
 	return ""
