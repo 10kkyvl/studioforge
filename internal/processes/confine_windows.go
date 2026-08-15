@@ -36,6 +36,9 @@ type jobConfinement struct {
 func sweepStaleProfiles() {}
 
 func applyConfinement(cmd *exec.Cmd, spec Spec) (Confinement, error) {
+	if err := EnforcesNetworkPolicy(spec.Confine.Network); err != nil {
+		return nil, err
+	}
 	mode := spec.Confine.Mode
 	switch mode {
 	case ConfineNone:

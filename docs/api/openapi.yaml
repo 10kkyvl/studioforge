@@ -42,6 +42,20 @@ paths:
         "200": {description: "Full: branch, commitHash. Selective: commitHash, safetyCommit, revertedFiles, revertedHunks"}
         "400": {description: "No checkpoint recorded (no_checkpoint), or an unknown selection (invalid_selection)"}
         "409": {description: "project_busy, git_unavailable, not_git_repo, dirty_worktree, later_change_conflict, patch_check_failed, or rollback_failed"}
+  /runs/{id}/review:
+    post:
+      summary: >-
+        Resolve a run's reviewBeforeApply gate; apply keeps every change,
+        reject reverts the run's whole diff in place via SelectiveRollback,
+        apply-selected keeps only the named files/hunks (server inverts
+        against the actual diff to compute what to revert)
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "200": {description: "{status: applied|rejected|partial, safetyCommit, revertedFiles, revertedHunks}"}
+        "400": {description: "invalid_review_action, or invalid_selection"}
+        "404": {description: No pending review for this run}
+        "409": {description: "review_not_pending, review_expired, project_busy, or the same rollback error set as /runs/{id}/rollback"}
   /projects/{id}/checkpoints:
     get:
       summary: A project's recorded git checkpoints, newest first

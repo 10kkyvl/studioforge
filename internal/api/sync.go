@@ -35,6 +35,10 @@ func (s *Server) syncStatus(projectID string) models.SyncStatus {
 // already assume (studio.Opener.OpenProject), so this endpoint takes no path
 // of its own to serve.
 func (s *Server) startSync(w http.ResponseWriter, r *http.Request) {
+	if s.safeMode {
+		writeError(w, r, 409, "safe_mode", "Rojo live-sync is disabled in safe mode", nil)
+		return
+	}
 	if s.syncer == nil {
 		writeError(w, r, 501, "not_supported", "Rojo live-sync is not available", nil)
 		return

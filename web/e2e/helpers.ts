@@ -10,6 +10,7 @@ export interface DaemonHandle {
   baseURL: string;
   bootstrap: string;
   dataDir: string;
+  projectsDir: string;
   binary: string;
 }
 
@@ -33,6 +34,7 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   const root = resolve(process.cwd(), '..');
   const buildDir = mkdtempSync(join(tmpdir(), 'studioforge-e2e-build-'));
   const dataDir = mkdtempSync(join(tmpdir(), 'studioforge-e2e-data-'));
+  const projectsDir = mkdtempSync(join(tmpdir(), 'studioforge-e2e-projects-'));
   mkdirSync(buildDir, { recursive: true });
   const binary = join(buildDir, process.platform === 'win32' ? 'studioforge.exe' : 'studioforge');
   execFileSync('go', ['build', '-o', binary, './cmd/studioforge'], { cwd: root, stdio: 'inherit' });
@@ -67,11 +69,11 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
       reject(new Error(`Daemon exited early with ${code}: ${output}`));
     });
   });
-  return { daemon, baseURL, bootstrap, dataDir, binary };
+  return { daemon, baseURL, bootstrap, dataDir, projectsDir, binary };
 }
 
 export async function stopDaemon(handle: DaemonHandle): Promise<void> {
-  const { daemon, dataDir, binary } = handle;
+  const { daemon, dataDir, projectsDir, binary } = handle;
   if (daemon && !daemon.killed) {
     daemon.kill();
     await new Promise((resolveExit) => {
@@ -80,6 +82,7 @@ export async function stopDaemon(handle: DaemonHandle): Promise<void> {
     });
   }
   if (dataDir) rmSync(dataDir, { recursive: true, force: true });
+  if (projectsDir) rmSync(projectsDir, { recursive: true, force: true });
   if (binary) rmSync(resolve(binary, '..'), { recursive: true, force: true });
 }
 

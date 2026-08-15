@@ -14,11 +14,11 @@ type Diagnostics struct {
 	Message       string          `json:"message"`
 }
 type RunRequest struct {
-	RunID, ProjectID, AgentID, ThreadID, WorkingDirectory, Prompt, SystemPrompt, Mode, Model, Effort, PermissionProfile string
-	MaxTurns                                                                                                            int
-	MaxBudget                                                                                                           float64
-	AllowUnverifiedModel                                                                                                bool
-	MCPConfigPath                                                                                                       string
+	RunID, ProjectID, AgentID, ThreadID, WorkingDirectory, Prompt, SystemPrompt, Mode, Model, Effort, PermissionProfile, NetworkPolicy string
+	MaxTurns                                                                                                                           int
+	MaxBudget                                                                                                                          float64
+	AllowUnverifiedModel                                                                                                               bool
+	MCPConfigPath                                                                                                                      string
 	// StrictMCP confines the run to the servers named in MCPConfigPath, dropping
 	// the ones the operator has configured for themselves. It is set only for a
 	// run that was granted Studio: every Claude run now carries a config, because

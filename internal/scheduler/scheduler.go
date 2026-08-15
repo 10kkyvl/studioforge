@@ -230,11 +230,13 @@ type RunStore interface {
 	UpdateRunStuck(ctx context.Context, id, status, phase, resource, errText string) error
 	CreateCheckpoint(ctx context.Context, checkpoint models.Checkpoint) error
 	ThreadSessionBefore(ctx context.Context, threadID, runID string) (string, error)
+	Review(ctx context.Context, runID string) (models.RunReview, bool, error)
+	ExpireReviews(ctx context.Context, now time.Time) ([]models.RunReview, error)
 }
 type Job struct {
-	RunID, ProjectID, AgentID, TaskID, Provider, Model, Effort, PermissionProfile string
-	WorkingDirectory, Prompt, SystemPrompt, Scenario                              string
-	ThreadID, ResumeSessionID, Mode                                               string
+	RunID, ProjectID, AgentID, TaskID, Provider, Model, Effort, PermissionProfile, NetworkPolicy string
+	WorkingDirectory, Prompt, SystemPrompt, Scenario                                             string
+	ThreadID, ResumeSessionID, Mode                                                              string
 	// ResumeThread resolves the immediately preceding turn's provider session
 	// only when this job is ready to start. A follow-up may spend minutes queued
 	// behind the project write lock, so resolving it in the HTTP handler would
@@ -274,6 +276,8 @@ type Job struct {
 	// consecutive repeats of the same short tool-call sequence, with no file
 	// edit and no new console/tool-result text, count as stuck.
 	StuckRepetitionCap int
+	ReviewBeforeApply  bool
+	BaseCheckpoint     string
 }
 
 // MCPGrant is the MCP access a run receives. An empty ConfigPath means none;
@@ -437,7 +441,10 @@ type Manager struct {
 	validate                                                      MCPValidator
 	mutationChecker                                               MCPMutationChecker
 	propose                                                       DecisionProposer
+	reviewGate                                                    ReviewGate
+	reviewExpiry                                                  ReviewGateExpiry
 	memoryStore                                                   *memory.Store
+	safeMode                                                      bool
 	mu                                                            sync.Mutex
 	queue                                                         *fairQueue
 	active                                                        map[string]*execution
@@ -466,6 +473,7 @@ type execution struct {
 	// changed. Persisted to the run row the first time it flips; see
 	// Manager.trackStudioMutation.
 	studioDirectEdits bool
+	fileEdited        bool
 	// cancelling is set by Cancel under m.mu at the same moment it calls
 	// cancel(), so Pause/Resume can detect a cancellation already in flight
 	// and refuse to race their own status write against the run goroutine's
@@ -497,6 +505,21 @@ func New(parent context.Context, store RunStore, hub *events.Hub, leases *resour
 	go m.loop()
 	return m
 }
+
+var ErrSafeMode = errors.New("safe mode is enabled: no run can be started")
+
+func (m *Manager) SetSafeMode(on bool) {
+	m.mu.Lock()
+	m.safeMode = on
+	m.mu.Unlock()
+}
+
+func (m *Manager) SafeMode() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.safeMode
+}
+
 func (m *Manager) SetLimits(global, project, provider, model int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -516,6 +539,9 @@ func (m *Manager) SetLimits(global, project, provider, model int) {
 }
 
 func (m *Manager) Submit(ctx context.Context, j Job) (models.Run, bool, error) {
+	if m.SafeMode() {
+		return models.Run{}, false, ErrSafeMode
+	}
 	run, created, err := m.createRun(ctx, &j)
 	if err != nil || !created {
 		return run, created, err
@@ -537,7 +563,7 @@ func (m *Manager) createRun(ctx context.Context, j *Job) (models.Run, bool, erro
 	if closed {
 		return models.Run{}, false, errors.New("scheduler is closed")
 	}
-	run, created, err := m.store.CreateRun(ctx, models.Run{ID: j.RunID, ProjectID: j.ProjectID, AgentID: j.AgentID, TaskID: j.TaskID, Provider: j.Provider, ModelAlias: j.Model, Status: "queued", Phase: "queued", ThreadID: j.ThreadID, PromptSnapshot: j.Prompt, ParentRunID: j.ParentRunID, CorrectionDepth: j.CorrectionDepth}, j.IdempotencyKey)
+	run, created, err := m.store.CreateRun(ctx, models.Run{ID: j.RunID, ProjectID: j.ProjectID, AgentID: j.AgentID, TaskID: j.TaskID, Provider: j.Provider, ModelAlias: j.Model, Status: "queued", Phase: "queued", ThreadID: j.ThreadID, PromptSnapshot: j.Prompt, ParentRunID: j.ParentRunID, CorrectionDepth: j.CorrectionDepth, NetworkPolicy: j.NetworkPolicy}, j.IdempotencyKey)
 	if err != nil || !created {
 		return run, created, err
 	}
@@ -653,7 +679,7 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 	// then and now — the queue wait, the writer lease — happens before anything
 	// knows whether Studio would be available. Composing them from the grant is
 	// what stops a run being told about tools it does not have.
-	req := providers.RunRequest{RunID: j.RunID, ProjectID: j.ProjectID, AgentID: j.AgentID, ThreadID: j.ThreadID, WorkingDirectory: j.WorkingDirectory, Prompt: prompt, SystemPrompt: withStudioRules(j.SystemPrompt, grant), Mode: j.Mode, Model: j.Model, Effort: j.Effort, PermissionProfile: j.PermissionProfile, MaxBudget: j.MaxBudget, AllowUnverifiedModel: j.AllowUnverifiedModel, Scenario: j.Scenario, MCPConfigPath: grant.ConfigPath, StrictMCP: grant.Studio, AllowedTools: grant.AllowedTools, Subagents: j.Subagents, Attachments: j.Attachments}
+	req := providers.RunRequest{RunID: j.RunID, ProjectID: j.ProjectID, AgentID: j.AgentID, ThreadID: j.ThreadID, WorkingDirectory: j.WorkingDirectory, Prompt: prompt, SystemPrompt: withStudioRules(j.SystemPrompt, grant), Mode: j.Mode, Model: j.Model, Effort: j.Effort, PermissionProfile: j.PermissionProfile, NetworkPolicy: j.NetworkPolicy, MaxBudget: j.MaxBudget, AllowUnverifiedModel: j.AllowUnverifiedModel, Scenario: j.Scenario, MCPConfigPath: grant.ConfigPath, StrictMCP: grant.Studio, AllowedTools: grant.AllowedTools, Subagents: j.Subagents, Attachments: j.Attachments}
 	resumeSession := j.ResumeSessionID
 	if j.ResumeThread && j.ThreadID != "" {
 		resumeSession, err = m.store.ThreadSessionBefore(ctx, j.ThreadID, j.RunID)
@@ -781,7 +807,12 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 	}
 	m.mu.Lock()
 	asksQuestion := e.question
+	edited := e.fileEdited
 	m.mu.Unlock()
+	if j.ReviewBeforeApply && edited {
+		m.openReviewGate(context.Background(), j, lease)
+		return
+	}
 	if asksQuestion {
 		// A studioforge-question fenced block appeared during this turn: the
 		// run stops here to let the user pick an option instead of reporting
@@ -969,6 +1000,10 @@ func (m *Manager) emitValidation(j Job, validation ValidationResult, outcome Val
 // covers). It takes its own Git checkpoint, mirroring the one internal/api
 // takes before every other non-plan Claude run.
 func (m *Manager) scheduleCorrection(ctx context.Context, j *Job, sessionID string, validation ValidationResult) {
+	if m.SafeMode() {
+		slog.Warn("skipping automatic correction run because safe mode is enabled", "run_id", j.RunID, "project_id", j.ProjectID)
+		return
+	}
 	const checkpointLabel = "StudioForge checkpoint before correction run"
 	correction := buildCorrectionJob(j, sessionID, validation)
 	run, created, err := m.createRun(ctx, &correction)
@@ -993,6 +1028,7 @@ func (m *Manager) scheduleCorrection(ctx context.Context, j *Job, sessionID stri
 				m.fail(context.Background(), &correction, "correction aborted: could not record the rollback checkpoint")
 				return
 			}
+			correction.BaseCheckpoint = hash
 		}
 	}
 	if err := m.admit(&correction, run); err != nil {
@@ -1024,13 +1060,14 @@ func buildCorrectionJob(j *Job, sessionID string, validation ValidationResult) J
 	}
 	return Job{
 		ProjectID: j.ProjectID, AgentID: j.AgentID, TaskID: j.TaskID,
-		Provider: j.Provider, Model: j.Model, Effort: j.Effort, PermissionProfile: j.PermissionProfile,
+		Provider: j.Provider, Model: j.Model, Effort: j.Effort, PermissionProfile: j.PermissionProfile, NetworkPolicy: j.NetworkPolicy,
 		WorkingDirectory: j.WorkingDirectory, SystemPrompt: j.SystemPrompt,
 		Mode: j.Mode, ThreadID: j.ThreadID, ResumeSessionID: sessionID,
 		MaxBudget: j.MaxBudget, AllowUnverifiedModel: j.AllowUnverifiedModel, Prompt: prompt,
 		ParentRunID: j.RunID, CorrectionDepth: j.CorrectionDepth + 1,
 		MaxCorrectionRuns: j.MaxCorrectionRuns, ValidateAfterRun: j.ValidateAfterRun,
 		IdempotencyKey: "correction:" + j.RunID, Attachments: carried,
+		ReviewBeforeApply: j.ReviewBeforeApply,
 	}
 }
 

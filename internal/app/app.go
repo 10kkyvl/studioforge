@@ -24,6 +24,7 @@ import (
 	"github.com/10kkyvl/studioforge/internal/memory"
 	"github.com/10kkyvl/studioforge/internal/models"
 	"github.com/10kkyvl/studioforge/internal/platform"
+	"github.com/10kkyvl/studioforge/internal/platform/toolpath"
 	"github.com/10kkyvl/studioforge/internal/processes"
 	"github.com/10kkyvl/studioforge/internal/projects"
 	"github.com/10kkyvl/studioforge/internal/providers"
@@ -55,6 +56,19 @@ func openRouterPrice(raw string, required bool) (float64, bool) {
 		return 0, false
 	}
 	return value, true
+}
+
+func validatedToolSetting(ctx context.Context, store *database.Store, key string) string {
+	value, ok, _ := store.Setting(ctx, key)
+	if !ok || value == "" {
+		return ""
+	}
+	normalized, err := toolpath.Validate(key, value)
+	if err != nil {
+		slog.Warn("ignoring invalid tool path setting at startup; falling back to automatic search", "key", key, "error", err)
+		return ""
+	}
+	return normalized
 }
 
 func Run(ctx context.Context, opts config.Options) error {
@@ -125,7 +139,7 @@ func Run(ctx context.Context, opts config.Options) error {
 	defer leases.Close()
 	supervisor := processes.NewSupervisor()
 	mockProvider := mock.New()
-	claudeProvider := claudecode.New(setting("claude_path", ""))
+	claudeProvider := claudecode.New(validatedToolSetting(ctx, store, "claude_path"))
 	openrouterProvider := openrouter.New(supervisor)
 	nvidiaHTTPClient := nvidia.NewHTTPClient()
 	nvidiaProvider := nvidia.NewWithHTTPClient(supervisor, nvidiaHTTPClient)
@@ -168,11 +182,11 @@ func Run(ctx context.Context, opts config.Options) error {
 	if count, err := strconv.Atoi(setting("concurrency", "6")); err == nil {
 		schedulerManager.SetLimits(count, 0, 0, 0)
 	}
-	if opts.SafeMode {
-		schedulerManager.SetLimits(1, 1, 1, 1)
-	}
-	rojoManager := rojo.New(supervisor, setting("rojo_path", ""))
-	doctor := &diagnostics.Doctor{DB: db, DataDir: dataDir, SafeMode: opts.SafeMode, MockMode: opts.MockMode, Claude: claudeProvider, Rojo: rojoManager, MCPOverride: setting("studio_mcp_path", ""), GitOverride: setting("git_path", "")}
+	schedulerManager.SetSafeMode(opts.SafeMode)
+	rojoManager := rojo.New(supervisor, validatedToolSetting(ctx, store, "rojo_path"))
+	rojoManager.SetSafeMode(opts.SafeMode)
+	studioMCPPath := validatedToolSetting(ctx, store, "studio_mcp_path")
+	doctor := &diagnostics.Doctor{DB: db, DataDir: dataDir, SafeMode: opts.SafeMode, MockMode: opts.MockMode, Claude: claudeProvider, Rojo: rojoManager, MCPOverride: studioMCPPath, GitOverride: validatedToolSetting(ctx, store, "git_path")}
 	doctor.OpenRouterKeyState = func(ctx context.Context) string { return string(credManager.Status(ctx).State) }
 	doctor.NVIDIAKeyState = func(ctx context.Context) string { return string(nvidiaCredManager.Status(ctx).State) }
 	// rojoManager.Start puts its process on the same supervisor every other
@@ -185,7 +199,7 @@ func Run(ctx context.Context, opts config.Options) error {
 	// Grant Claude runs access to Roblox Studio. Other providers are wired to the
 	// Studio MCP grant in a later phase.
 	var studioMCPOverride atomic.Value
-	studioMCPOverride.Store(setting("studio_mcp_path", ""))
+	studioMCPOverride.Store(studioMCPPath)
 	var studioAutoOpen atomic.Value
 	studioAutoOpen.Store(setting("studio_auto_open", "true") != "false")
 	// playtestWindowSeconds bounds how long the post-run validation loop polls
@@ -219,6 +233,16 @@ func Run(ctx context.Context, opts config.Options) error {
 	if value, err := strconv.Atoi(setting("stuck_repetition_cap", "6")); err == nil && value > 0 {
 		stuckRepetitionCap.Store(int64(value))
 	}
+	var reviewGateExpiryHours atomic.Int64
+	reviewGateExpiryHours.Store(24)
+	if value, err := strconv.Atoi(setting("review_gate_expiry_hours", "24")); err == nil && value >= 1 && value <= 168 {
+		reviewGateExpiryHours.Store(int64(value))
+	}
+	schedulerManager.SetReviewGateExpiry(func() time.Duration {
+		return time.Duration(reviewGateExpiryHours.Load()) * time.Hour
+	})
+	schedulerManager.SetReviewGate(&reviewGateAdapter{store: store})
+	recoverPendingReviews(ctx, store, leases, schedulerManager)
 	stuckSettings := func() scheduler.StuckSettings {
 		return scheduler.StuckSettings{
 			Enabled:       stuckDetectionEnabled.Load(),
@@ -314,19 +338,29 @@ func Run(ctx context.Context, opts config.Options) error {
 			Place:   studio.PlacePath(project.Path, project.Name, project.ID),
 		}, nil
 	}
+	const safeModeStudioNotice = "Studio access is disabled in safe mode"
 	schedulerManager.SetMCPProvisioner(func(ctx context.Context, j *scheduler.Job) scheduler.MCPGrant {
 		if j.Provider != "claude" {
 			return scheduler.MCPGrant{}
+		}
+		if opts.SafeMode {
+			return scheduler.MCPGrant{Notice: safeModeStudioNotice}
 		}
 		grant := studioProvisioner.Provision(ctx, j.RunID, j.PermissionProfile, studioTarget(ctx, j.ProjectID))
 		return scheduler.MCPGrant{ConfigPath: grant.ConfigPath, AllowedTools: grant.AllowedTools, Studio: grant.Studio, Notice: grant.Notice, Context: grant.Context, Release: grant.Release}
 	})
 	openrouterProvider.SetMCPConnector(func(ctx context.Context, projectID, runID, permissionProfile string) openrouter.MCPGrant {
+		if opts.SafeMode {
+			return openrouter.MCPGrant{Notice: safeModeStudioNotice}
+		}
 		g := studioProvisioner.ProvisionLive(ctx, permissionProfile, studioTarget(ctx, projectID))
 		return openrouter.MCPGrant{Client: g.Client, AllowedTools: g.AllowedTools, Context: g.Context, Notice: g.Notice, Release: g.Release}
 	})
 	openrouterProvider.SetConversationStore(&conversationAdapter{store: store})
 	nvidiaProvider.SetMCPConnector(func(ctx context.Context, projectID, runID, permissionProfile string) openrouter.MCPGrant {
+		if opts.SafeMode {
+			return openrouter.MCPGrant{Notice: safeModeStudioNotice}
+		}
 		g := studioProvisioner.ProvisionLive(ctx, permissionProfile, studioTarget(ctx, projectID))
 		return openrouter.MCPGrant{Client: g.Client, AllowedTools: g.AllowedTools, Context: g.Context, Notice: g.Notice, Release: g.Release}
 	})
@@ -400,6 +434,13 @@ func Run(ctx context.Context, opts config.Options) error {
 	}
 
 	applySetting := func(key, value string) error {
+		if toolpath.IsTool(key) {
+			normalized, err := toolpath.Validate(key, value)
+			if err != nil {
+				return err
+			}
+			value = normalized
+		}
 		switch key {
 		case "claude_path":
 			claudeProvider.SetExecutable(value)
@@ -441,6 +482,12 @@ func Run(ctx context.Context, opts config.Options) error {
 				return errors.New("stuck_repetition_cap must be a positive integer")
 			}
 			stuckRepetitionCap.Store(int64(cap))
+		case "review_gate_expiry_hours":
+			hours, err := strconv.Atoi(value)
+			if err != nil || hours < 1 || hours > 168 {
+				return errors.New("review_gate_expiry_hours must be an integer between 1 and 168")
+			}
+			reviewGateExpiryHours.Store(int64(hours))
 		case "concurrency":
 			count, err := strconv.Atoi(value)
 			if err != nil {
@@ -477,6 +524,7 @@ func Run(ctx context.Context, opts config.Options) error {
 	slog.Info("StudioForge ready", "url", baseURL.String(), "data_dir", dataDir, "safe_mode", opts.SafeMode, "mock_mode", opts.MockMode)
 	fmt.Printf("STUDIOFORGE_URL=%s\nSTUDIOFORGE_BOOTSTRAP=%s\n", baseURL.String(), sessions.BootstrapToken())
 	go store.RunEventRetentionLoop(ctx, func() int { return int(eventRetentionDays.Load()) })
+	go runReviewExpiryLoop(ctx, store, hub)
 	if !opts.NoOpen {
 		if err := platform.OpenBrowser(launchURL); err != nil {
 			slog.Warn("browser did not open automatically", "error", err, "url", baseURL.String())
@@ -507,6 +555,32 @@ func Run(ctx context.Context, opts config.Options) error {
 	_ = supervisor.Close(shutdownCtx)
 	_ = db.Checkpoint(shutdownCtx)
 	return runErr
+}
+
+func runReviewExpiryLoop(ctx context.Context, store *database.Store, hub *events.Hub) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			expireReviewsOnce(ctx, store, hub)
+		}
+	}
+}
+
+func expireReviewsOnce(ctx context.Context, store *database.Store, hub *events.Hub) {
+	expired, err := store.ExpireReviews(ctx, time.Now().UTC())
+	if err != nil {
+		slog.Warn("failed to expire pending run reviews", "error", err)
+		return
+	}
+	for _, review := range expired {
+		if _, err := hub.Publish(ctx, models.RunEvent{ProjectID: review.ProjectID, RunID: review.RunID, Type: "review", RawType: "app.review.expired", Payload: map[string]any{"status": "expired"}, CreatedAt: time.Now().UTC()}); err != nil {
+			slog.Warn("failed to publish review expiry event", "review_id", review.ID, "run_id", review.RunID, "error", err)
+		}
+	}
 }
 
 func automaticBackup(ctx context.Context, db *database.DB, store *database.Store, dataDir string) error {

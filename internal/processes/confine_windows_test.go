@@ -234,3 +234,28 @@ func TestConfinementFailureDoesNotStart(t *testing.T) {
 		t.Fatalf("supervisor.processes = %v, want empty", supervisor.processes)
 	}
 }
+
+func TestStrictNetworkPolicyRefusesToStartOnWindows(t *testing.T) {
+	supervisor := NewSupervisor()
+	defer supervisor.Close(context.Background())
+	process, err := supervisor.Start(context.Background(), Spec{
+		ID:          "strict-network-policy",
+		Kind:        "test",
+		Executable:  os.Args[0],
+		Args:        []string{"-test.run=TestHelperProcess"},
+		Environment: append(MinimalEnvironment(nil), "STUDIOFORGE_HELPER=1"),
+		Confine:     ConfinementPolicy{Mode: ConfineAgent, Network: NetworkRegistryOnly, WritableRoots: []string{t.TempDir()}},
+	})
+	if err == nil {
+		t.Fatal("expected Start to fail when a strict network policy cannot be enforced on windows")
+	}
+	if !errors.Is(err, ErrNetworkPolicyUnsupported) {
+		t.Fatalf("err = %v, want it to wrap ErrNetworkPolicyUnsupported", err)
+	}
+	if process != nil {
+		t.Fatalf("expected nil process, got %+v", process)
+	}
+	if len(supervisor.processes) != 0 {
+		t.Fatalf("supervisor.processes = %v, want empty", supervisor.processes)
+	}
+}

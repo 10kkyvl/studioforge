@@ -685,6 +685,19 @@
         <p class="path-hint">{$translate('settings.playtestPollHint')}</p>
       </div>
       <div class="wide path-field">
+        <label
+          >{$translate('settings.reviewGateExpiryHours')}<input
+            type="number"
+            min="1"
+            max="168"
+            step="1"
+            value={settings.review_gate_expiry_hours}
+            onchange={(event) => (settings.review_gate_expiry_hours = event.currentTarget.value)}
+          /></label
+        >
+        <p class="path-hint">{$translate('settings.reviewGateExpiryHoursHint')}</p>
+      </div>
+      <div class="wide path-field">
         <details class="advanced-routing">
           <summary><ChevronDown size={14} />{$translate('openrouter.routing.title')}</summary>
           <div class="settings-fields">

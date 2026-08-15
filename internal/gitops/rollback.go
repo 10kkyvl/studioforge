@@ -31,6 +31,14 @@ type SelectiveRollbackResult struct {
 }
 
 func (c *Client) SelectiveRollback(ctx context.Context, root, checkpoint, nextCheckpoint string, files []string, hunks []HunkSelection) (SelectiveRollbackResult, error) {
+	if err := validateRef(checkpoint); err != nil {
+		return SelectiveRollbackResult{}, err
+	}
+	if nextCheckpoint != "" {
+		if err := validateRef(nextCheckpoint); err != nil {
+			return SelectiveRollbackResult{}, err
+		}
+	}
 	if _, err := c.run(ctx, root, "rev-parse", "--git-dir"); err != nil {
 		return SelectiveRollbackResult{}, ErrNotGitRepo
 	}

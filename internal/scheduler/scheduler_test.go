@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -64,6 +65,37 @@ func TestCancelQueuedRun(t *testing.T) {
 			}
 			assertCancelledEvent(t, store, queued.ID)
 		})
+	}
+}
+
+func TestSafeModeRefusesEverySubmit(t *testing.T) {
+	manager, provider, store, ctx := newHarness(t)
+	manager.SetSafeMode(true)
+	if !manager.SafeMode() {
+		t.Fatal("SafeMode() reported off right after SetSafeMode(true)")
+	}
+	run, created, err := manager.Submit(ctx, Job{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", Model: "balanced", WorkingDirectory: t.TempDir()})
+	if !errors.Is(err, ErrSafeMode) {
+		t.Fatalf("Submit in safe mode: err=%v, want ErrSafeMode", err)
+	}
+	if created || run.ID != "" {
+		t.Fatalf("Submit in safe mode created a run: created=%v run=%+v", created, run)
+	}
+	if reqs := provider.requests(); len(reqs) != 0 {
+		t.Fatalf("Submit in safe mode reached the provider: %d requests", len(reqs))
+	}
+	runs, err := store.ListRuns(ctx, "demo-obby", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range runs {
+		if r.AgentID == "demo-obby-orch" && r.Status == "queued" {
+			t.Fatalf("Submit in safe mode persisted a queued run: %+v", r)
+		}
+	}
+	manager.SetSafeMode(false)
+	if _, _, err := manager.Submit(ctx, Job{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", Model: "balanced", WorkingDirectory: t.TempDir()}); err != nil {
+		t.Fatalf("Submit after safe mode was turned off: %v", err)
 	}
 }
 

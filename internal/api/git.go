@@ -92,20 +92,7 @@ func (s *Server) rollbackRun(w http.ResponseWriter, r *http.Request) {
 	nextCheckpoint := nextCheckpointAfter(checkpoints, checkpoint)
 	result, err := s.git.SelectiveRollback(r.Context(), project.Path, checkpoint.CommitHash, nextCheckpoint, body.Files, hunks)
 	if err != nil {
-		switch {
-		case errors.Is(err, gitops.ErrSelectionUnknown):
-			writeError(w, r, 400, "invalid_selection", err.Error(), nil)
-		case errors.Is(err, gitops.ErrDirtyWorktree):
-			writeError(w, r, 409, "dirty_worktree", err.Error(), nil)
-		case errors.Is(err, gitops.ErrLaterChanges):
-			writeError(w, r, 409, "later_change_conflict", err.Error(), nil)
-		case errors.Is(err, gitops.ErrPatchCheckFailed):
-			writeError(w, r, 409, "patch_check_failed", err.Error(), nil)
-		case errors.Is(err, gitops.ErrNotGitRepo):
-			writeError(w, r, 409, "not_git_repo", err.Error(), nil)
-		default:
-			writeError(w, r, 409, "rollback_failed", "Unable to roll back: "+err.Error(), err)
-		}
+		writeRollbackError(w, r, err)
 		return
 	}
 	if result.SafetyCommit != "" {
@@ -120,6 +107,23 @@ func (s *Server) rollbackRun(w http.ResponseWriter, r *http.Request) {
 		"revertedFiles": result.RevertedFiles,
 		"revertedHunks": result.RevertedHunks,
 	})
+}
+
+func writeRollbackError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, gitops.ErrSelectionUnknown):
+		writeError(w, r, 400, "invalid_selection", err.Error(), nil)
+	case errors.Is(err, gitops.ErrDirtyWorktree):
+		writeError(w, r, 409, "dirty_worktree", err.Error(), nil)
+	case errors.Is(err, gitops.ErrLaterChanges):
+		writeError(w, r, 409, "later_change_conflict", err.Error(), nil)
+	case errors.Is(err, gitops.ErrPatchCheckFailed):
+		writeError(w, r, 409, "patch_check_failed", err.Error(), nil)
+	case errors.Is(err, gitops.ErrNotGitRepo):
+		writeError(w, r, 409, "not_git_repo", err.Error(), nil)
+	default:
+		writeError(w, r, 409, "rollback_failed", "Unable to roll back: "+err.Error(), err)
+	}
 }
 
 func nextCheckpointAfter(checkpoints []models.Checkpoint, after models.Checkpoint) string {
@@ -164,6 +168,10 @@ func (s *Server) gitTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.git.Tag(r.Context(), project.Path, body.Name); err != nil {
+		if errors.Is(err, gitops.ErrInvalidTagName) {
+			writeError(w, r, 400, "invalid_name", "Tag name is invalid: "+err.Error(), nil)
+			return
+		}
 		writeError(w, r, 409, "tag_failed", "Unable to create tag: "+err.Error(), err)
 		return
 	}

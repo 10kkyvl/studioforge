@@ -22,6 +22,7 @@ type ConfinementPolicy struct {
 	WritableRoots  []string
 	MaxProcesses   uint32
 	MaxMemoryBytes uint64
+	Network        NetworkPolicy
 }
 
 func (p ConfinementPolicy) resolved() ConfinementPolicy {
@@ -31,6 +32,7 @@ func (p ConfinementPolicy) resolved() ConfinementPolicy {
 	if p.MaxMemoryBytes == 0 {
 		p.MaxMemoryBytes = defaultMaxMemoryBytes
 	}
+	p.Network = p.Network.Normalized()
 	return p
 }
 
@@ -54,4 +56,8 @@ func allowUnconfined() bool {
 // or a descriptive error otherwise.
 func ProbeConfinement() error {
 	return probeConfinement()
+}
+
+func ProbeNetworkPolicy(p NetworkPolicy) error {
+	return EnforcesNetworkPolicy(p)
 }

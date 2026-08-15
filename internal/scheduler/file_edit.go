@@ -42,6 +42,9 @@ func (m *Manager) trackFileEdit(e *execution, event providers.Event) {
 	if len(editNames) == 0 {
 		return
 	}
+	m.mu.Lock()
+	e.fileEdited = true
+	m.mu.Unlock()
 	j := e.job
 	m.hub.PublishTransient(models.RunEvent{
 		ProjectID: j.ProjectID,

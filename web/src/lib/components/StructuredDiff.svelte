@@ -39,6 +39,8 @@
   export let patchFileName: string = 'changes.patch';
   export let selectable: boolean = false;
   export let selection: RollbackSelectionState = emptySelection();
+  export let selectFileLabel: string = '';
+  export let selectHunkLabel: string = '';
 
   function handleToggleFile(path: string) {
     selection = toggleFileSelection(selection, path);
@@ -360,7 +362,7 @@
                     type="checkbox"
                     class="sd-select-box"
                     checked={selection.files.has(file.path)}
-                    aria-label={$translate('diff.selectFile')}
+                    aria-label={selectFileLabel || $translate('diff.selectFile')}
                     onclick={(event) => guardSummaryClick(event, () => handleToggleFile(file.path))}
                   />
                 {/if}
@@ -411,7 +413,7 @@
                         type="checkbox"
                         class="sd-select-box"
                         checked={selection.hunks.get(file.path)?.has(hunkIndex) ?? false}
-                        aria-label={$translate('diff.selectHunk')}
+                        aria-label={selectHunkLabel || $translate('diff.selectHunk')}
                         onclick={() => handleToggleHunk(file.path, hunkIndex)}
                       />
                     {/if}
@@ -524,7 +526,7 @@
                   type="checkbox"
                   class="sd-select-box"
                   checked={selection.files.has(file.path)}
-                  aria-label={$translate('diff.selectFile')}
+                  aria-label={selectFileLabel || $translate('diff.selectFile')}
                   onclick={() => handleToggleFile(file.path)}
                 />
               {/if}

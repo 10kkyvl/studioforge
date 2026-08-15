@@ -44,9 +44,9 @@ func (s *Store) CreateRun(ctx context.Context, run models.Run, idempotencyKey st
 		run.Validation = "none"
 	}
 	result, err := s.db.SQL.ExecContext(ctx, `INSERT INTO runs
-(id,project_id,task_id,agent_id,provider,model_alias,provider_session_id,status,phase,required_resource,error,prompt_snapshot,base_commit,result_commit,cost,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,idempotency_key,thread_id,validation,parent_run_id,correction_depth,created_at,updated_at)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-ON CONFLICT(project_id,idempotency_key) DO NOTHING`, run.ID, run.ProjectID, nullText(run.TaskID), run.AgentID, run.Provider, run.ModelAlias, run.ProviderSession, run.Status, run.Phase, run.RequiredResource, run.Error, run.PromptSnapshot, run.BaseCommit, run.ResultCommit, run.Cost, run.InputTokens, run.OutputTokens, run.CacheReadTokens, run.CacheCreationTokens, nullText(idempotencyKey), nullText(run.ThreadID), run.Validation, nullText(run.ParentRunID), run.CorrectionDepth, formatTime(now), formatTime(now))
+(id,project_id,task_id,agent_id,provider,model_alias,provider_session_id,status,phase,required_resource,error,prompt_snapshot,base_commit,result_commit,cost,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,idempotency_key,thread_id,validation,parent_run_id,correction_depth,network_policy,created_at,updated_at)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(project_id,idempotency_key) DO NOTHING`, run.ID, run.ProjectID, nullText(run.TaskID), run.AgentID, run.Provider, run.ModelAlias, run.ProviderSession, run.Status, run.Phase, run.RequiredResource, run.Error, run.PromptSnapshot, run.BaseCommit, run.ResultCommit, run.Cost, run.InputTokens, run.OutputTokens, run.CacheReadTokens, run.CacheCreationTokens, nullText(idempotencyKey), nullText(run.ThreadID), run.Validation, nullText(run.ParentRunID), run.CorrectionDepth, run.NetworkPolicy, formatTime(now), formatTime(now))
 	if err != nil {
 		return models.Run{}, false, fmt.Errorf("create run: %w", err)
 	}
@@ -90,7 +90,7 @@ func nullText(s string) any {
 }
 func formatTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 
-const runColumns = `id,project_id,agent_id,COALESCE(task_id,''),provider,model_alias,provider_session_id,status,phase,required_resource,error,cost,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,base_commit,result_commit,COALESCE(thread_id,''),prompt_snapshot,validation,COALESCE(validation_screenshot,''),COALESCE(parent_run_id,''),correction_depth,created_at,updated_at,started_at,finished_at,stuck_escalated,studio_direct_edits`
+const runColumns = `id,project_id,agent_id,COALESCE(task_id,''),provider,model_alias,provider_session_id,status,phase,required_resource,error,cost,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,base_commit,result_commit,COALESCE(thread_id,''),prompt_snapshot,validation,COALESCE(validation_screenshot,''),COALESCE(parent_run_id,''),correction_depth,created_at,updated_at,started_at,finished_at,stuck_escalated,studio_direct_edits,network_policy`
 
 func (s *Store) Run(ctx context.Context, id string) (models.Run, error) {
 	row := s.db.SQL.QueryRowContext(ctx, `SELECT `+runColumns+` FROM runs WHERE id=?`, id)
@@ -104,7 +104,7 @@ func scanRun(row scanner) (models.Run, error) {
 	var created, updated string
 	var started, finished sql.NullString
 	var stuckEscalated, studioDirectEdits int
-	err := row.Scan(&r.ID, &r.ProjectID, &r.AgentID, &r.TaskID, &r.Provider, &r.ModelAlias, &r.ProviderSession, &r.Status, &r.Phase, &r.RequiredResource, &r.Error, &r.Cost, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens, &r.CacheCreationTokens, &r.BaseCommit, &r.ResultCommit, &r.ThreadID, &r.PromptSnapshot, &r.Validation, &r.ValidationScreenshot, &r.ParentRunID, &r.CorrectionDepth, &created, &updated, &started, &finished, &stuckEscalated, &studioDirectEdits)
+	err := row.Scan(&r.ID, &r.ProjectID, &r.AgentID, &r.TaskID, &r.Provider, &r.ModelAlias, &r.ProviderSession, &r.Status, &r.Phase, &r.RequiredResource, &r.Error, &r.Cost, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens, &r.CacheCreationTokens, &r.BaseCommit, &r.ResultCommit, &r.ThreadID, &r.PromptSnapshot, &r.Validation, &r.ValidationScreenshot, &r.ParentRunID, &r.CorrectionDepth, &created, &updated, &started, &finished, &stuckEscalated, &studioDirectEdits, &r.NetworkPolicy)
 	if err != nil {
 		return r, err
 	}

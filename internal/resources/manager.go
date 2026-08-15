@@ -9,6 +9,7 @@ import (
 )
 
 var ErrLeaseLost = errors.New("resource lease is no longer owned")
+var ErrHandleReleased = errors.New("resource lease handle was already released or transferred")
 
 type lease struct {
 	owner     string
@@ -107,6 +108,36 @@ func (h *Handle) Heartbeat() error {
 	}
 	return nil
 }
+func (h *Handle) Transfer(newOwner string) (*Handle, error) {
+	m := h.manager
+	var next *Handle
+	var transferErr error
+	ran := false
+	h.once.Do(func() {
+		ran = true
+		if len(h.keys) == 0 {
+			next = &Handle{manager: m, owner: newOwner}
+			return
+		}
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		for _, key := range h.keys {
+			if l, ok := m.leases[key]; !ok || l.owner != h.owner {
+				transferErr = ErrLeaseLost
+				return
+			}
+		}
+		now := time.Now()
+		for _, key := range h.keys {
+			m.leases[key] = lease{owner: newOwner, heartbeat: now, expires: now.Add(m.ttl)}
+		}
+		next = &Handle{manager: m, owner: newOwner, keys: h.keys}
+	})
+	if !ran {
+		return nil, ErrHandleReleased
+	}
+	return next, transferErr
+}
 func (h *Handle) Release() {
 	h.once.Do(func() {
 		m := h.manager
@@ -119,6 +150,21 @@ func (h *Handle) Release() {
 		}
 		m.signalLocked()
 	})
+}
+
+func (m *Manager) ReleaseOwned(owner string, keys []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	changed := false
+	for _, key := range normalized(keys) {
+		if l, ok := m.leases[key]; ok && l.owner == owner {
+			delete(m.leases, key)
+			changed = true
+		}
+	}
+	if changed {
+		m.signalLocked()
+	}
 }
 
 func (m *Manager) signalLocked() { close(m.changed); m.changed = make(chan struct{}) }

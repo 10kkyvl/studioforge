@@ -2,6 +2,7 @@ package rojo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -70,6 +71,47 @@ func TestPortAllocationAndLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSafeModeRefusesRojoStart(t *testing.T) {
+	supervisor := processes.NewSupervisor()
+	manager := New(supervisor, fakeRojo(t))
+	manager.SetSafeMode(true)
+	if !manager.SafeMode() {
+		t.Fatal("SafeMode() reported off right after SetSafeMode(true)")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	projectFile := filepath.Join(t.TempDir(), "default.project.json")
+	if err := os.WriteFile(projectFile, []byte(`{"name":"x","tree":{"$className":"DataModel"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Start(ctx, "p1", projectFile); !errors.Is(err, ErrSafeMode) {
+		t.Fatalf("Start in safe mode: err=%v, want ErrSafeMode", err)
+	}
+	if err := manager.Build(ctx, projectFile, filepath.Join(t.TempDir(), "out.rbxl")); !errors.Is(err, ErrSafeMode) {
+		t.Fatalf("Build in safe mode: err=%v, want ErrSafeMode", err)
+	}
+	if err := manager.InstallPlugin(ctx); !errors.Is(err, ErrSafeMode) {
+		t.Fatalf("InstallPlugin in safe mode: err=%v, want ErrSafeMode", err)
+	}
+	if _, ok := manager.Session("p1"); ok {
+		t.Fatal("Start in safe mode registered a session")
+	}
+	manager.SetSafeMode(false)
+	session, err := manager.Start(ctx, "p1", projectFile)
+	if err != nil {
+		t.Fatalf("Start after safe mode was turned off: %v", err)
+	}
+	if session.Port == 0 {
+		t.Fatalf("session=%+v", session)
+	}
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer closeCancel()
+	if err := supervisor.Close(closeCtx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRejectsNonProjectFile(t *testing.T) {
 	manager := New(processes.NewSupervisor(), fakeRojo(t))
 	if _, err := manager.Start(context.Background(), "p", "wrong.json"); err == nil {

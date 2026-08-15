@@ -7,10 +7,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"unicode"
 )
 
 type Workspace struct {
-	root string
+	root     string
+	foldCase bool
 }
 
 func NewWorkspace(root string) (*Workspace, error) {
@@ -29,7 +31,7 @@ func NewWorkspace(root string) (*Workspace, error) {
 	if err != nil {
 		return nil, fmt.Errorf("agenttools: resolve workspace root symlinks: %w", err)
 	}
-	return &Workspace{root: real}, nil
+	return &Workspace{root: real, foldCase: caseInsensitiveRoot(real)}, nil
 }
 
 func (w *Workspace) Root() string { return w.root }
@@ -43,10 +45,10 @@ func (w *Workspace) Resolve(rel string) (string, error) {
 	}
 	cleaned := filepath.Clean(rel)
 	joined := filepath.Join(w.root, cleaned)
-	if !pathWithinRoot(w.root, joined) {
+	if !pathWithinRoot(w.root, joined, w.foldCase) {
 		return "", fmt.Errorf("path escapes workspace root: %s", rel)
 	}
-	if err := ensureNoSymlinkEscape(w.root, joined); err != nil {
+	if err := ensureNoSymlinkEscape(w.root, joined, w.foldCase); err != nil {
 		return "", err
 	}
 	return joined, nil
@@ -70,19 +72,19 @@ func (w *Workspace) Contains(path string) error {
 		target = filepath.Join(w.root, target)
 	}
 	target = filepath.Clean(target)
-	if !pathWithinRoot(w.root, target) {
+	if !pathWithinRoot(w.root, target, w.foldCase) {
 		// The root was stored in its resolved spelling, so a caller handing us
 		// the same location spelled differently — a Windows 8.3 short name like
 		// RUNNER~1, or a path through a symlinked parent — fails a plain prefix
 		// comparison while being genuinely inside the project. Resolving decides
 		// it, and resolving is the stricter check anyway: it is what catches a
 		// symlink pointing out of the project.
-		if err := ensureNoSymlinkEscape(w.root, target); err != nil {
+		if err := ensureNoSymlinkEscape(w.root, target, w.foldCase); err != nil {
 			return fmt.Errorf("path is outside the project: %s", path)
 		}
 		return nil
 	}
-	return ensureNoSymlinkEscape(w.root, target)
+	return ensureNoSymlinkEscape(w.root, target, w.foldCase)
 }
 
 func looksAbsolute(p string) bool {
@@ -105,9 +107,9 @@ func isASCIILetter(b byte) bool {
 	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }
 
-func pathWithinRoot(root, target string) bool {
+func pathWithinRoot(root, target string, foldCase bool) bool {
 	r, t := root, target
-	if runtime.GOOS == "windows" {
+	if foldCase {
 		r = strings.ToLower(r)
 		t = strings.ToLower(t)
 	}
@@ -117,12 +119,12 @@ func pathWithinRoot(root, target string) bool {
 	return strings.HasPrefix(t, r+string(filepath.Separator))
 }
 
-func ensureNoSymlinkEscape(root, target string) error {
+func ensureNoSymlinkEscape(root, target string, foldCase bool) error {
 	path := target
 	for {
 		real, err := filepath.EvalSymlinks(path)
 		if err == nil {
-			if !pathWithinRoot(root, real) {
+			if !pathWithinRoot(root, real, foldCase) {
 				return errors.New("path resolves outside workspace root via a symlink")
 			}
 			return nil
@@ -136,4 +138,35 @@ func ensureNoSymlinkEscape(root, target string) error {
 		}
 		path = parent
 	}
+}
+
+func caseInsensitiveRoot(root string) bool {
+	swapped := swapCase(root)
+	if swapped == root {
+		return runtime.GOOS == "windows" || runtime.GOOS == "darwin"
+	}
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		return runtime.GOOS == "windows" || runtime.GOOS == "darwin"
+	}
+	swappedInfo, err := os.Stat(swapped)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(rootInfo, swappedInfo)
+}
+
+func swapCase(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case unicode.IsUpper(r):
+			b.WriteRune(unicode.ToLower(r))
+		case unicode.IsLower(r):
+			b.WriteRune(unicode.ToUpper(r))
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }

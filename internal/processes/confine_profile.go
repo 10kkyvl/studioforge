@@ -1,11 +1,17 @@
 package processes
 
+import "fmt"
+
 // sandboxProfile returns the SBPL (Sandbox Profile Language) text used to
 // confine agent-started processes on macOS via sandbox-exec. Paths are never
 // interpolated into this string; they are passed at run time as -D ROOT=...,
 // -D TMP=..., -D HOME=... parameters to sandbox-exec, and referenced here only
 // via (param "...").
-func sandboxProfile() string {
+func sandboxProfile(net NetworkPolicy, proxyAddr string) (string, error) {
+	rules, err := networkRules(net, proxyAddr)
+	if err != nil {
+		return "", err
+	}
 	return `(version 1)
 (allow default)
 (deny file-write*)
@@ -33,5 +39,29 @@ func sandboxProfile() string {
 (allow file-ioctl
   (literal "/dev/tty")
   (regex #"^/dev/ttys[0-9]*"))
-`
+` + rules, nil
+}
+
+func sandboxNetworkOnlyProfile(net NetworkPolicy, proxyAddr string) (string, error) {
+	rules, err := networkRules(net, proxyAddr)
+	if err != nil {
+		return "", err
+	}
+	return "(version 1)\n(allow default)\n" + rules, nil
+}
+
+func networkRules(net NetworkPolicy, proxyAddr string) (string, error) {
+	switch net.Normalized() {
+	case NetworkUnrestricted:
+		return "", nil
+	case NetworkNone:
+		return "(deny network*)\n", nil
+	case NetworkRegistryOnly:
+		if proxyAddr == "" {
+			return "", fmt.Errorf("processes: network policy %q requires a proxy address", NetworkRegistryOnly)
+		}
+		return "(deny network*)\n(allow network-outbound\n  (remote ip (param \"PROXY\")))\n", nil
+	default:
+		return "", fmt.Errorf("processes: unknown network policy %q", net)
+	}
 }

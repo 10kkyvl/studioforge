@@ -203,9 +203,11 @@ plugin loading or dynamic linking.
 
 ### Project state and prompts
 
-- `internal/projects` — `PathGuard` (canonical-path registration and containment, used to reject any
-  resolved path outside a registered project root), `Fingerprint`, `Scaffold` (writes a new project's
-  Rojo skeleton), and `LoadContext`, which reads exactly two files verbatim —
+- `internal/projects` — `PathGuard` (canonical-path registration only: `Canonical` resolves symlinks
+  and `Register` records the result once, at registration time; it does not check any per-request
+  path — see [Trust boundaries](#trust-boundaries) for where per-request containment actually lives),
+  `Fingerprint`, `Scaffold` (writes a new project's Rojo skeleton), and `LoadContext`, which reads
+  exactly two files verbatim —
   `.agent/constitution.yaml` and `.agent/requirements.md` — for inclusion in the system prompt.
 - `internal/memory` — a SQLite FTS5-backed store (`Put`/`Search`, with a `LIKE` fallback when FTS5 is
   unavailable), wired minimally: `internal/scheduler.Manager` writes one `Entry` per run (its own
@@ -666,11 +668,21 @@ of the following is enforced independently:
 - **No wildcard CORS**: the CSP (`default-src 'self'; script-src 'self'; ...; object-src 'none';
   base-uri 'none'; frame-ancestors 'none'`) and the absence of any `Access-Control-Allow-Origin` header
   together mean no other origin can drive the API even if it guesses the session cookie's name.
-- **Canonical root path containment and symlink rejection**: `projects.PathGuard` resolves every
-  registered project path through `filepath.EvalSymlinks` before recording it, and
-  `PathGuard.Resolve` rejects any relative path that would resolve outside that canonical root — this is
-  what stops a project-scoped operation from being redirected outside the registered directory via a
-  symlink or a `..` segment.
+- **Canonical root registration, and per-request containment enforced elsewhere**: `projects.Canonical`
+  resolves a registered project path through `filepath.EvalSymlinks` once, at registration, and
+  `PathGuard.Register` records that canonical root; `internal/projects` does not check any per-request
+  path itself — there used to be a `PathGuard.Resolve` method that did, but it has been removed, and
+  nothing replaced it as a single, general-purpose guard. Containment for a path arriving with an
+  actual request is enforced twice, independently, by whichever of two packages matches that request's
+  input shape: `agenttools.Workspace` (`internal/providers/openrouter/agenttools/workspace.go`) — the
+  only guard behind every agent file tool — rejects an absolute path outright via `Resolve`, or checks
+  an already-absolute one via `Contains`, and both reject the joined result if it lands outside the
+  root, including via a symlink placed inside the project that resolves back out; and
+  `attachments.Resolve` (`internal/attachments/attachments.go`) — the only guard behind
+  `GET /projects/{id}/attachments/{name}` — requires a single path segment with no separator and no
+  `..`, a stricter rule than either `Workspace` method needs because a filename is a narrower kind of
+  input than a path. See [docs/SECURITY.md](SECURITY.md#local-file-access) for the full detail on why
+  this is implemented twice rather than once.
 - **Reduced provider environment**: `processes.MinimalEnvironment` passes only an explicit allowlist of
   environment variables (`PATH`, `HOME`/`USERPROFILE`, temp-dir variables, proxy variables, etc.) to
   `claude` and `rojo` subprocesses — the daemon's own environment is not inherited wholesale. This does

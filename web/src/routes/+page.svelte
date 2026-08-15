@@ -161,6 +161,7 @@
     activeProjects.find((project) => project.id === selectedProjectId) ?? activeProjects[0];
   $: selectedRun = snapshot?.runs.find((run) => run.id === selectedRunId);
   $: selectedEvents = events.filter((event) => event.runId === selectedRunId).slice(-250);
+  $: reviewGateExpiryHours = Number(snapshot?.settings.review_gate_expiry_hours) || 24;
   $: showProjectSwitch = !globalViews.includes(view);
   $: liveRunCount =
     snapshot?.runs.filter((run) => ['starting', 'running', 'cancelling'].includes(run.status))
@@ -724,6 +725,7 @@
                 runs={snapshot.runs}
                 {agentName}
                 {statusLabel}
+                {reviewGateExpiryHours}
                 onSent={(id) => {
                   selectedRunId = id;
                 }}
@@ -770,6 +772,7 @@
                 agents={snapshot.agents}
                 project={selectedProject}
                 {busy}
+                diagnostics={snapshot.diagnostics}
                 onCreate={createAgent}
                 onUpdate={updateAgent}
                 onRun={(agent) => {
@@ -802,6 +805,7 @@
                 decisions={snapshot.decisions}
                 onResolveDecision={resolveDecision}
                 busy={busy.startsWith('run-')}
+                {reviewGateExpiryHours}
               />
             {:else if view === 'studios'}
               <StudiosView

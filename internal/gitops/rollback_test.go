@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/10kkyvl/studioforge/internal/gitops/diffparse"
 )
 
 func initRollbackRepo(t *testing.T, root string) {
@@ -104,6 +106,49 @@ func TestSelectiveRollbackRevertsOneOfTwoHunksInOneFile(t *testing.T) {
 	}
 	if lines[9] != "local j = 200" {
 		t.Fatalf("second hunk should be intact, got %q", lines[9])
+	}
+}
+
+func TestSelectiveRollbackRevertsEveryFileWhenGivenTheWholeDiff(t *testing.T) {
+	root := t.TempDir()
+	initRollbackRepo(t, root)
+	fileA := filepath.Join(root, "a.lua")
+	fileB := filepath.Join(root, "b.lua")
+	_ = os.WriteFile(fileA, []byte("a1\n"), 0o600)
+	_ = os.WriteFile(fileB, []byte("b1\n"), 0o600)
+	git(t, root, "add", "a.lua", "b.lua")
+	git(t, root, "commit", "-m", "one")
+	checkpoint := git(t, root, "rev-parse", "HEAD")
+	_ = os.WriteFile(fileA, []byte("a2\n"), 0o600)
+	_ = os.WriteFile(fileB, []byte("b2\n"), 0o600)
+	newFile := filepath.Join(root, "new.lua")
+	_ = os.WriteFile(newFile, []byte("new\n"), 0o600)
+	git(t, root, "add", "new.lua")
+
+	client := New()
+	rawDiff, err := client.DiffCommit(context.Background(), root, checkpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed := diffparse.Parse(rawDiff)
+	files := make([]string, 0, len(parsed.Files))
+	for _, f := range parsed.Files {
+		files = append(files, f.Path)
+	}
+	result, err := client.SelectiveRollback(context.Background(), root, checkpoint, "", files, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RevertedFiles != 3 {
+		t.Fatalf("result=%+v, want all 3 changed files reverted", result)
+	}
+	gotA, _ := os.ReadFile(fileA)
+	gotB, _ := os.ReadFile(fileB)
+	if string(gotA) != "a1\n" || string(gotB) != "b1\n" {
+		t.Fatalf("a.lua=%q b.lua=%q, want both reverted to their checkpoint content", gotA, gotB)
+	}
+	if _, err := os.Stat(newFile); !os.IsNotExist(err) {
+		t.Fatalf("new.lua should be gone from disk, stat err=%v", err)
 	}
 }
 
@@ -293,6 +338,23 @@ func TestSelectiveRollbackSafetyCommitCreatedAndReturned(t *testing.T) {
 	}
 }
 
+func TestSelectiveRollbackRefusesAnOptionShapedCheckpoint(t *testing.T) {
+	root := t.TempDir()
+	initRollbackRepo(t, root)
+	file := filepath.Join(root, "a.lua")
+	_ = os.WriteFile(file, []byte("a1\n"), 0o600)
+	git(t, root, "add", "a.lua")
+	git(t, root, "commit", "-m", "one")
+
+	client := New()
+	if _, err := client.SelectiveRollback(context.Background(), root, "--output=/tmp/pwned", "", []string{"a.lua"}, nil); !errors.Is(err, ErrInvalidRef) {
+		t.Fatalf("err=%v, want ErrInvalidRef", err)
+	}
+	checkpoint := git(t, root, "rev-parse", "HEAD")
+	if _, err := client.SelectiveRollback(context.Background(), root, checkpoint, "--output=/tmp/pwned", []string{"a.lua"}, nil); !errors.Is(err, ErrInvalidRef) {
+		t.Fatalf("err=%v, want ErrInvalidRef", err)
+	}
+}
 func TestSelectiveRollbackErrNotGitRepoOnPlainDirectory(t *testing.T) {
 	root := t.TempDir()
 	client := New()

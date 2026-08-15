@@ -4,10 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/10kkyvl/studioforge/internal/gitcheckpoint"
 	"github.com/10kkyvl/studioforge/internal/providers"
 )
 
@@ -20,10 +25,36 @@ const questionTestBlock = "```studioforge-question\n" +
 	`{"question": "Which mesh format should I import for the new prop?", "options": [{"label": "FBX", "description": "Standard interchange format with full material and rig support"}, {"label": "OBJ", "description": "Simpler format, wider tool support but no animation data"}]}` +
 	"\n```"
 
+const mockEditFileName = "studioforge-mock-edit.txt"
+
 type Provider struct {
 	mu        sync.Mutex
 	runs      map[string]context.CancelFunc
 	StepDelay time.Duration
+}
+
+func writeMockEdit(req providers.RunRequest) bool {
+	if req.WorkingDirectory == "" {
+		return false
+	}
+	info, err := os.Stat(req.WorkingDirectory)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	path := filepath.Join(req.WorkingDirectory, mockEditFileName)
+	content := fmt.Sprintf("Written by StudioForge's mock provider for run %s.\n", req.RunID)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		slog.Warn("mock provider failed to write its edit file", "run_id", req.RunID, "path", path, "error", err)
+		return false
+	}
+	stageMockEdit(req.WorkingDirectory)
+	return true
+}
+
+func stageMockEdit(dir string) {
+	cmd := exec.Command("git", "-C", dir, "add", "--", mockEditFileName)
+	cmd.Env = gitcheckpoint.ScrubbedEnvironment()
+	_ = cmd.Run()
 }
 
 func New() *Provider {
@@ -64,7 +95,21 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, sessio
 	if strings.Contains(strings.ToLower(req.Prompt), "question test") {
 		finalText = "Acceptance criteria verified in mock mode.\n\n" + questionTestBlock
 	}
-	steps := []providers.Event{{Type: "status", RawType: "mock.start", Payload: map[string]any{"message": "Agent session started"}}, {Type: "message", RawType: "assistant.partial", Payload: map[string]any{"text": "Reading project constitution and task contract…"}}, {Type: "tool", RawType: "tool.use", Payload: map[string]any{"tool": "Read", "target": ".agent/constitution.yaml"}}, {Type: "message", RawType: "assistant.partial", Payload: map[string]any{"text": "Implementing the bounded milestone change…"}}, {Type: "artifact", RawType: "artifact.created", Payload: map[string]any{"kind": "handoff", "name": "task-handoff.json"}}, {Type: "usage", RawType: "result.usage", Payload: map[string]any{"inputTokens": 1200, "outputTokens": 680, "cost": 0.42}, Cost: 0.42, Usage: providers.Usage{InputTokens: 1200, OutputTokens: 680, CacheReadTokens: 4400}}, {Type: "message", RawType: "assistant.final", Payload: map[string]any{"text": finalText}}}
+	steps := []providers.Event{
+		{Type: "status", RawType: "mock.start", Payload: map[string]any{"message": "Agent session started"}},
+		{Type: "message", RawType: "assistant.partial", Payload: map[string]any{"text": "Reading project constitution and task contract…"}},
+		{Type: "tool", RawType: "tool.use", Payload: map[string]any{"tool": "Read", "target": ".agent/constitution.yaml"}},
+		{Type: "message", RawType: "assistant.partial", Payload: map[string]any{"text": "Implementing the bounded milestone change…"}},
+	}
+	scenarioAbortsEarly := req.Scenario == "hang" || req.Scenario == "crash" || req.Scenario == "rate_limit"
+	if !scenarioAbortsEarly && writeMockEdit(req) {
+		steps = append(steps, providers.Event{Type: "tool", RawType: "tool.call", Payload: map[string]any{"tool": "Write", "arguments": fmt.Sprintf(`{"file_path":%q}`, mockEditFileName)}})
+	}
+	steps = append(steps,
+		providers.Event{Type: "artifact", RawType: "artifact.created", Payload: map[string]any{"kind": "handoff", "name": "task-handoff.json"}},
+		providers.Event{Type: "usage", RawType: "result.usage", Payload: map[string]any{"inputTokens": 1200, "outputTokens": 680, "cost": 0.42}, Cost: 0.42, Usage: providers.Usage{InputTokens: 1200, OutputTokens: 680, CacheReadTokens: 4400}},
+		providers.Event{Type: "message", RawType: "assistant.final", Payload: map[string]any{"text": finalText}},
+	)
 	if req.Scenario == "hang" {
 		<-ctx.Done()
 		h.result = providers.Result{SessionID: session, Err: ctx.Err(), ExitCode: -1}

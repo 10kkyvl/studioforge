@@ -151,6 +151,25 @@ func TestPruneEventsPreservesChatHistory(t *testing.T) {
 	}
 }
 
+func TestPruneEventsKeepsNetworkEvents(t *testing.T) {
+	store, ctx := newThreadStore(t)
+	old := time.Now().Add(-200 * 24 * time.Hour)
+	run := createRunWithStatus(t, store, ctx, "completed", old)
+	appendEvent(t, store, ctx, run, "network", "openrouter.network", map[string]any{"commandId": "run-cmd-1", "policy": "registry-only", "enforced": true, "egress": "observed"})
+	appendEvent(t, store, ctx, run, "tool", "tool.use", map[string]any{"tool": "Read"})
+
+	deleted, err := store.PruneEvents(ctx, 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted=%d, want 1 (only the non-network event)", deleted)
+	}
+	if got := countEvents(t, store, ctx, run.ID); got != 1 {
+		t.Fatalf("events remaining=%d, want 1 (the network audit event must survive)", got)
+	}
+}
+
 func TestPruneEventsRetentionZeroIsNoop(t *testing.T) {
 	store, ctx := newThreadStore(t)
 	old := time.Now().Add(-200 * 24 * time.Hour)

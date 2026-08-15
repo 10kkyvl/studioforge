@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,7 +16,31 @@ import (
 	"unicode"
 
 	"github.com/10kkyvl/studioforge/internal/processes"
+	"github.com/10kkyvl/studioforge/internal/processes/netproxy"
 )
+
+var startNetworkProxy = netproxy.Start
+
+func runCommandEnvironment(policy processes.NetworkPolicy, proxyAddr string) []string {
+	env := processes.MinimalEnvironment(nil)
+	if policy.Normalized() != processes.NetworkRegistryOnly || proxyAddr == "" {
+		return env
+	}
+	env = processes.StripEnv(env, processes.ProxyEnvKeys...)
+	return append(env, processes.ProxyEnvironment(proxyAddr)...)
+}
+
+func networkEgressForUnrestricted(observation processes.NetworkObservation) (string, []NetworkEndpoint) {
+	if !observation.Supported || len(observation.Endpoints) == 0 {
+		return "unknown", nil
+	}
+	now := time.Now().UTC()
+	endpoints := make([]NetworkEndpoint, 0, len(observation.Endpoints))
+	for _, ep := range observation.Endpoints {
+		endpoints = append(endpoints, NetworkEndpoint{Host: ep.String(), Allowed: true, At: now})
+	}
+	return "observed", endpoints
+}
 
 // runCommandAllowlist names the executables a workspace-write run may start.
 // npx is deliberately absent: fetching and running an arbitrary package is not
@@ -101,7 +126,7 @@ func checkCommandIsPlainName(exe string) string {
 // files and run a build tool can still arrange to execute code through a test
 // file or an npm script, which docs/SECURITY.md states plainly. It closes the
 // bypass that needs no build tool at all.
-func resolveWorkspaceCommand(exe, workspaceRoot string) (string, string) {
+func resolveWorkspaceCommand(exe string, ws *Workspace) (string, string) {
 	resolved, err := exec.LookPath(exe)
 	if err != nil {
 		return "", fmt.Sprintf("command not found on PATH: %s", exe)
@@ -113,11 +138,7 @@ func resolveWorkspaceCommand(exe, workspaceRoot string) (string, string) {
 	if real, err := filepath.EvalSymlinks(absolute); err == nil {
 		absolute = real
 	}
-	root := workspaceRoot
-	if real, err := filepath.EvalSymlinks(root); err == nil {
-		root = real
-	}
-	if root != "" && pathWithinRoot(root, absolute) {
+	if ws != nil && ws.Root() != "" && pathWithinRoot(ws.Root(), absolute, ws.foldCase) {
 		return "", fmt.Sprintf("refusing to run %s: it resolves to %s, inside the project — an allowlisted name found in the workspace is the agent's own file, not the tool", exe, absolute)
 	}
 	return absolute, ""
@@ -128,11 +149,11 @@ func resolveWorkspaceCommand(exe, workspaceRoot string) (string, string) {
 // fails closed when the platform cannot provide it. danger-full-access claims no
 // boundary at all — it still gets reaping, so a cancelled run leaves nothing
 // behind, but no filesystem or resource policy and no hard failure.
-func confinementFor(profile Profile, root string) processes.ConfinementPolicy {
+func confinementFor(profile Profile, network processes.NetworkPolicy, root string) processes.ConfinementPolicy {
 	if profile == ProfileDanger {
-		return processes.ConfinementPolicy{Mode: processes.ConfineReap}
+		return processes.ConfinementPolicy{Mode: processes.ConfineReap, Network: network}
 	}
-	return processes.ConfinementPolicy{Mode: processes.ConfineAgent, WritableRoots: []string{root}}
+	return processes.ConfinementPolicy{Mode: processes.ConfineAgent, WritableRoots: []string{root}, Network: network}
 }
 
 // checkWorkspaceCommand applies the workspace-write restrictions to an already
@@ -207,13 +228,49 @@ func (s *ToolSet) runCommandTool() Tool {
 				// Run the path we checked, not the name we were handed: the
 				// supervisor does no validation of its own, so whatever reaches
 				// it is what runs.
-				resolved, refusal := resolveWorkspaceCommand(exe, opts.Workspace.Root())
+				resolved, refusal := resolveWorkspaceCommand(exe, opts.Workspace)
 				if refusal != "" {
 					return errResult("%s", refusal)
 				}
 				exe = resolved
 			}
+			display := exe
+			if len(argv) > 0 {
+				display = strings.TrimSpace(exe + " " + strings.Join(argv, " "))
+			}
+
 			id := fmt.Sprintf("%s-cmd-%d", opts.RunID, s.cmdSeq.Add(1))
+			policy := opts.NetworkPolicy.Normalized()
+			event := &NetworkEvent{
+				CommandID: id,
+				Command:   display,
+				Policy:    string(policy),
+				Enforced:  processes.EnforcesNetworkPolicy(policy) == nil,
+				Platform:  runtime.GOOS,
+				Egress:    "unknown",
+			}
+			if opts.OnNetworkEvent != nil {
+				defer func() { opts.OnNetworkEvent(ctx, *event) }()
+			}
+
+			env := processes.MinimalEnvironment(nil)
+			if policy == processes.NetworkRegistryOnly {
+				var endpointsMu sync.Mutex
+				proxy, proxyErr := startNetworkProxy(ctx, netproxy.Options{
+					Allow: netproxy.DefaultAllowlist(),
+					OnAttempt: func(host string, allowed bool) {
+						endpointsMu.Lock()
+						event.Endpoints = append(event.Endpoints, NetworkEndpoint{Host: host, Allowed: allowed, At: time.Now().UTC()})
+						endpointsMu.Unlock()
+					},
+				})
+				if proxyErr != nil {
+					return errResult("start registry-only network proxy: %v", proxyErr)
+				}
+				defer func() { _ = proxy.Close() }()
+				env = runCommandEnvironment(policy, proxy.Addr())
+			}
+
 			proc, err := opts.Supervisor.Start(ctx, processes.Spec{
 				ID:               id,
 				Kind:             "agent-shell",
@@ -222,14 +279,45 @@ func (s *ToolSet) runCommandTool() Tool {
 				Executable:       exe,
 				Args:             argv,
 				WorkingDirectory: opts.Workspace.Root(),
-				Environment:      processes.MinimalEnvironment(nil),
+				Environment:      env,
 				MaxRuntime:       opts.CommandTimeout,
-				Confine:          confinementFor(s.profile, opts.Workspace.Root()),
+				Confine:          confinementFor(s.profile, opts.NetworkPolicy, opts.Workspace.Root()),
 			})
 			if err != nil {
+				if errors.Is(err, processes.ErrNetworkPolicyUnsupported) {
+					return errResult("network policy %q for this agent cannot be enforced on %s: the command was not started — this is a network policy refusal, not a failed connection — set this agent's network policy to unrestricted, or run it on macOS where the policy can be enforced", opts.NetworkPolicy.Normalized(), runtime.GOOS)
+				}
 				return errResult("start command: %v", err)
 			}
-			return runAndCollect(ctx, proc, opts.MaxOutputBytes)
+
+			switch policy {
+			case processes.NetworkRegistryOnly:
+				event.Egress = "observed"
+			case processes.NetworkNone:
+				event.Egress = "blocked"
+			}
+
+			var observation <-chan processes.NetworkObservation
+			var stopObserving context.CancelFunc
+			if policy == processes.NetworkUnrestricted {
+				observer := processes.NewProcessNetworkObserver(proc)
+				if observer.Supported() {
+					obsCtx, cancel := context.WithCancel(context.Background())
+					stopObserving = cancel
+					ch := make(chan processes.NetworkObservation, 1)
+					observation = ch
+					go func() { ch <- processes.ObserveNetwork(obsCtx, observer, 0) }()
+				}
+			}
+
+			result := runAndCollect(ctx, proc, opts.MaxOutputBytes)
+
+			if stopObserving != nil {
+				stopObserving()
+				event.Egress, event.Endpoints = networkEgressForUnrestricted(<-observation)
+			}
+
+			return result
 		},
 	}
 }

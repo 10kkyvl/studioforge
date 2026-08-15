@@ -268,3 +268,77 @@ func TestSupervisorMaxRuntimeKillsProcessTree(t *testing.T) {
 		t.Fatalf("grandchild kept writing its marker after MaxRuntime should have killed the process tree: %q -> %q", first, second)
 	}
 }
+func TestScrubbedEnvironmentRemovesOnlyDeniedKeys(t *testing.T) {
+	t.Setenv("STUDIOFORGE_TEST_DENIED", "should-be-removed")
+	t.Setenv("STUDIOFORGE_TEST_KEPT", "should-survive")
+
+	deny := func(key string) bool { return key == "STUDIOFORGE_TEST_DENIED" }
+	got := ScrubbedEnvironment(deny, []string{"STUDIOFORGE_TEST_EXTRA=added"})
+
+	var sawDenied, sawKept, sawExtra bool
+	for _, entry := range got {
+		switch entry {
+		case "STUDIOFORGE_TEST_DENIED=should-be-removed":
+			sawDenied = true
+		case "STUDIOFORGE_TEST_KEPT=should-survive":
+			sawKept = true
+		case "STUDIOFORGE_TEST_EXTRA=added":
+			sawExtra = true
+		}
+	}
+	if sawDenied {
+		t.Fatal("a key the deny function rejects must not appear in the result")
+	}
+	if !sawKept {
+		t.Fatal("a key the deny function does not reject must survive unchanged")
+	}
+	if !sawExtra {
+		t.Fatal("extra entries must be appended to the result")
+	}
+}
+func TestProxyEnvironmentOverridesTheOperatorProxyInBothCases(t *testing.T) {
+	got := ProxyEnvironment("http://127.0.0.1:9999")
+	want := map[string]string{
+		"HTTP_PROXY":  "http://127.0.0.1:9999",
+		"HTTPS_PROXY": "http://127.0.0.1:9999",
+		"ALL_PROXY":   "http://127.0.0.1:9999",
+		"NO_PROXY":    "",
+		"http_proxy":  "http://127.0.0.1:9999",
+		"https_proxy": "http://127.0.0.1:9999",
+		"all_proxy":   "http://127.0.0.1:9999",
+		"no_proxy":    "",
+	}
+	found := map[string]string{}
+	for _, entry := range got {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			t.Fatalf("entry %q is not a KEY=VALUE pair", entry)
+		}
+		found[key] = value
+	}
+	for key, value := range want {
+		if got, ok := found[key]; !ok || got != value {
+			t.Fatalf("entry for %s = %q (present=%v), want %q", key, got, ok, value)
+		}
+	}
+}
+func TestStripEnvRemovesLowercaseProxyVariables(t *testing.T) {
+	env := []string{"http_proxy=operator-proxy", "HTTPS_PROXY=operator-proxy", "PATH=/usr/bin"}
+	got := StripEnv(env, ProxyEnvKeys...)
+	for _, entry := range got {
+		key, _, _ := strings.Cut(entry, "=")
+		switch strings.ToUpper(key) {
+		case "HTTP_PROXY", "HTTPS_PROXY":
+			t.Fatalf("StripEnv left a proxy variable behind: %q", entry)
+		}
+	}
+	var sawPath bool
+	for _, entry := range got {
+		if entry == "PATH=/usr/bin" {
+			sawPath = true
+		}
+	}
+	if !sawPath {
+		t.Fatal("StripEnv must not remove unrelated variables")
+	}
+}

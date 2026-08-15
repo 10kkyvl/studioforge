@@ -43,10 +43,14 @@ func Checkpoint(root, label string) (hash string, branch string, err error) {
 }
 
 func run(ctx context.Context, root string, args ...string) error {
-	return exec.CommandContext(ctx, "git", append([]string{"-C", root}, args...)...).Run()
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", root}, args...)...)
+	cmd.Env = ScrubbedEnvironment()
+	return cmd.Run()
 }
 
 func output(ctx context.Context, root string, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, "git", append([]string{"-C", root}, args...)...).Output()
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", root}, args...)...)
+	cmd.Env = ScrubbedEnvironment()
+	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err
 }

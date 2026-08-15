@@ -69,12 +69,14 @@ export type Agent = {
   effort: string;
   enabled: boolean;
   permission: string;
+  networkPolicy: string;
   concurrency: number;
   budget: number;
   // Opts this agent into the post-run Studio playtest validation loop
   // (Claude runs only, workspace-write permission or above). Off by default.
   validateAfterRun: boolean;
   maxCorrectionRuns: number;
+  reviewBeforeApply: boolean;
 };
 export type Task = {
   id: string;
@@ -183,6 +185,13 @@ export type SelectiveRollbackResult = {
   revertedFiles: number;
   revertedHunks: number;
 };
+export type ReviewAction = 'apply' | 'reject' | 'apply-selected';
+export type ReviewResolution = {
+  status: string;
+  safetyCommit: string;
+  revertedFiles: number;
+  revertedHunks: number;
+};
 export type RunEvent = {
   id: number;
   projectId: string;
@@ -284,6 +293,7 @@ export type AppSettings = {
   concurrency: string;
   playtest_window_seconds: string;
   playtest_poll_seconds: string;
+  review_gate_expiry_hours: string;
   // OpenRouter routing preferences. Empty string means "provider default" for
   // every field; require_parameters has no UI toggle and is always on
   // server-side. Persisted through the same POST /settings payload as every

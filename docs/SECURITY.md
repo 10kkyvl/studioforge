@@ -56,13 +56,23 @@ directly, and does not open any listener other than the one loopback (or explici
   symlinks with `filepath.EvalSymlinks` — so a project root that is itself a symlink, or sits behind
   one, is registered under its real, resolved location, not the symlink path. `PathGuard.Register`
   then requires the resolved path to exist and be a directory.
-- The same file defines `PathGuard.Resolve`, which additionally rejects `..` traversal and a
-  symlink used to escape back out of an already-registered root (both cases are unit-tested in
-  `internal/projects/pathguard_test.go`). Be precise about what this buys you today: **no HTTP
-  handler in `internal/api` calls `Resolve`** — StudioForge exposes no endpoint that accepts a
-  project-relative file path from the browser, so there is nothing in the live server for that
-  per-path guard to gate yet. It is available for a future feature (for example, a file browser)
-  that would need it.
+- `internal/projects` stops there: it canonicalizes a project's root once, at registration, and
+  `Fingerprint` hashes that canonical root for on-disk grouping. It does not guard any per-request
+  path, and there is no third, general-purpose path guard anywhere else in the codebase — every
+  per-request path check is one of the two below, chosen by what the request actually carries.
+  **Containment is implemented twice, independently, because the two entry points take different
+  kinds of input and need different rules, not because one is a stopgap for the other:**
+  `agenttools.Workspace` (`internal/providers/openrouter/agenttools/workspace.go`) contains every
+  agent file tool (list/read/search/grep/create/edit/patch/mkdir/git). `Workspace.Resolve` takes a
+  relative path from a tool call, rejects an absolute one outright, joins it onto the canonical
+  root, and rejects the joined result if it lands outside the root — including via a symlink placed
+  inside the project that resolves back out (`ensureNoSymlinkEscape`). `Workspace.Contains` runs the
+  same containment check against a path that is already absolute, for the paths Claude Code's own
+  tool calls hand back pre-resolved. `attachments.Resolve` (`internal/attachments/attachments.go`)
+  contains the one HTTP endpoint that accepts a filename from a URL,
+  `GET /projects/{id}/attachments/{name}`. Its rule is stricter and simpler than either `Workspace`
+  method, because a filename is a narrower kind of input than a path: the value must be a single
+  path segment with no `/` or `\` and no `..`, rejected before any join or filesystem call.
 - What a run can and cannot touch, in practice: StudioForge itself reads exactly two files from a
   project — `.agent/constitution.yaml` and `.agent/requirements.md` — verbatim, and prepends them to
   the run's system prompt (`internal/projects/context.go`). It also writes a Rojo skeleton on first
@@ -101,7 +111,11 @@ directly, and does not open any listener other than the one loopback (or explici
   anything containing a separator or a volume is refused, because an allowlisted tool is meant to be
   found on `PATH`. And the name is then resolved with `exec.LookPath` and the **resolved absolute
   path** is what actually gets executed, with a resolution landing inside the project refused outright
-  — an allowlisted name found in the workspace is the agent's own file, not the tool. This matters
+  — an allowlisted name found in the workspace is the agent's own file, not the tool. That "inside the
+  project" comparison folds case whenever the workspace root's own filesystem does — detected once per
+  workspace by stating the root against a differently-cased spelling of itself, not by trusting the OS
+  name — so a resolved path spelled in another case cannot walk past the check on a case-insensitive
+  volume (the default on Windows and macOS, though not guaranteed on every macOS volume). This matters
   because the process supervisor performs no validation of its own; whatever reaches it runs.
   `danger-full-access` is unaffected, being explicitly the profile for arbitrary commands.
 - **The `workspace-write` command allowlist is a barrier on command identity, not a sandbox on what
@@ -234,12 +248,17 @@ that the binary exists, it actually compiles and runs a trivial profile
 still works on their machine before a run needs it, not from a mid-run
 failure.
 
-**Verification status.** As of this writing, the macOS implementation has
-been type-checked and cross-compiled locally, not yet exercised against
-real macOS hardware within this repository's own test history. The `macos`
-CI job (`go test ./internal/processes/...` on `macos-latest`) is what
-actually runs it on real hardware; treat that job's results, not this
-document, as the evidence of record for whether it works.
+**Verification status.** The `macos` CI job (`go test
+./internal/processes/...` on `macos-latest`) exercises this on real
+hardware on every run, including
+`internal/processes/toolchain_confined_test.go`, which runs a real `npm
+install` (the job installs Node via `actions/setup-node@v4` first), `go
+test`, and `go mod download` under `sandbox-exec` rather than only the
+synthetic `TestHelperProcess` binary the rest of the suite uses. `rojo
+build` under confinement is covered by the same test file but skips in CI
+because no runner has Rojo on `PATH`; it has not been verified under
+`sandbox-exec` at all. Treat that job's results, not this document, as the
+evidence of record for whether the macOS implementation works.
 
 ### Linux: not implemented
 
@@ -285,6 +304,84 @@ Claude's own file tools can touch and is enforced by Claude Code itself,
 not by an OS boundary, and it does not apply to `run_command` at all, since
 OpenRouter and NVIDIA runs (the only ones with a `run_command` tool) do not
 go through Claude Code.
+
+### Network egress policy for `run_command`
+
+An agent's `networkPolicy` (`unrestricted`/`registry-only`/`none`, default
+`unrestricted`) rides inside the same `ConfinementPolicy` as the process
+and filesystem confinement above, not as a second mechanism — see
+[ADR 0006](adr/0006-network-egress-policy.md) for the full design and the
+rejected alternatives.
+
+- **macOS enforces it.** `none` denies all network in the generated
+  `sandbox-exec` profile (`(deny network*)`). `registry-only` denies all
+  network except the loopback address of a local CONNECT proxy StudioForge
+  starts for that one command (`internal/processes/netproxy`), reached as
+  the *only* carve-out in the profile
+  (`(allow network-outbound (remote ip (param "PROXY")))`). The proxy reads
+  only the `CONNECT host:443` request line, checks the host against a
+  fixed allowlist of package-registry and source hosts (npm, Yarn, the Go
+  module proxy and sum database, crates.io, PyPI, GitHub), and then splices
+  raw bytes between the client and the real target — it never terminates
+  or inspects TLS, so it never sees anything past the CONNECT line itself.
+  The proxy's address reaches the profile as a `-D PROXY=…` parameter, the
+  same discipline the `ROOT`/`HOME`/`TMP` path parameters already use, not
+  interpolated into the profile text.
+- **`registry-only` cannot be expressed directly in SBPL.** The sandbox
+  profile language filters by resolved IP address, not by DNS hostname, and
+  resolving each registry's hostname to an IP ahead of time is not durable
+  against CDN fronting, IP rotation, dual-stack answers, or redirects to a
+  separate storage host — the proxy moves the hostname-aware decision into
+  StudioForge's own code instead, where it is a moving target the code can
+  actually keep up with.
+- **Windows and Linux fail closed instead of degrading.** Neither platform
+  can enforce `registry-only`/`none`, so a policy stricter than
+  `unrestricted` there refuses the command before it starts, with an error
+  that names the policy as the cause and says plainly this is a policy
+  refusal, not a network failure. `STUDIOFORGE_ALLOW_UNCONFINED=1` does
+  **not** lift this refusal — unlike its effect on the general absence of
+  platform confinement above, this is deliberate: an operator who asked
+  for a network boundary the platform cannot give is told so, not quietly
+  handed `unrestricted` instead.
+- **Environment scrubbing backs the proxy up.** Under `registry-only`, both
+  cases of every proxy environment variable
+  (`HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`, upper and lower) are
+  stripped from the command's environment and replaced with the local
+  proxy's address (and an empty `NO_PROXY`), so an operator's own
+  `NO_PROXY=*` cannot route traffic around the allowlist. A tool that
+  ignores those variables entirely gets no network at all under
+  `registry-only`, not an unrestricted fallback — correct fail-closed
+  behavior, and worth knowing before it looks like a broken build.
+- **Every `run_command` invocation publishes a `network` event** carrying
+  the requested policy, whether it was actually enforced, the platform,
+  and an egress value (`unknown`/`observed`/`blocked`). On Windows, real
+  observation samples the confined command's Job Object process IDs
+  against the live TCP connection table (`GetExtendedTcpTable`) once a
+  second. Read that mechanism for exactly what it is: a periodic snapshot,
+  not a trace. A short-lived connection between two one-second samples, and
+  any UDP traffic, are both invisible to it. A positive result is solid
+  evidence the process reached the network; the absence of one is not
+  evidence it did not, and must never be presented as "no network access
+  occurred." These `network` events are excluded from the
+  `event_retention_days` auto-prune described under
+  [Credential handling](#credential-handling) below, specifically so this
+  audit trail does not age out with routine tool-call noise.
+- **What this does not cover**: StudioForge's own traffic to a model API
+  (product traffic, not an agent's), Studio MCP's local IPC, git over SSH
+  (not proxy-aware, simply refused by the SBPL deny rule under
+  `registry-only`), any tool without proxy-environment-variable support,
+  and the Claude Code provider path entirely — `networkPolicy` is wired
+  only into the in-process agent loop OpenRouter and NVIDIA share; a Claude
+  run uses Claude Code's own `Bash` tool, not `agenttools.run_command`, and
+  carries no network policy.
+
+`studioforge doctor` reports a `network-policy` check (`EnforcesNetworkPolicy`
+in `internal/processes`, surfaced by `internal/diagnostics`) describing, per
+platform, what is actually enforced: on Windows and Linux, that `unrestricted`
+is the only policy that runs and a stricter one refuses to start the command
+rather than running it unconfined; on macOS, the live result of probing
+`sandbox-exec` enforcement, so a broken or missing `sandbox-exec` shows up in
+the check instead of only surfacing mid-run.
 
 ## Roblox Studio access
 
@@ -409,12 +506,103 @@ go through Claude Code.
   before a `restart` of an interrupted/failed run (only the initial `POST /api/v1/runs` path invokes
   it). An OpenRouter run's changes therefore have no automatic checkpoint today — rely on your own
   Git discipline (or the project's existing history) for those.
-- **Safe mode** (`--safe-mode`) makes `POST /api/v1/runs` refuse to start any run
-  (`internal/api/api.go`, error code `safe_mode`), while diagnostics, settings, backups, and
-  export/import stay available. One nuance worth stating precisely: safe mode is checked in the
-  "create a run" handler only — `POST /api/v1/runs/{id}/restart` does not repeat that check. Treat
-  `--safe-mode` as blocking new work started from the chat composer, not as a global kill switch on
-  every run-related endpoint.
+- **StudioForge's own `git` is not OS-confined, but its environment is scrubbed.** As noted in
+  [Process confinement for `run_command`](#process-confinement-for-run_command), `git` run by
+  StudioForge on its own behalf (checkpoints, status, diff, rollback, tag) deliberately gets no
+  sandbox, unlike `git` run by an agent through `run_command` — it needs `~/.gitconfig` and
+  credential helpers on the ambient `PATH`, `HOME`/`USERPROFILE`, `SSH_AUTH_SOCK`, and `XDG_*`, which
+  a strict allowlist would break. What it does get is a denylist
+  (`gitcheckpoint.ScrubbedEnvironment`, shared by `internal/gitcheckpoint` and `internal/gitops` so
+  the two never drift): every StudioForge-initiated `git` subprocess has command-executing variables
+  stripped (`GIT_EXTERNAL_DIFF`, `GIT_SSH`/`GIT_SSH_COMMAND`, `GIT_PROXY_COMMAND`,
+  `GIT_EDITOR`/`EDITOR`/`VISUAL`, `GIT_PAGER`/`PAGER`), repository-redirecting variables stripped
+  (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, the alternate/object-directory and `GIT_CONFIG*`
+  family including the `GIT_CONFIG_KEY_`/`GIT_CONFIG_VALUE_` prefixes), code-injection variables
+  stripped (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`), and any
+  `GIT_TRACE*` variable stripped so a run cannot be pointed at writing trace output somewhere
+  unexpected. `GIT_ASKPASS` is deliberately kept, not stripped — it is how a configured credential
+  helper prompts for a password non-interactively, and removing it would break authentication to
+  private remotes for operators relying on it; StudioForge also sets `GIT_TERMINAL_PROMPT=0` on top,
+  so a `git` call still cannot block the daemon on an interactive password prompt regardless.
+  `GIT_PAGER=cat` and `GIT_OPTIONAL_LOCKS=0` are likewise force-set, independent of what the stripped
+  `GIT_PAGER` would otherwise have been. On Windows, key comparison is case-insensitive (environment
+  variables are case-insensitive there); elsewhere it is case-sensitive.
+- **Argument validation is what keeps operator-supplied ref/tag-name strings from being read as `git`
+  options.** A tag name (`POST /api/v1/projects/{id}/git/tag`) and the ref strings used for diffing
+  and rollback (`DiffCommit`, `DiffRange`, `SafeRollback`, `SelectiveRollback`) ultimately become argv
+  elements in a `git` subprocess. `internal/gitops` is the single point all of that argv passes
+  through — regardless of how well-behaved its callers are, `validateTagName` and `validateRef`
+  (`internal/gitops/git.go`) run first and reject anything empty, over-length, leading with `-` (which
+  `git` would otherwise parse as an option), or, for tag names, containing whitespace, control
+  characters, `~ ^ : ? * [ \`, a leading/trailing `.`, a `/`, a `.lock` suffix, or `..`. `--` is used
+  where it actually means "no more options" for the argument that follows: `git tag -a -m <message> --
+  <name>`, matching the pattern `SelectiveRollback` already used for `checkout`/`rm` path arguments.
+  It is deliberately **not** added in front of revisions passed to `git diff`, `git cat-file -e`, or
+  `git merge-base --is-ancestor` — for those commands `--` marks the start of a pathspec, not a
+  revision, so a validated ref placed after it would silently be reinterpreted as a path (confirmed
+  against a real `git diff -- <ref>`, which treats `<ref>` as a pathspec and prints nothing instead of
+  the diff). Revision arguments to those commands rely on `validateRef` alone, not on a
+  fictitious `--` boundary.
+- **`git_path` is only honoured by diagnostics, not by the git StudioForge actually runs.** The
+  `git_path` setting (`Doctor.GitOverride`) selects which `git` binary `studioforge doctor` probes.
+  Neither `gitops.Client` (used for `status`/`diff`/rollback/tag via `gitAdapter`) nor
+  `gitcheckpoint.Checkpoint` consult it — both resolve `git` from `PATH` unconditionally
+  (`gitops.New()` hardcodes `Executable: "git"`, and `gitcheckpoint`'s `exec.Command` calls pass the
+  literal string `"git"`). An operator who sets `git_path` to point at a non-`PATH` Git install gets
+  a diagnostics check against the right binary (once it passes the path validation described below)
+  while checkpoints and Git-panel operations keep using whatever `git` resolves to on `PATH` — a
+  functional inconsistency, not a security one, and it is not fixed here (see
+  [docs/KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md)).
+- **Settings that become executable paths are validated before they are stored, so the setting itself
+  cannot be used to inject a command.** `claude_path`, `rojo_path`, `git_path`, and `studio_mcp_path`
+  (`POST /api/v1/settings`) go through `toolpath.Validate` (`internal/platform/toolpath/toolpath.go`)
+  in the request's validation phase, before any key is persisted, and again inside `applySetting`
+  (`internal/app/app.go`) as a second gate — the latter exists because a value already written to the
+  database by a version of StudioForge that predates this check must not become an executable path the
+  moment it is re-applied. An empty value is accepted (it means "search PATH automatically"), and a
+  bare name with no path separator is resolved against PATH. A value is rejected as 400
+  `invalid_tool_path` when it: contains a control character, `\n`, `\r`, `"`, or `'`; has leading or
+  trailing whitespace; looks like a command line rather than a path (an existing file sits at the
+  first space-delimited token but not at the full value — the classic `git.exe --upload-pack=evil`
+  shape); contains a path separator but is not absolute; does not resolve to an existing regular file
+  (a symlink is followed to its real target, and a directory is refused); on Windows, resolves to a
+  path whose extension is not in `PATHEXT` (default `.EXE;.COM;.BAT;.CMD`, which already covers the
+  `.bat`/`.cmd` launchers this codebase runs through `cmd.exe /c`); or, on POSIX, resolves to a file
+  without the executable bit. `studio_mcp_path` is exempt from the extension/executable-bit check
+  specifically, since it is identified by existence and deliberately never executed to probe it (see
+  above). What this validation does **not** do: it does not restrict which directory the binary lives
+  in, and it does not vet what the binary itself does — an operator can still point any of these
+  settings at any executable file their OS account is already allowed to run. The boundary is "a
+  settings value cannot become a command line, and cannot point at something that is not a real,
+  resolvable file," not a claim that the operator's chosen binary is trustworthy.
+- **Safe mode** (`--safe-mode`) is enforced in one place: `scheduler.Manager.Submit`
+  (`internal/scheduler/scheduler.go`), the single function that creates and admits a run. Every
+  caller — `POST /api/v1/runs`, `POST /api/v1/runs/{id}/resume`, `POST /api/v1/runs/{id}/restart`,
+  and `POST /api/v1/decisions/{id}/resolve` approving a proposed correction — goes through it, so a
+  future endpoint that reaches `Submit` is safe by construction rather than by remembering to add a
+  check. `internal/rojo.Manager` carries the same flag independently (`SetSafeMode`, checked first
+  in `Start`, `Build`, and `InstallPlugin`), since Rojo is a second thing safe mode promises to
+  disable and is not started through the scheduler. `POST /api/v1/projects/{id}/sync` and
+  `POST /api/v1/projects/{id}/open-studio` refuse directly at the handler. The HTTP handlers for all
+  of the above also carry their own fast `if s.safeMode` check ahead of the deeper one — this is a
+  UX optimization (a 409 before any of the request's other work runs), not the actual enforcement;
+  every one of them maps to 409, error code `safe_mode`. `pause` and `cancel` remain available in
+  safe mode, since they only stop work already running rather than starting anything new — a run
+  left over from before the daemon was restarted with `--safe-mode` must still be stoppable.
+  Diagnostics, settings, backups, and export/import stay available throughout. See
+  [ADR 0008](adr/0008-safe-mode-enforcement.md) for why enforcement moved to `Submit` instead of
+  staying as a per-handler check.
+- **A tool-path setting invalid at startup falls back to automatic search, not to refusing to
+  start.** `claude_path`, `rojo_path`, `git_path`, and `studio_mcp_path` are re-validated with
+  `toolpath.Validate` when the daemon reads them from the database at startup
+  (`internal/app.validatedToolSetting`), the same check `POST /api/v1/settings` already applies
+  before writing them — closing the gap where a value written by an older release, before that
+  check existed, would otherwise become an executable path unchecked the moment a newer release
+  started up and read it back. An invalid stored value is logged via `slog.Warn` and treated as
+  unset (empty), which is what triggers this codebase's existing automatic-PATH-search fallback for
+  each of these tools — a deliberate fail-safe-for-availability choice: refusing to start the daemon
+  over one stale settings row would be worse than falling back to the same "search PATH
+  automatically" behavior an operator who never set the override gets by default.
 - **Task dependency readiness** (`internal/tasks/readiness.go`) makes `POST /api/v1/runs` and a
   user-initiated `POST /api/v1/runs/{id}/restart` refuse with 409, error code
   `task_dependencies_incomplete`, unless every dependency in the target task's dependency graph —
@@ -428,6 +616,64 @@ go through Claude Code.
   selector and the task board (`web/src/lib/tasksReadiness.ts`) mirror this same walk client-side to
   mark blocked tasks and disable starting a run on them before the request round-trips, but the server
   check above is the one that actually gates a run.
+
+## Review-before-apply gate
+
+An agent's `reviewBeforeApply` setting (off by default) pauses a run at the
+boundary of a turn that edited a file, in the same `waiting_decision` state
+the pre-existing "agent asked a question" mechanism already uses, and
+offers `POST /api/v1/runs/{id}/review` with `apply`/`reject`/
+`apply-selected`. Read [ADR 0007](adr/0007-review-before-apply-gate.md) for
+the full design and the alternatives it rejected; the summary that matters
+for the security model:
+
+- **This is apply-then-revert, not a pre-action approval gate.** A coding
+  agent's own file tools write to the real project files synchronously as
+  part of executing a turn; StudioForge's scheduler only observes provider
+  events after the provider has already acted on them. By the time a
+  review's diff is shown, the edits it describes are already on disk, the
+  turn that made them has already finished, and a build step the same turn
+  ran afterward could already have read them. `reject` and `apply-selected`
+  are therefore revert operations, not a barrier that held anything back.
+- **`reject`/`apply-selected` share the exact `SelectiveRollback` mechanism**
+  a manual selective rollback already uses (`POST /api/v1/runs/{id}/rollback`
+  with a `files`/`hunks` body) — the same function, the same error table
+  (`ErrNotGitRepo`, `ErrDirtyWorktree`, `ErrLaterChanges`,
+  `ErrPatchCheckFailed`, `ErrSelectionUnknown`), the same HTTP-error
+  mapping. `reject` always takes the non-destructive `SafeRollback`
+  branch-switch alternative *off the table* deliberately — it reverts the
+  run's changes in place, on the branch the operator is already on, rather
+  than moving the worktree somewhere else. `apply-selected` inverts the
+  client's keep-list into a revert-list against the diff parsed fresh from
+  the review's checkpoint; a selection that no longer matches the real diff
+  fails closed with `invalid_selection`.
+- **The project's write lease is held through the review by transfer, not
+  by release-and-reacquire.** A pending review holds the lease under owner
+  `review:<runID>`, moved directly from the run's ownership via
+  `Handle.Transfer` — one critical section that swaps the owner on every
+  held key without the key ever appearing free in between. This closes the
+  window a release-then-acquire pair would otherwise leave open, where a
+  second run could start against the same project while a review is
+  pending and a later `reject` would then be reverting files that run is
+  concurrently editing. If the transfer itself cannot succeed, the run
+  fails outright and the review gate is never opened.
+- **Expiry (`review_gate_expiry_hours`, default 24, range 1–168) releases
+  the lease; it does not resolve the review.** On expiry the review's
+  status flips to `expired` and the project's write lease is released — a
+  status update and a lease release, nothing else. There is deliberately no
+  automatic `apply` and no automatic `reject`: the edits are already on
+  disk, an unattended auto-apply would treat an operator's absence as
+  approval, and an unattended auto-revert would be a destructive write
+  happening because nobody was watching. The run stays in
+  `waiting_decision`; the operator resolves it with an ordinary
+  `POST /runs/{id}/rollback` once they act.
+- **Studio MCP edits are out of scope**, the same way they already are for
+  the diff panel: a run's file-edit tracking and its Studio-mutation
+  tracking (`runs.studio_direct_edits`) are independent flags, and
+  `SelectiveRollback` only ever reverts what `git` tracks. A live edit made
+  to the open place through Studio MCP never touched the filesystem, so
+  neither the review's diff nor `reject`/`apply-selected` can see or undo
+  it.
 
 ## Network access
 
@@ -556,26 +802,31 @@ OS credential store StudioForge itself reads the API key from.
 - **`--max-turns` does not exist in current Claude Code.** StudioForge's capability probe drops the
   flag when `claude --help` does not advertise it, so an agent's configured max-turns limit does not
   bound a Claude run today — only the budget ceiling (`--max-budget-usd`) does.
-- **The operator-approval gate covers exactly one case: an exhausted playtest-correction budget.** A
+- **The `decisions` mechanism covers exactly one case: an exhausted playtest-correction budget.** A
   `Decision` record type, resolve endpoint, and review UI existed early in the alpha, were removed, and
   a fresh, narrower version now exists again with a real producer: when the playtest validation loop's
   correction budget is exhausted, the daemon proposes a `Decision` instead of silently giving up
   (`POST /api/v1/decisions/{id}/resolve`). This is not a general "confirm before anything dangerous"
   gate — it never fires before a file edit, a destructive command, or a publish; those are governed
   only by the run's own permission profile, as described throughout this document. The
-  interactive-question feature (`studioforge-question`, see the README) remains the only mechanism for
-  an agent pausing mid-run for the operator's input; the two are unrelated.
-- `internal/diagnostics` (the `doctor`/bundle code path) has no automated test coverage in this
-  release; its output is not unverified in the sense of being wrong, but it has not been exercised by
-  CI the way most of the rest of the daemon has.
+  interactive-question feature (`studioforge-question`, see the README) remains a separate mechanism for
+  an agent pausing mid-run for the operator's input; neither is related to the review-before-apply gate
+  described under [Review-before-apply gate](#review-before-apply-gate) above, which does pause a run
+  around a file edit but is, by its own design, apply-then-revert rather than a pre-action gate — the
+  edits it shows a diff for are already on disk by the time the operator sees them.
+- `internal/diagnostics` (the `doctor`/bundle code path) has automated test coverage for `Doctor.Run`
+  (each dependency check's status mapping, the `dataDirectory`, `confinement`, and `network-policy`
+  checks, and that no
+  check's `Message`/`Version`/`Path` ever carries a raw secret, even if a `KeyState` callback were
+  misconfigured to return one) and for `ExportBundle` (the zip contains exactly `doctor.json` and
+  `README.json`, redaction is applied to every member of the archive rather than just one, and a
+  failure partway through writing the bundle leaves no partial file on disk). What is still not
+  covered: the `claude`/`rojo`/`studioMcp` dependency checks against the real external tools (only
+  fakes on `PATH` are exercised), and the OpenRouter models-API branch of the `openrouter` check
+  (live/cache/fallback source reporting).
 - Real end-to-end paths against an actual Claude account or an actual Roblox Studio instance run only
   behind opt-in environment variables (`STUDIOFORGE_REAL_CLAUDE=1`, `STUDIOFORGE_REAL_STUDIO=1`);
   the default `go test ./...` (and CI) exercises fakes only.
-- `PathGuard.Resolve`'s traversal/symlink-escape check has no live caller (see
-  [Local file access](#local-file-access)) — do not read its unit tests as evidence that a specific
-  HTTP endpoint is guarded, because none currently calls it.
-- Safe mode's run-blocking check is not repeated on the run-restart endpoint (see
-  [Command execution](#command-execution)).
 - **Free OpenRouter models are less predictable than paid ones.** Quality, latency, and rate limits
   vary more, and a given free model's availability can change without notice — treat them as suited to
   small tasks, not long unattended runs. StudioForge never silently switches a free-mode run to a paid

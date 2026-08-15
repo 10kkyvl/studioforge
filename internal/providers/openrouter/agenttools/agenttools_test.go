@@ -3,6 +3,7 @@ package agenttools
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/10kkyvl/studioforge/internal/gitops"
 	"github.com/10kkyvl/studioforge/internal/processes"
+	"github.com/10kkyvl/studioforge/internal/processes/netproxy"
 )
 
 func newTestToolSet(t *testing.T, profile Profile) (*ToolSet, string) {
@@ -381,6 +383,151 @@ func newSmallOutputToolSet(t *testing.T) (*ToolSet, string) {
 		t.Fatal(err)
 	}
 	return set, root
+}
+
+func newNetworkPolicyToolSet(t *testing.T, profile Profile, network processes.NetworkPolicy) *ToolSet {
+	t.Helper()
+	root := t.TempDir()
+	ws, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sup := processes.NewSupervisor()
+	t.Cleanup(func() { _ = sup.Close(context.Background()) })
+	set, err := NewToolSet(profile, Options{Workspace: ws, Git: gitops.New(), Supervisor: sup, ProjectID: "proj", RunID: "run", NetworkPolicy: network})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return set
+}
+
+func TestRunCommandReportsTheNetworkPolicyAsTheReason(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("network policy enforcement on darwin lands in a later change")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not found on PATH")
+	}
+	set := newNetworkPolicyToolSet(t, ProfileWorkspace, processes.NetworkNone)
+	res := set.Execute(context.Background(), "run_command", mustJSON(t, map[string]any{"command": "git", "args": []string{"--version"}}))
+	if !res.IsError {
+		t.Fatalf("expected a strict network policy to refuse the command, got %+v", res)
+	}
+	if !strings.Contains(res.Content, "network policy") || !strings.Contains(res.Content, "none") {
+		t.Fatalf("expected the error to name the network policy, got: %s", res.Content)
+	}
+	lower := strings.ToLower(res.Content)
+	if strings.Contains(lower, "connection refused") || strings.Contains(lower, "network error") || strings.Contains(lower, "no such host") {
+		t.Fatalf("expected a policy refusal, not something reading like a network failure, got: %s", res.Content)
+	}
+}
+
+func TestRegistryOnlyStartsAProxyAndPointsTheChildAtIt(t *testing.T) {
+	proxy, err := netproxy.Start(context.Background(), netproxy.Options{Allow: netproxy.DefaultAllowlist()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+
+	env := runCommandEnvironment(processes.NetworkRegistryOnly, proxy.Addr())
+	found := map[string]string{}
+	for _, entry := range env {
+		if key, value, ok := strings.Cut(entry, "="); ok {
+			found[key] = value
+		}
+	}
+	for _, key := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"} {
+		if found[key] != proxy.Addr() {
+			t.Fatalf("expected %s=%s in the child environment, got %q", key, proxy.Addr(), found[key])
+		}
+	}
+}
+
+func TestRegistryOnlyStripsTheOperatorProxyFirst(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://operator-proxy.example:8080")
+	t.Setenv("HTTPS_PROXY", "http://operator-proxy.example:8080")
+	t.Setenv("NO_PROXY", "*")
+
+	env := runCommandEnvironment(processes.NetworkRegistryOnly, "127.0.0.1:34567")
+	found := map[string]string{}
+	for _, entry := range env {
+		if key, value, ok := strings.Cut(entry, "="); ok {
+			found[key] = value
+		}
+		if strings.Contains(entry, "operator-proxy.example") {
+			t.Fatalf("the operator's own proxy must not survive into a registry-only command's environment, got %q", entry)
+		}
+	}
+	if strings.Contains(found["NO_PROXY"], "*") || strings.Contains(found["no_proxy"], "*") {
+		t.Fatalf("the operator's NO_PROXY=* must not survive; it would route the child's traffic around the proxy, got %+v", found)
+	}
+	if found["HTTP_PROXY"] != "127.0.0.1:34567" || found["http_proxy"] != "127.0.0.1:34567" {
+		t.Fatalf("expected the child's proxy variables to point at the proxy StudioForge started, got %+v", found)
+	}
+}
+
+func TestUnrestrictedLeavesTheOperatorProxyAlone(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://operator-proxy.example:8080")
+
+	env := runCommandEnvironment(processes.NetworkUnrestricted, "")
+	want := processes.MinimalEnvironment(nil)
+	if len(env) != len(want) {
+		t.Fatalf("unrestricted policy must leave the environment exactly as built for it, got %d entries, want %d", len(env), len(want))
+	}
+	found := false
+	for _, entry := range env {
+		if strings.Contains(entry, "operator-proxy.example") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("unrestricted policy must not touch the operator's own proxy configuration")
+	}
+}
+
+func TestProxyIsClosedWhenTheCommandFinishes(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not found on PATH")
+	}
+	set := newNetworkPolicyToolSet(t, ProfileWorkspace, processes.NetworkRegistryOnly)
+
+	var captured *netproxy.Proxy
+	original := startNetworkProxy
+	startNetworkProxy = func(ctx context.Context, opts netproxy.Options) (*netproxy.Proxy, error) {
+		p, err := original(ctx, opts)
+		if err == nil {
+			captured = p
+		}
+		return p, err
+	}
+	t.Cleanup(func() { startNetworkProxy = original })
+
+	set.Execute(context.Background(), "run_command", mustJSON(t, map[string]any{"command": "git", "args": []string{"--version"}}))
+
+	if captured == nil {
+		t.Fatal("expected run_command under registry-only to start a network proxy")
+	}
+	if _, err := net.Dial("tcp", captured.Addr()); err == nil {
+		t.Fatal("expected the proxy's listener to be closed once the command finished")
+	}
+}
+
+func TestNetworkEventReportsUnknownEgressWhereObservationIsImpossible(t *testing.T) {
+	egress, endpoints := networkEgressForUnrestricted(processes.NetworkObservation{Supported: false})
+	if egress != "unknown" {
+		t.Fatalf("a platform that cannot observe network activity must report unknown egress, got %q", egress)
+	}
+	if endpoints != nil {
+		t.Fatalf("expected no endpoints when observation is impossible, got %+v", endpoints)
+	}
+
+	egress, endpoints = networkEgressForUnrestricted(processes.NetworkObservation{Supported: true})
+	if egress != "unknown" {
+		t.Fatalf("a supported observer that saw nothing must not be reported as proof that no traffic happened, got %q", egress)
+	}
+	if endpoints != nil {
+		t.Fatalf("expected no endpoints, got %+v", endpoints)
+	}
 }
 
 func TestRunCommandShellDeniedOutsideDanger(t *testing.T) {

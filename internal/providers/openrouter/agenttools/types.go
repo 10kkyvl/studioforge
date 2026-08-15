@@ -39,11 +39,31 @@ type Options struct {
 	MaxReadBytes   int
 	MaxOutputBytes int
 	CommandTimeout time.Duration
+	NetworkPolicy  processes.NetworkPolicy
 	// Ask delivers a closed question to the operator. Left nil, the question
 	// tool is still registered but refuses, telling the agent to decide for
 	// itself rather than leaving it waiting for an answer that is not coming.
-	Ask AskOperator
+	Ask            AskOperator
+	OnNetworkEvent ReportNetworkEvent
 }
+
+type NetworkEndpoint struct {
+	Host    string    `json:"host"`
+	Allowed bool      `json:"allowed"`
+	At      time.Time `json:"at"`
+}
+
+type NetworkEvent struct {
+	CommandID string            `json:"commandId"`
+	Command   string            `json:"command"`
+	Policy    string            `json:"policy"`
+	Enforced  bool              `json:"enforced"`
+	Platform  string            `json:"platform"`
+	Egress    string            `json:"egress"`
+	Endpoints []NetworkEndpoint `json:"endpoints"`
+}
+
+type ReportNetworkEvent func(ctx context.Context, event NetworkEvent)
 
 type funcTool struct {
 	name        string

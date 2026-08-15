@@ -12,7 +12,7 @@ export default defineConfig({
   },
   reporter: [['list']],
   projects: [
-    { name: 'e2e', testMatch: /studioforge\.spec\.ts/ },
+    { name: 'e2e', testMatch: /(studioforge|review-gate)\.spec\.ts/ },
     { name: 'screenshots', testMatch: /screenshots\.spec\.ts/ },
     { name: 'social', testMatch: /social-preview\.spec\.ts/ },
   ],

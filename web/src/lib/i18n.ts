@@ -45,6 +45,10 @@ export const en = {
   'error.server': 'Server error. Try again.',
   'error.session': 'Session expired — reopen StudioForge from the app.',
   'error.notFound': 'Not found.',
+  'error.projectPathParentMissing':
+    'The parent folder of that path does not exist. Create the parent folder first, then try again.',
+  'error.projectPathUnsafe':
+    'That location is not allowed for a project. Choose a different folder.',
   'error.runFailed': 'Run failed',
   'error.rollbackDirty':
     'The project has uncommitted changes that would conflict with this revert. Commit or discard them first.',
@@ -504,6 +508,51 @@ export const en = {
   'check.rojoDetected': 'Rojo CLI detected',
   'check.rojoNotFound': 'Rojo CLI not found; install Rojo 7 and ensure rojo is on PATH',
   'check.studioMcpDetected': 'Official Studio MCP launcher detected',
+  'netpolicy.unrestricted': 'Unrestricted',
+  'netpolicy.registryOnly': 'Registry only',
+  'netpolicy.none': 'No network',
+  'team.networkPolicy': 'Network policy',
+  'team.networkPolicyHint':
+    'Unrestricted lets the agent reach the network freely. Registry only limits it to package registries. No network blocks outbound access entirely.',
+  'team.networkPolicyStrictWarning':
+    'Registry only and No network are enforced on macOS only. On any other platform, this agent’s command will be refused instead of running unsandboxed.',
+  'team.reviewBeforeApply': 'Require review before applying changes',
+  'team.reviewBeforeApplyHint':
+    'A run that changes something parks for your decision instead of completing on its own; you apply, reject, or keep part of it. Off by default.',
+  'settings.reviewGateExpiryHours': 'Review gate expiry (hours)',
+  'settings.reviewGateExpiryHoursHint':
+    'How long a parked review waits for your decision before it expires on its own (1–168 hours). The changes stay on disk either way.',
+  'error.reviewInvalidAction': 'That review action is not recognized. Reload and try again.',
+  'error.reviewInvalidSelection':
+    "That selection does not match this run's diff. Reload and try again.",
+  'error.reviewNotPending': 'This review has already been resolved.',
+  'error.reviewExpired': 'This review has expired.',
+  'error.reviewProjectBusy':
+    'Another run currently holds this project; wait for it to finish before resolving the review.',
+  'review.heading': 'Changes waiting on your review',
+  'review.explain': 'This run changed the project and is parked until you decide what to keep.',
+  'review.studioDirectEditsWarning':
+    'This run also edited Studio directly through Studio MCP. Those edits are not part of the diff below, and Reject will not undo them.',
+  'review.remaining': 'Time left to decide',
+  'review.apply': 'Apply',
+  'review.reject': 'Reject',
+  'review.applySelected': 'Apply selected',
+  'review.working': 'Working…',
+  'review.selectHint': 'Check files or hunks below to keep only part of the change.',
+  'review.selectFileLabel': 'Select file to keep',
+  'review.selectHunkLabel': 'Select hunk to keep',
+  'review.confirmRejectTitle': 'Reject every change in this run?',
+  'review.confirmRejectBody':
+    'Everything gets reverted. A safety checkpoint is taken first, so this stays undoable.',
+  'review.confirmApplySelectedTitle': 'Apply only the checked changes?',
+  'review.confirmApplySelectedBody':
+    'Everything not checked gets reverted. A safety checkpoint is taken first, so this stays undoable.',
+  'review.resolvedApplied': 'Applied — every change in this run was kept.',
+  'review.resolvedRejected': 'Rejected — this run’s changes were reverted.',
+  'review.resolvedPartial': 'Applied the checked changes — the rest was reverted.',
+  'review.expiredHeading': 'Review window expired',
+  'review.expiredExplain':
+    'Nobody decided in time, so this expired automatically. The changes are still on disk — use the normal rollback below if you want to revert them.',
 } as const;
 
 export type TranslationKey = keyof typeof en;
@@ -551,6 +600,9 @@ export const ru: Record<TranslationKey, string> = {
   'error.server': 'Ошибка на сервере. Попробуйте ещё раз.',
   'error.session': 'Сессия истекла — откройте StudioForge заново из приложения.',
   'error.notFound': 'Не найдено.',
+  'error.projectPathParentMissing':
+    'Родительская папка для этого пути не существует. Сначала создайте родительскую папку, затем попробуйте снова.',
+  'error.projectPathUnsafe': 'Это расположение недоступно для проекта. Выберите другую папку.',
   'error.rollbackDirty':
     'В проекте есть незафиксированные изменения, которые конфликтуют с откатом. Сначала закоммитьте или отмените их.',
   'error.rollbackLaterChange': 'Более поздний запуск изменил те же файлы; сначала откатите его.',
@@ -1015,6 +1067,52 @@ export const ru: Record<TranslationKey, string> = {
   'check.rojoNotFound':
     'Rojo CLI не найден; установите Rojo 7 и убедитесь, что rojo доступен в PATH',
   'check.studioMcpDetected': 'Обнаружен официальный лаунчер Studio MCP',
+  'netpolicy.unrestricted': 'Без ограничений',
+  'netpolicy.registryOnly': 'Только реестры пакетов',
+  'netpolicy.none': 'Без сети',
+  'team.networkPolicy': 'Сетевая политика',
+  'team.networkPolicyHint':
+    'Без ограничений — агент свободно обращается к сети. Только реестры пакетов — доступ ограничен реестрами пакетов. Без сети — исходящий доступ полностью запрещён.',
+  'team.networkPolicyStrictWarning':
+    'Политики «Только реестры пакетов» и «Без сети» обеспечиваются только на macOS. На любой другой платформе команда этого агента будет отклонена вместо запуска без изоляции.',
+  'team.reviewBeforeApply': 'Требовать ревью перед применением изменений',
+  'team.reviewBeforeApplyHint':
+    'Ран, что-то изменивший, паркуется и ждёт вашего решения вместо того, чтобы завершиться сам: вы применяете, отклоняете или оставляете часть изменений. По умолчанию выключено.',
+  'settings.reviewGateExpiryHours': 'Срок ожидания ревью (часы)',
+  'settings.reviewGateExpiryHoursHint':
+    'Сколько времени запаркованное ревью ждёт вашего решения, прежде чем истечёт само (1–168 часов). Изменения в любом случае остаются на диске.',
+  'error.reviewInvalidAction':
+    'Такое действие ревью не распознано. Обновите страницу и попробуйте снова.',
+  'error.reviewInvalidSelection':
+    'Эта выборка не соответствует диффу этого рана. Обновите дифф и попробуйте снова.',
+  'error.reviewNotPending': 'Это ревью уже разрешено.',
+  'error.reviewExpired': 'Срок этого ревью истёк.',
+  'error.reviewProjectBusy':
+    'Проект сейчас занят другим раном; дождитесь его завершения, прежде чем разрешать ревью.',
+  'review.heading': 'Изменения ждут вашего ревью',
+  'review.explain': 'Этот ран изменил проект и запаркован, пока вы не решите, что оставить.',
+  'review.studioDirectEditsWarning':
+    'Этот ран также правил Studio напрямую через Studio MCP. Эти правки не входят в дифф ниже, и Reject их не отменит.',
+  'review.remaining': 'Осталось времени на решение',
+  'review.apply': 'Применить',
+  'review.reject': 'Отклонить',
+  'review.applySelected': 'Применить выбранное',
+  'review.working': 'Выполняется…',
+  'review.selectHint': 'Отметьте файлы или блоки ниже, чтобы оставить только часть изменений.',
+  'review.selectFileLabel': 'Оставить этот файл',
+  'review.selectHunkLabel': 'Оставить этот блок',
+  'review.confirmRejectTitle': 'Отклонить все изменения этого рана?',
+  'review.confirmRejectBody':
+    'Всё будет откачено. Сначала создаётся страховочный чекпоинт, так что это обратимо.',
+  'review.confirmApplySelectedTitle': 'Применить только отмеченные изменения?',
+  'review.confirmApplySelectedBody':
+    'Всё неотмеченное будет откачено. Сначала создаётся страховочный чекпоинт, так что это обратимо.',
+  'review.resolvedApplied': 'Применено — все изменения этого рана сохранены.',
+  'review.resolvedRejected': 'Отклонено — изменения этого рана откачены.',
+  'review.resolvedPartial': 'Отмеченные изменения применены — остальное откачено.',
+  'review.expiredHeading': 'Срок ревью истёк',
+  'review.expiredExplain':
+    'Решение не приняли вовремя, и ревью истекло само. Изменения всё ещё на диске — используйте обычный откат рана ниже, если хотите их отменить.',
 };
 
 export type Locale = 'en' | 'ru';

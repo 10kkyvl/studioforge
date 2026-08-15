@@ -4,6 +4,8 @@ package toolpath
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -195,6 +197,109 @@ func specs() map[string]spec {
 			return nil
 		}},
 	}
+}
+
+var ErrToolPathInvalid = errors.New("tool path is invalid")
+
+func IsTool(key string) bool {
+	for _, tool := range Tools {
+		if tool == key {
+			return true
+		}
+	}
+	return false
+}
+
+func Validate(tool, value string) (string, error) {
+	if strings.TrimSpace(value) == "" {
+		return "", nil
+	}
+	if hasForbiddenCharacters(value) {
+		return "", fmt.Errorf("%w: %q contains a control character, newline, or quote, which cannot appear in a path", ErrToolPathInvalid, value)
+	}
+	if value != strings.TrimSpace(value) {
+		return "", fmt.Errorf("%w: %q has a leading or trailing space", ErrToolPathInvalid, value)
+	}
+	if !fileExists(value) {
+		if first, _, cut := strings.Cut(value, " "); cut && first != "" && (fileExists(first) || lookPathExists(first)) {
+			return "", fmt.Errorf("%w: %q looks like a command line with arguments; only the path to the executable itself is accepted, not %q", ErrToolPathInvalid, value, first)
+		}
+	}
+	if containsPathSeparator(value) && !filepath.IsAbs(value) {
+		return "", fmt.Errorf("%w: %q contains a path separator but is not an absolute path", ErrToolPathInvalid, value)
+	}
+	target := value
+	if !containsPathSeparator(value) {
+		found, err := exec.LookPath(value)
+		if err != nil {
+			return "", fmt.Errorf("%w: %q was not found on PATH", ErrToolPathInvalid, value)
+		}
+		target = found
+	}
+	real := resolve(target)
+	if real == "" {
+		return "", fmt.Errorf("%w: %q was not found, or is a directory", ErrToolPathInvalid, value)
+	}
+	if tool == "studio_mcp_path" {
+		return real, nil
+	}
+	if runtime.GOOS == "windows" {
+		if !hasExecutableExtension(real) {
+			return "", fmt.Errorf("%w: %q does not have an executable extension (expected one of %s)", ErrToolPathInvalid, real, pathext())
+		}
+		return real, nil
+	}
+	info, err := os.Stat(real)
+	if err != nil || info.Mode()&0o111 == 0 {
+		return "", fmt.Errorf("%w: %q is not executable", ErrToolPathInvalid, real)
+	}
+	return real, nil
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func lookPathExists(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
+}
+
+func containsPathSeparator(value string) bool {
+	if strings.ContainsRune(value, '/') {
+		return true
+	}
+	return runtime.GOOS == "windows" && strings.ContainsRune(value, '\\')
+}
+
+func hasForbiddenCharacters(value string) bool {
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return strings.ContainsAny(value, `"'`)
+}
+
+func pathext() string {
+	if value := os.Getenv("PATHEXT"); value != "" {
+		return value
+	}
+	return ".EXE;.COM;.BAT;.CMD"
+}
+
+func hasExecutableExtension(path string) bool {
+	ext := filepath.Ext(path)
+	if ext == "" {
+		return false
+	}
+	for _, candidate := range strings.Split(pathext(), ";") {
+		if strings.EqualFold(candidate, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 func concat(groups ...[]string) []string {

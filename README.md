@@ -23,6 +23,8 @@ StudioForge is a free, open-source app that sits between you and AI coding model
 - **Use free AI models.** StudioForge works with OpenRouter's free-tier models and NVIDIA's free hosted models out of the box — you only need a free API key, not a paid subscription. Claude Code is also supported if you already use it.
 - **Keep everything local.** Your project files, your Roblox Studio, your Git history — all on your computer. StudioForge is a program you run yourself; nobody else's server sees your project.
 - **Run agent-started commands inside a real OS-level boundary.** On Windows, a command an agent runs is confined to a Windows Job Object (capped process/memory limits, killed with the run, no escape); on macOS, its file writes are confined to the project by a generated `sandbox-exec` profile. Scope and platform limits are stated plainly, not oversold — see [docs/SECURITY.md](docs/SECURITY.md#process-confinement-for-run_command).
+- **Give an agent a network boundary, not just a filesystem one.** A per-agent network policy (`unrestricted`/`registry-only`/`none`) rides the same confinement: real `sandbox-exec` enforcement on macOS, an honest fail-closed refusal — not a silent downgrade — on Windows and Linux, where it can't yet be enforced. See [docs/SECURITY.md](docs/SECURITY.md#network-egress-policy-for-run_command).
+- **Pause a run for a look before you call it done.** Turn on review-before-apply per agent and a run that edited a file parks for your `apply`/`reject`/`apply-selected` decision instead of finishing on its own. The edits are already on disk by then, so this reverts what you reject rather than holding it back — stated plainly, not oversold, in [docs/SECURITY.md](docs/SECURITY.md#review-before-apply-gate).
 
 ## See it in action
 
@@ -59,6 +61,7 @@ StudioForge is a public beta, not a finished product. Before pointing it at a pr
 - **Back it up.** A Git repo (StudioForge checkpoints before every run) or a plain copy both work.
 - **Expect unsigned builds.** Windows SmartScreen and macOS Gatekeeper will both warn on first launch — this is expected for an unsigned development build, not a sign of a compromised download. Verify the release checksum if you want extra assurance.
 - **Some features are still rough or partial.** There's no UI yet to browse or curate project memory, for example. The full list: [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
+- **Try `--safe-mode` first if you just want to look around.** `studioforge.exe --safe-mode` opens the UI, diagnostics, and settings without starting any AI worker, Rojo sync, or Studio launch — a way to explore before you trust it with a real project.
 
 ## Want more?
 

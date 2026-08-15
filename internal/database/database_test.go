@@ -39,7 +39,7 @@ func TestMigrationsAndPragmas(t *testing.T) {
 	if timeout != 5000 || foreign != 1 {
 		t.Fatalf("pragmas timeout=%d foreign=%d", timeout, foreign)
 	}
-	required := []string{"schema_migrations", "projects", "project_agents", "tasks", "runs", "run_events", "studio_sessions", "resource_leases", "budgets", "usage_records"}
+	required := []string{"schema_migrations", "projects", "project_agents", "tasks", "runs", "run_events", "studio_sessions", "resource_leases", "budgets", "usage_records", "run_reviews"}
 	for _, table := range required {
 		var count int
 		if err := db.SQL.QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&count); err != nil || count != 1 {
@@ -554,5 +554,81 @@ func TestBudgetEnforcement(t *testing.T) {
 	allowed, _, _, err = store.BudgetAllowed(ctx, "demo-obby", 1)
 	if err != nil || !allowed {
 		t.Fatalf("small request allowed=%v err=%v", allowed, err)
+	}
+}
+
+func TestReviewGateMigrationDefaultsExistingAgentsToOff(t *testing.T) {
+	db, store := testDB(t)
+	ctx := context.Background()
+	project, err := store.CreateProject(ctx, models.Project{Name: "Review gate project", Path: filepath.Join(t.TempDir(), "review-gate-project"), Fingerprint: "review-gate-project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	legacyID := NewID()
+	_, err = db.SQL.ExecContext(ctx, `INSERT INTO project_agents
+	(id,project_id,name,role,provider,model_alias,allow_unverified_model,effort,enabled,permission_profile,network_policy,concurrency,budget,validate_after_run,max_correction_runs,stuck_detection_disabled)
+	VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, legacyID, project.ID, "Legacy Agent", "Engineer", "mock", "balanced", 0, "medium", 1, "workspace-write", "unrestricted", 1, 5, 0, 1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agents, err := store.ListAgents(ctx, project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 || agents[0].ReviewBeforeApply {
+		t.Fatalf("legacy agent (inserted without review_before_apply)=%+v, want reviewBeforeApply false from the migration's column default", agents)
+	}
+}
+
+func TestNetworkPolicyMigrationDefaultsAgentsAndRunsToUnrestricted(t *testing.T) {
+	db, store := testDB(t)
+	ctx := context.Background()
+	project, err := store.CreateProject(ctx, models.Project{Name: "Network project", Path: filepath.Join(t.TempDir(), "network-project"), Fingerprint: "network-project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := store.CreateAgent(ctx, models.Agent{ProjectID: project.ID, Provider: "mock"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.NetworkPolicy != "unrestricted" {
+		t.Fatalf("new agent networkPolicy=%q, want unrestricted", agent.NetworkPolicy)
+	}
+
+	legacyID := NewID()
+	_, err = db.SQL.ExecContext(ctx, `INSERT INTO project_agents
+	(id,project_id,name,role,provider,model_alias,allow_unverified_model,effort,enabled,permission_profile,concurrency,budget,validate_after_run,max_correction_runs,stuck_detection_disabled)
+	VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, legacyID, project.ID, "Legacy Agent", "Engineer", "mock", "balanced", 0, "medium", 1, "workspace-write", 1, 5, 0, 1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agents, err := store.ListAgents(ctx, project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy *models.Agent
+	for i := range agents {
+		if agents[i].ID == legacyID {
+			legacy = &agents[i]
+		}
+	}
+	if legacy == nil {
+		t.Fatalf("legacy agent not found among %+v", agents)
+	}
+	if legacy.NetworkPolicy != "unrestricted" {
+		t.Fatalf("legacy agent (inserted without network_policy) networkPolicy=%q, want unrestricted from the migration's column default", legacy.NetworkPolicy)
+	}
+
+	run, _, err := store.CreateRun(ctx, models.Run{ProjectID: project.ID, AgentID: agent.ID, Provider: "mock", ModelAlias: "balanced", NetworkPolicy: "registry-only"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := store.Run(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.NetworkPolicy != "registry-only" {
+		t.Fatalf("run networkPolicy=%q, want registry-only", stored.NetworkPolicy)
 	}
 }

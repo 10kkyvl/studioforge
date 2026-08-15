@@ -5,13 +5,13 @@ import { chooseOption, startDaemon, stopDaemon, type DaemonHandle } from './help
 let handle: DaemonHandle;
 let baseURL = '';
 let bootstrap = '';
-let dataDir = '';
+let projectsDir = '';
 
 test.beforeAll(async () => {
   handle = await startDaemon();
   baseURL = handle.baseURL;
   bootstrap = handle.bootstrap;
-  dataDir = handle.dataDir;
+  projectsDir = handle.projectsDir;
 });
 
 test.afterAll(async () => {
@@ -64,7 +64,7 @@ test('first run, locale, projects, live run, and core navigation', async ({ page
     await expect(page.getByRole('heading', { name, exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'New project', exact: true }).click();
   await page.getByLabel('Project name').fill('Fresh Project');
-  await page.getByLabel('Project folder').fill(join(dataDir, 'fresh-project'));
+  await page.getByLabel('Project folder').fill(join(projectsDir, 'fresh-project'));
   await page.getByLabel('Description').fill('Created by the browser regression test.');
   await page.getByRole('button', { name: 'Register project', exact: true }).click();
   // Registering a project drops the operator straight into its chat, so the

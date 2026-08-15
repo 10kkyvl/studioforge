@@ -1,5 +1,7 @@
 <script lang="ts">
   import { formatDate, locale, translate } from '$lib/i18n';
+  import { isReviewGated } from '$lib/review';
+  import ReviewCard from '$lib/components/ReviewCard.svelte';
   import type { Decision, Run, RunEvent } from '$lib/types';
 
   export let runs: Run[];
@@ -14,6 +16,7 @@
   export let decisions: Decision[] = [];
   export let onResolveDecision: (decisionId: string, approve: boolean) => void = () => {};
   export let busy = false;
+  export let reviewGateExpiryHours = 24;
 
   // A run that scheduled a correction carries its own parentRunId only on the
   // correction, not on the parent — so "has this run got a correction" is a
@@ -163,6 +166,9 @@
             >
           </div>
         </div>
+      {/if}
+      {#if isReviewGated(selectedRun)}
+        <ReviewCard run={selectedRun} {events} {reviewGateExpiryHours} />
       {/if}
       {#if ['failed', 'interrupted'].includes(selectedRun.status) && selectedRun.error}
         <div class="error-banner">

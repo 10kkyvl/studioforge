@@ -10,6 +10,36 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ### Added
 
+- **A pending review gate can now be resolved.** `POST
+  /api/v1/runs/{id}/review` accepts `{"action": "apply" | "reject" |
+  "apply-selected", "files": [...], "hunks": [...]}` and returns
+  `{"status", "safetyCommit", "revertedFiles", "revertedHunks"}`. `apply`
+  keeps every change and completes the run (a new `waiting_decision` →
+  `completed` transition); `reject` runs `SelectiveRollback` over every file
+  in the run's actual diff (never `SafeRollback`, which would switch the
+  worktree onto a side branch instead of undoing anything in place);
+  `apply-selected` inverts the client's keep-list into a revert-list against
+  the diff parsed fresh from `checkpoint_hash` — a stale client selection
+  against a path or hunk index the real diff no longer has fails closed with
+  `invalid_selection` rather than silently reverting the wrong thing. The
+  project-busy check that already guarded manual rollback now special-cases
+  its own `review:<runID>` lease owner, since a pending review always holds
+  that lease itself; the error-to-HTTP-code mapping the two rollback paths
+  share moved into `writeRollbackError` (`internal/api/git.go`) so selective
+  rollback and review resolution stay on one mechanism. A review-gated job
+  now actually carries `ReviewBeforeApply`/`BaseCheckpoint` through
+  `createRun`, run restart, and resume — they were computed but never
+  threaded into the submitted `scheduler.Job`, so the gate could never open
+  on a normal run. A background loop expires overdue reviews once a minute
+  and publishes a `review` event so an open card updates without a reload;
+  the run stays in `waiting_decision` and its edits stay on disk on expiry —
+  there is no safe automatic apply or revert, only the lease releasing (via
+  the scheduler's existing per-review heartbeat) so the project is usable
+  again, leaving the decision to `POST /runs/{id}/rollback` (`internal/api/
+  review.go`, `internal/api/api.go`, `internal/app/app.go`,
+  `internal/scheduler/state.go`, `internal/scheduler/review.go`,
+  `internal/resources/manager.go`).
+
 - **The per-run diff can now be requested as structured data instead of one
   opaque string.** `internal/gitops/diffparse.Parse` turns unified-diff text
   into `{stats: {filesChanged, additions, deletions}, files: [{path, oldPath,
@@ -178,6 +208,57 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   reports a `confinement` check describing exactly what is and is not
   enforced on the running platform.
 
+- **An agent's outbound network access is now a per-agent policy
+  (`networkPolicy`: `unrestricted`/`registry-only`/`none`, default
+  `unrestricted`), carried inside the same `ConfinementPolicy` the
+  `run_command` confinement above already threads through
+  `internal/processes` — not a second mechanism (issue #29, on top of the
+  confinement work above).** On macOS it is real `sandbox-exec`
+  enforcement: `none` appends `(deny network*)`; `registry-only` appends
+  `(deny network*)` plus a single carve-out
+  (`(allow network-outbound (remote ip (param "PROXY")))`) for the loopback
+  address of a local CONNECT proxy StudioForge starts for that one command
+  (`internal/processes/netproxy`), which reads only the `CONNECT host:443`
+  request line, checks the host against a fixed allowlist (npm, Yarn, the
+  Go module proxy and sum database, crates.io, PyPI, GitHub), and then
+  splices raw bytes between client and target without ever terminating or
+  inspecting TLS. `registry-only` has no direct SBPL expression — the
+  sandbox profile language filters by resolved IP, not DNS name, and
+  pre-resolving each registry's hostname is not durable against CDN
+  fronting, IP rotation, or redirects — hence the proxy, whose address
+  reaches the profile as a `-D PROXY=…` parameter, never interpolated into
+  the profile text. On Windows and Linux, neither of which can enforce
+  `registry-only`/`none`, a policy stricter than `unrestricted` **fails
+  closed before the command starts**, with an error naming the policy as
+  the cause; `STUDIOFORGE_ALLOW_UNCONFINED=1` does **not** lift this
+  refusal, unlike its effect on the general absence of platform
+  confinement — a deliberate difference, proven by
+  `TestAllowUnconfinedDoesNotBypassNetworkPolicy`. Under `registry-only`,
+  both cases of every proxy environment variable
+  (`HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`) are stripped from the
+  command's environment and replaced with the local proxy's address (and
+  an empty `NO_PROXY`), so an operator's own `NO_PROXY=*` cannot route
+  around the allowlist; a tool that ignores those variables entirely gets
+  no network at all under `registry-only`, not an unrestricted fallback.
+  Every `run_command` invocation publishes a `network` event (policy,
+  whether it was enforced, platform, and an egress value of
+  `unknown`/`observed`/`blocked`), excluded from the `event_retention_days`
+  auto-prune so this audit trail does not age out with routine tool-call
+  noise. On Windows, real observation samples the confined command's Job
+  Object process IDs against the live TCP connection table
+  (`GetExtendedTcpTable`) once a second — a periodic snapshot, not a trace:
+  a short-lived connection between two samples, and any UDP traffic, are
+  both invisible to it, so a positive result is evidence of egress but the
+  absence of one is never evidence of its absence. What this policy does
+  not cover: StudioForge's own traffic to a model API, Studio MCP's local
+  IPC, git over SSH (not proxy-aware), and the Claude Code provider path
+  entirely, since `networkPolicy` is wired only into the in-process agent
+  loop OpenRouter and NVIDIA share. See
+  [ADR 0006](docs/adr/0006-network-egress-policy.md) for the full design
+  and the rejected alternatives (resolving registries to IPs, Windows
+  `JOBOBJECT_NET_RATE_CONTROL`, a driver-based firewall, a
+  TLS-terminating proxy).
+
 ### Changed
 
 - **Every screen spent its first 130 pixels announcing which screen it was.** An
@@ -331,6 +412,28 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   `workspace-write` a sandbox: the build-tool route stays open by design and
   `docs/SECURITY.md` says so
   (`internal/providers/openrouter/agenttools/tool_shell.go`).
+
+- **The tag name in `POST /api/v1/projects/{id}/git/tag` reached `git tag`'s
+  argv unsanitized.** A name like `-d`, `--file=/etc/passwd`, or `-F../../x`
+  could be read by `git` as an option rather than the tag being created,
+  letting a request delete a tag, read an arbitrary file into a tag message,
+  or otherwise reshape the command the API meant to run. `internal/gitops`
+  now validates every ref and tag-name string before it becomes argv:
+  `validateTagName` rejects anything empty, over-length, leading with `-`,
+  containing whitespace or control characters, `~ ^ : ? * [ \`, a
+  leading/trailing `.`, a `/`, a `.lock` suffix, or `..`; `validateRef`
+  applies equivalent leading-dash/length/character checks to the commit refs
+  used by `DiffCommit`, `DiffRange`, `SafeRollback`, and
+  `SelectiveRollback`. `Tag` now runs `git tag -a -m <message> -- <name>`, so
+  `--` marks the end of options for the positional tag name, the same
+  pattern `SelectiveRollback` already used for `checkout`/`rm` path
+  arguments; it is deliberately not added before ref arguments to
+  `diff`/`cat-file`/`merge-base`, where `--` means "pathspec follows", not
+  "revision follows", and would silently break those commands instead of
+  securing them. An option-shaped tag name is now rejected with 400
+  `invalid_name` instead of a generic 409 `tag_failed`
+  (`internal/gitops/git.go`, `internal/gitops/rollback.go`,
+  `internal/api/git.go`, `docs/SECURITY.md`).
 
 ### Documentation
 
@@ -586,6 +689,77 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   advisories. Only `web/package-lock.json` moved; no declared dependency range
   changed. One moderate advisory remains, since clearing it would require moving
   `@sveltejs/kit` outside its stated range.
+
+- **Safe mode enforcement moved to the scheduler, closing three ways to start a
+  worker while it was on.** Previously `--safe-mode` was two `if` checks in
+  `internal/api/api.go` plus `schedulerManager.SetLimits(1, 1, 1, 1)` in
+  `internal/app/app.go` — a concurrency ceiling, not a kill switch, that did
+  not actually stop a run from being submitted. An audit found three real
+  gaps this left open: approving a pending correction decision
+  (`POST /api/v1/decisions/{id}/resolve`) started a worker with no safe-mode
+  check anywhere in the path; `POST /api/v1/projects/{id}/sync` started
+  `rojo serve` unconditionally, even though the flag's own description
+  promises Rojo is disabled; and `POST /api/v1/projects/{id}/open-studio`
+  launched Roblox Studio and the Studio MCP provisioner unconditionally.
+  `scheduler.Manager.Submit` — the one function that creates and admits a
+  run — now refuses first with `scheduler.ErrSafeMode` when
+  `SetSafeMode(true)` is on, closing all three by construction rather than by
+  patching each one; `internal/rojo.Manager` carries the same flag
+  independently for `Start`/`Build`/`InstallPlugin`, since Rojo does not run
+  through the scheduler. The existing fast handler-level checks stay, for the
+  same 409 before the rest of a request's work runs, but now map
+  `scheduler.ErrSafeMode` to the same `safe_mode` error code the deeper check
+  uses. `pause` and `cancel` remain available in safe mode, since they only
+  stop work already running. See
+  [ADR 0008](docs/adr/0008-safe-mode-enforcement.md).
+- **A tool-path setting invalid at startup now falls back to automatic
+  search instead of becoming an executable path unchecked.** `claude_path`,
+  `rojo_path`, `git_path`, and `studio_mcp_path` were validated with
+  `toolpath.Validate` on the `POST /api/v1/settings` write path, but read
+  back unvalidated at daemon startup (`internal/app.Run`) — a value written
+  by an older release, before that check existed, would become an executable
+  path the moment a newer release started up and read it back. Startup now
+  runs the same `toolpath.Validate` over each stored value
+  (`internal/app.validatedToolSetting`); an invalid one is logged with
+  `slog.Warn` and treated as unset (automatic PATH search) rather than
+  failing the daemon to start over one stale settings row.
+
+### Documentation
+
+- **Two ADRs record the design behind this cycle's two security-facing
+  features.** [ADR 0006](docs/adr/0006-network-egress-policy.md) covers the
+  per-agent network egress policy above: why `registry-only` cannot be
+  expressed directly in SBPL, why a local CONNECT proxy rather than the
+  rejected alternatives (resolving registries to IPs, Windows
+  `JOBOBJECT_NET_RATE_CONTROL`, a driver-based firewall, a TLS-terminating
+  proxy), and the honest limits of Windows's snapshot-based observability.
+  [ADR 0007](docs/adr/0007-review-before-apply-gate.md) covers the
+  review-before-apply gate: why it is apply-then-revert rather than a
+  pre-action gate, why the project lease moves by `Handle.Transfer` rather
+  than release-and-reacquire, why expiry only releases the lease and never
+  auto-applies or auto-reverts, and the three rejected staging designs (a
+  separate `git worktree`, in-memory patch accumulation, a copy-on-write
+  overlay). Both ADRs are bilingual, matching the existing ADR format.
+- **`docs/ARCHITECTURE.md` no longer describes a `PathGuard.Resolve` method
+  that was removed from the code.** It described `projects.PathGuard` as
+  rejecting any relative path resolving outside a project's canonical
+  root; that per-request check was removed, and `internal/projects` now
+  only canonicalizes a project's root once, at registration. The
+  description now says so, and points at where per-request containment
+  actually lives: `agenttools.Workspace` for every agent file tool, and
+  `attachments.Resolve` for the one attachment-download endpoint — the same
+  split already documented in `docs/SECURITY.md` and
+  `docs/KNOWN_LIMITATIONS.md`.
+- **`docs/KNOWN_LIMITATIONS.md` updated two limitations the review gate and
+  the network policy made incomplete, in both locales.** The operator
+  `decisions` bullet now distinguishes that mechanism (still scoped to
+  exactly one producer, still not a general pre-action gate) from the new
+  `reviewBeforeApply` gate, which does pause a run around a file edit but
+  remains apply-then-revert rather than pre-action. The `run_command`
+  confinement bullet now covers `networkPolicy`: real enforcement on macOS,
+  fail-closed refusal on Windows and Linux that `STUDIOFORGE_ALLOW_UNCONFINED=1`
+  does not lift, and the honest limits of Windows's snapshot-based network
+  observability.
 
 ## [0.5.0-rc.3] - 2026-07-25
 

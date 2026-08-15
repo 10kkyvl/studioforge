@@ -6,14 +6,20 @@
   import { isLegacyProvider, modelsFor } from '$lib/models';
   import { getOpenRouterModels } from '$lib/openrouter';
   import OpenRouterModelPicker from '$lib/components/OpenRouterModelPicker.svelte';
-  import type { Agent, OpenRouterModelsResponse, Project } from '$lib/types';
+  import type { Agent, Diagnostics, OpenRouterModelsResponse, Project } from '$lib/types';
 
   export let agents: Agent[];
   export let project: Project | undefined;
   export let busy: string;
+  export let diagnostics: Diagnostics | undefined = undefined;
   export let onCreate: (agent: Partial<Agent>) => void;
   export let onUpdate: (agent: Agent) => void;
   export let onRun: (agent: Agent) => void;
+
+  function networkPolicyIsStrict(policy: string | undefined): boolean {
+    return !!policy && policy !== 'unrestricted';
+  }
+  $: networkPolicyUnenforced = diagnostics ? diagnostics.os !== 'darwin' : true;
 
   // What a profile actually grants differs by provider and, on Claude, by what
   // its permission mode honours — so the picker says it at the point of
@@ -58,10 +64,12 @@
     allowUnverifiedModel: false,
     effort: 'medium',
     permission: 'workspace-write',
+    networkPolicy: 'unrestricted',
     concurrency: 1,
     budget: 10,
     validateAfterRun: false,
     maxCorrectionRuns: 1,
+    reviewBeforeApply: false,
   };
   let draft: Partial<Agent> = { ...blankDraft };
 
@@ -85,6 +93,11 @@
     { value: 'read-only', label: $translate('perm.readOnly') },
     { value: 'workspace-write', label: $translate('perm.workspaceWrite') },
     { value: 'danger-full-access', label: $translate('perm.dangerFull') },
+  ];
+  $: networkPolicyOptions = [
+    { value: 'unrestricted', label: $translate('netpolicy.unrestricted') },
+    { value: 'registry-only', label: $translate('netpolicy.registryOnly') },
+    { value: 'none', label: $translate('netpolicy.none') },
   ];
 </script>
 
@@ -156,6 +169,17 @@
       {$translate(permissionHint(draft.permission))}
     </p>
     <label
+      >{$translate('team.networkPolicy')}<Select
+        bind:value={draft.networkPolicy}
+        label={$translate('team.networkPolicy')}
+        options={networkPolicyOptions}
+      /></label
+    >
+    <p class="path-hint">{$translate('team.networkPolicyHint')}</p>
+    {#if networkPolicyIsStrict(draft.networkPolicy) && networkPolicyUnenforced}
+      <p class="path-hint danger-hint">{$translate('team.networkPolicyStrictWarning')}</p>
+    {/if}
+    <label
       >{$translate('common.budget')}<input
         type="number"
         min="0"
@@ -181,6 +205,12 @@
         >
       {/if}
     {/if}
+    <label class="checkbox"
+      ><input type="checkbox" bind:checked={draft.reviewBeforeApply} /><span
+        >{$translate('team.reviewBeforeApply')}</span
+      ></label
+    >
+    <p class="path-hint">{$translate('team.reviewBeforeApplyHint')}</p>
     <button class="primary" type="submit" disabled={busy === 'agent-create'}
       ><Plus size={16} />{$translate('team.create')}</button
     >
@@ -253,6 +283,17 @@
           {$translate(permissionHint(agent.permission))}
         </p>
         <label
+          >{$translate('team.networkPolicy')}<Select
+            bind:value={agent.networkPolicy}
+            label={$translate('team.networkPolicy')}
+            options={networkPolicyOptions}
+          /></label
+        >
+        <p class="path-hint">{$translate('team.networkPolicyHint')}</p>
+        {#if networkPolicyIsStrict(agent.networkPolicy) && networkPolicyUnenforced}
+          <p class="path-hint danger-hint">{$translate('team.networkPolicyStrictWarning')}</p>
+        {/if}
+        <label
           >{$translate('common.budget')}<input
             type="number"
             min="0"
@@ -283,6 +324,12 @@
             >
           {/if}
         {/if}
+        <label class="checkbox"
+          ><input type="checkbox" bind:checked={agent.reviewBeforeApply} /><span
+            >{$translate('team.reviewBeforeApply')}</span
+          ></label
+        >
+        <p class="path-hint">{$translate('team.reviewBeforeApplyHint')}</p>
         <footer>
           <button type="submit" disabled={busy === `agent-${agent.id}`}
             ><Save size={15} />{$translate('common.save')}</button

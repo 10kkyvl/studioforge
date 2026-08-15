@@ -8,7 +8,7 @@ var transitions = map[string]map[string]bool{
 	"starting":          {"running": true, "failed": true, "cancelling": true, "interrupted": true},
 	"running":           {"paused": true, "waiting_decision": true, "cancelling": true, "completed": true, "failed": true, "interrupted": true},
 	"paused":            {"running": true, "cancelling": true, "failed": true, "interrupted": true},
-	"waiting_decision":  {"running": true, "cancelling": true, "failed": true, "interrupted": true},
+	"waiting_decision":  {"running": true, "cancelling": true, "failed": true, "interrupted": true, "completed": true},
 	"cancelling":        {"cancelled": true, "failed": true, "interrupted": true},
 	"interrupted":       {"queued": true, "cancelled": true},
 	"failed":            {"queued": true},

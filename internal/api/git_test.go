@@ -355,6 +355,19 @@ func TestGitTagRequiresName(t *testing.T) {
 	}
 }
 
+func TestGitTagRejectsOptionShapedNames(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	a.server.git = &realGit{client: gitops.New()}
+	rec := postJSON(t, a, cookie, "/api/v1/projects/demo-obby/git/tag", map[string]any{"name": "-d"})
+	if rec.Code != 400 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invalid_name") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
 func TestGitTagCreatesAnnotatedTag(t *testing.T) {
 	a := newTestAPI(t)
 	cookie := bootstrapCookie(t, a)

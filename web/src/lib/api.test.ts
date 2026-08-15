@@ -7,11 +7,16 @@ import {
   getPace,
   getStudioStatus,
   request,
+  resolveReview,
+  reviewActionErrorMessage,
   setLead,
   startSync,
   stopSync,
   uploadAttachment,
 } from './api';
+import { en, type TranslationKey } from './i18n';
+
+const t = (key: TranslationKey) => en[key];
 
 afterEach(() => vi.unstubAllGlobals());
 describe('API client', () => {
@@ -215,6 +220,88 @@ describe('attachment endpoints', () => {
     expect(attachmentUrl('proj-1', '.studioforge/attachments/2026-07-19-abc123.png')).toBe(
       '/api/v1/projects/proj-1/attachments/2026-07-19-abc123.png',
     );
+  });
+});
+
+describe('resolveReview', () => {
+  it('sends the files/hunks to KEEP, not to revert', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: 'partial',
+          safetyCommit: 'abc',
+          revertedFiles: 1,
+          revertedHunks: 2,
+        }),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(
+      resolveReview('run-1', 'apply-selected', {
+        files: ['a.lua'],
+        hunks: [{ path: 'b.lua', index: 0 }],
+      }),
+    ).resolves.toEqual({
+      status: 'partial',
+      safetyCommit: 'abc',
+      revertedFiles: 1,
+      revertedHunks: 2,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/runs/run-1/review',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'apply-selected',
+          files: ['a.lua'],
+          hunks: [{ path: 'b.lua', index: 0 }],
+        }),
+      }),
+    );
+  });
+  it('defaults to an empty selection for apply and reject', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: 'applied',
+          safetyCommit: '',
+          revertedFiles: 0,
+          revertedHunks: 0,
+        }),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    await resolveReview('run-1', 'apply');
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/runs/run-1/review',
+      expect.objectContaining({
+        body: JSON.stringify({ action: 'apply', files: [], hunks: [] }),
+      }),
+    );
+  });
+});
+
+describe('reviewActionErrorMessage', () => {
+  it('maps every review-specific error code to a distinct, non-empty message', () => {
+    const codes = [
+      'invalid_review_action',
+      'invalid_selection',
+      'review_not_pending',
+      'review_expired',
+      'project_busy',
+      'dirty_worktree',
+      'later_change_conflict',
+      'patch_check_failed',
+      'not_git_repo',
+    ];
+    const messages = codes.map((code) => reviewActionErrorMessage(new APIError('x', code), t));
+    for (const message of messages) expect(message.trim()).not.toBe('');
+    expect(new Set(messages).size).toBe(codes.length);
+  });
+  it('falls back to the generic error mapping for anything else', () => {
+    expect(reviewActionErrorMessage(new APIError('x', 'network'), t)).toBe(t('error.network'));
   });
 });
 

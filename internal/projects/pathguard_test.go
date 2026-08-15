@@ -1,42 +1,55 @@
 package projects
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-func TestPathGuardRejectsTraversalAndAbsolutePaths(t *testing.T) {
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "ok.txt"), []byte("ok"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	g := NewPathGuard()
-	if _, err := g.Register("p", root); err != nil {
-		t.Fatal(err)
-	}
-	path, err := g.Resolve("p", "ok.txt")
-	if err != nil || filepath.Base(path) != "ok.txt" {
-		t.Fatalf("path=%s err=%v", path, err)
-	}
-	for _, bad := range []string{"../outside.txt", filepath.Join(filepath.VolumeName(root)+string(filepath.Separator), "outside.txt")} {
-		if _, err := g.Resolve("p", bad); !errors.Is(err, ErrOutsideProject) {
-			t.Errorf("%q error=%v", bad, err)
-		}
-	}
-}
-func TestPathGuardRejectsSymlinkEscape(t *testing.T) {
-	root := t.TempDir()
-	outside := t.TempDir()
-	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
+func TestCanonicalResolvesAParentSymlinkForANonExistentLeaf(t *testing.T) {
+	real := t.TempDir()
+	linkParent := t.TempDir()
+	link := filepath.Join(linkParent, "link")
+	if err := os.Symlink(real, link); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	g := NewPathGuard()
-	if _, err := g.Register("p", root); err != nil {
+	got, err := Canonical(filepath.Join(link, "missing-leaf.txt"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.Resolve("p", filepath.Join("escape", "value.txt")); !errors.Is(err, ErrOutsideProject) {
-		t.Fatalf("error=%v", err)
+	want, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = filepath.Join(want, "missing-leaf.txt")
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestPathGuardRegisterCanonicalizesTheRoot(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "nested")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	uncleaned := filepath.Join(nested, "..") + string(filepath.Separator)
+
+	g := NewPathGuard()
+	got, err := g.Register("p", uncleaned)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want, err := Canonical(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if strings.Contains(got, "..") {
+		t.Fatalf("Register did not canonicalize the path: %q", got)
 	}
 }

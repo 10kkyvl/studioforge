@@ -12,6 +12,7 @@ import (
 
 	"github.com/10kkyvl/studioforge/internal/attachments"
 	"github.com/10kkyvl/studioforge/internal/gitops"
+	"github.com/10kkyvl/studioforge/internal/processes"
 	"github.com/10kkyvl/studioforge/internal/prompts"
 	"github.com/10kkyvl/studioforge/internal/providers"
 	"github.com/10kkyvl/studioforge/internal/providers/openrouter/agenttools"
@@ -354,11 +355,12 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, priorM
 	// at; the agent may capture as often as it likes.
 	var shots attachments.Publisher
 	toolset, err := agenttools.NewToolSet(resolveProfile(req.PermissionProfile), agenttools.Options{
-		Workspace:  ws,
-		Git:        gitops.New(),
-		Supervisor: p.sup,
-		ProjectID:  req.ProjectID,
-		RunID:      req.RunID,
+		Workspace:     ws,
+		Git:           gitops.New(),
+		Supervisor:    p.sup,
+		ProjectID:     req.ProjectID,
+		RunID:         req.RunID,
+		NetworkPolicy: processes.NetworkPolicy(req.NetworkPolicy).Normalized(),
 		// The question travels as an ordinary message carrying the fence
 		// StudioForge writes from the validated arguments — the model never
 		// formats it, but everything that already handles a question (the
@@ -373,6 +375,12 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, priorM
 			})
 			askedQuestion.Store(true)
 			return nil
+		},
+		OnNetworkEvent: func(netCtx context.Context, netEvt agenttools.NetworkEvent) {
+			emit(netCtx, h, sessionID, providers.Event{
+				Type: "network", RawType: rawType("network"),
+				Payload: netEvt,
+			})
 		},
 	})
 	if err != nil {

@@ -11,7 +11,6 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -192,6 +191,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/runs/{id}/{action}", s.runAction)
 	mux.HandleFunc("GET /api/v1/runs/{id}/diff", s.runDiff)
 	mux.HandleFunc("POST /api/v1/runs/{id}/rollback", s.rollbackRun)
+	mux.HandleFunc("POST /api/v1/runs/{id}/review", s.reviewRun)
 	mux.HandleFunc("GET /api/v1/projects/{id}/checkpoints", s.projectCheckpoints)
 	mux.HandleFunc("GET /api/v1/projects/{id}/diff", s.projectDiff)
 	mux.HandleFunc("GET /api/v1/projects/{id}/git/status", s.gitStatus)
@@ -326,6 +326,7 @@ func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 		"default_provider": "claude", "default_model": "default", "default_effort": "medium",
 		"claude_path": "", "rojo_path": "", "git_path": "", "studio_mcp_path": "", "studio_auto_open": "true", "concurrency": "6", "playtest_window_seconds": "30", "playtest_poll_seconds": "3",
 		"stuck_detection_enabled": "true", "stuck_idle_seconds": "600", "stuck_repetition_cap": "6",
+		"review_gate_expiry_hours":   "24",
 		"openrouter_data_collection": "", "openrouter_zdr": "", "openrouter_allow_fallbacks": "",
 	}
 	for key, fallback := range defaults {
@@ -398,6 +399,7 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		"claude_path": true, "rojo_path": true, "git_path": true, "studio_mcp_path": true, "studio_auto_open": true,
 		"playtest_window_seconds": true, "playtest_poll_seconds": true,
 		"stuck_detection_enabled": true, "stuck_idle_seconds": true, "stuck_repetition_cap": true,
+		"review_gate_expiry_hours":   true,
 		"openrouter_data_collection": true, "openrouter_zdr": true, "openrouter_allow_fallbacks": true,
 		"event_retention_days": true,
 	}
@@ -457,6 +459,13 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		if key == "review_gate_expiry_hours" {
+			hours, err := strconv.Atoi(value)
+			if err != nil || hours < 1 || hours > 168 {
+				writeError(w, r, 400, "invalid_review_gate_expiry_hours", "Review gate expiry hours must be between 1 and 168", nil)
+				return
+			}
+		}
 		if key == "openrouter_data_collection" && value != "" && value != "allow" && value != "deny" {
 			writeError(w, r, 400, "invalid_data_collection", "OpenRouter data collection must be allow or deny", nil)
 			return
@@ -475,6 +484,14 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 				writeError(w, r, 400, "invalid_event_retention_days", "Event retention days must be a non-negative integer", nil)
 				return
 			}
+		}
+		if toolpath.IsTool(key) {
+			normalized, err := toolpath.Validate(key, value)
+			if err != nil {
+				writeError(w, r, 400, "invalid_tool_path", err.Error(), nil)
+				return
+			}
+			body[key] = normalized
 		}
 	}
 	defaultProvider := body["default_provider"]
@@ -548,14 +565,20 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, 400, "validation", "Name and path are required", nil)
 		return
 	}
-	if body.Create {
-		if err := os.MkdirAll(body.Path, 0o700); err != nil {
-			writeError(w, r, 400, "path_error", "Unable to create project directory", err)
-			return
+	preparedRoot, err := projects.PrepareRoot(body.Path, s.dataDir, body.Create)
+	if err != nil {
+		switch {
+		case errors.Is(err, projects.ErrProjectParentMissing):
+			writeError(w, r, 400, "project_parent_missing", "The parent folder of that path does not exist. Create the parent folder first, then try again.", err)
+		case errors.Is(err, projects.ErrUnsafeProjectRoot):
+			writeError(w, r, 400, "project_path_unsafe", "That location is not allowed for a project. Choose a different folder.", err)
+		default:
+			writeError(w, r, 400, "path_error", err.Error(), nil)
 		}
+		return
 	}
 	id := database.NewID()
-	root, err := s.guard.Register(id, body.Path)
+	root, err := s.guard.Register(id, preparedRoot)
 	if err != nil {
 		writeError(w, r, 400, "path_error", err.Error(), nil)
 		return
@@ -620,6 +643,7 @@ func normalizeAgent(agent *models.Agent) error {
 	agent.ModelAlias = strings.TrimSpace(agent.ModelAlias)
 	agent.Effort = strings.ToLower(strings.TrimSpace(agent.Effort))
 	agent.Permission = strings.ToLower(strings.TrimSpace(agent.Permission))
+	agent.NetworkPolicy = strings.ToLower(strings.TrimSpace(agent.NetworkPolicy))
 	if agent.Name == "" {
 		return errors.New("agent name is required")
 	}
@@ -643,6 +667,12 @@ func normalizeAgent(agent *models.Agent) error {
 	}
 	if agent.Permission != "read-only" && agent.Permission != "workspace-write" && agent.Permission != "danger-full-access" {
 		return errors.New("permission must be read-only, workspace-write, or danger-full-access")
+	}
+	if agent.NetworkPolicy == "" {
+		agent.NetworkPolicy = "unrestricted"
+	}
+	if agent.NetworkPolicy != "unrestricted" && agent.NetworkPolicy != "registry-only" && agent.NetworkPolicy != "none" {
+		return errors.New("networkPolicy must be unrestricted, registry-only, or none")
 	}
 	if agent.Concurrency < 1 || agent.Concurrency > 16 {
 		return errors.New("agent concurrency must be between 1 and 16")
@@ -949,6 +979,10 @@ func (s *Server) studioOpenGate(ctx context.Context, projectID string) (studioOp
 // own auto-open still shares the underlying Opener's in-flight guard, which
 // is what stops the two racing even when the check itself could not run.
 func (s *Server) openStudio(w http.ResponseWriter, r *http.Request) {
+	if s.safeMode {
+		writeError(w, r, 409, "safe_mode", "Opening Studio is disabled in safe mode", nil)
+		return
+	}
 	if s.studio == nil {
 		writeError(w, r, 501, "not_supported", "Opening Studio is not available on this platform", nil)
 		return
@@ -1060,10 +1094,10 @@ const checkpointLabel = "StudioForge checkpoint before agent run"
 // checkpointWritingProvider reports whether a provider's runs can change files
 // in the project directory and therefore need a rollback point taken first.
 // Claude Code edits files through its own tools; OpenRouter and NVIDIA runs do
-// it through agenttools' create_file/replace_exact_text/apply_patch/run_command.
-// Only mock, which never touches the filesystem, is left out.
+// it through agenttools' create_file/replace_exact_text/apply_patch/run_command;
+// mock writes its own deterministic edit file (internal/providers/mock).
 func checkpointWritingProvider(provider string) bool {
-	return provider == "claude" || provider == "openrouter" || provider == "nvidia"
+	return provider == "claude" || provider == "openrouter" || provider == "nvidia" || provider == "mock"
 }
 
 // checkpointBeforeRun snapshots the project so the operator can revert an
@@ -1307,8 +1341,12 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	}
 	key := r.Header.Get("Idempotency-Key")
 	stuckDetectionEnabled := stuckSettings.Enabled && !agent.StuckDetectionDisabled && !stuckContinueSuppresses(prevStuckEscalated, rawPrompt)
-	run, created, err := s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: project.ID, AgentID: agent.ID, TaskID: taskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, WorkingDirectory: project.Path, Prompt: body.Prompt, SystemPrompt: systemPrompt, Mode: body.Mode, ThreadID: thread.ID, ResumeThread: true, Scenario: body.Scenario, MaxBudget: maxBudget, AllowUnverifiedModel: agent.AllowUnverifiedModel, Resources: []string{"project:" + project.ID + ":write"}, IdempotencyKey: key, Subagents: subagents, ValidateAfterRun: agent.ValidateAfterRun, MaxCorrectionRuns: agent.MaxCorrectionRuns, StuckDetectionEnabled: stuckDetectionEnabled, StuckIdleSeconds: stuckSettings.IdleSeconds, StuckRepetitionCap: stuckSettings.RepetitionCap, Attachments: body.Attachments})
+	run, created, err := s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: project.ID, AgentID: agent.ID, TaskID: taskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, NetworkPolicy: agent.NetworkPolicy, WorkingDirectory: project.Path, Prompt: body.Prompt, SystemPrompt: systemPrompt, Mode: body.Mode, ThreadID: thread.ID, ResumeThread: true, Scenario: body.Scenario, MaxBudget: maxBudget, AllowUnverifiedModel: agent.AllowUnverifiedModel, Resources: []string{"project:" + project.ID + ":write"}, IdempotencyKey: key, Subagents: subagents, ValidateAfterRun: agent.ValidateAfterRun, MaxCorrectionRuns: agent.MaxCorrectionRuns, StuckDetectionEnabled: stuckDetectionEnabled, StuckIdleSeconds: stuckSettings.IdleSeconds, StuckRepetitionCap: stuckSettings.RepetitionCap, Attachments: body.Attachments, ReviewBeforeApply: agent.ReviewBeforeApply, BaseCheckpoint: checkpointHash})
 	if err != nil {
+		if errors.Is(err, scheduler.ErrSafeMode) {
+			writeError(w, r, 409, "safe_mode", "AI workers are disabled in safe mode", nil)
+			return
+		}
 		writeError(w, r, 400, "run_error", err.Error(), nil)
 		return
 	}
@@ -1463,7 +1501,7 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 		restarted, created, submitErr := s.scheduler.Submit(r.Context(), scheduler.Job{
 			ProjectID: run.ProjectID, AgentID: run.AgentID, TaskID: run.TaskID,
 			Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort,
-			PermissionProfile: agent.Permission, WorkingDirectory: project.Path,
+			PermissionProfile: agent.Permission, NetworkPolicy: agent.NetworkPolicy, WorkingDirectory: project.Path,
 			Prompt: "Restart the interrupted task. Inspect the previous failure and complete the task with verification.",
 			SystemPrompt: prompts.ForRun(prompts.Spec{
 				Persona:        agent.SystemPrompt,
@@ -1477,6 +1515,7 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 			ValidateAfterRun: agent.ValidateAfterRun, MaxCorrectionRuns: agent.MaxCorrectionRuns,
 			StuckDetectionEnabled: stuckSettings.Enabled && !agent.StuckDetectionDisabled,
 			StuckIdleSeconds:      stuckSettings.IdleSeconds, StuckRepetitionCap: stuckSettings.RepetitionCap,
+			ReviewBeforeApply: agent.ReviewBeforeApply, BaseCheckpoint: checkpointHash,
 		})
 		err = submitErr
 		if err == nil && created {
@@ -1487,6 +1526,10 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		if errors.Is(err, scheduler.ErrSafeMode) {
+			writeError(w, r, 409, "safe_mode", "AI workers are disabled in safe mode", nil)
+			return
+		}
 		writeError(w, r, 409, "run_action_failed", err.Error(), nil)
 		return
 	}
@@ -1551,12 +1594,13 @@ func (s *Server) resumeRun(ctx context.Context, runID string) error {
 	newRun, created, err := s.scheduler.Submit(ctx, scheduler.Job{
 		ProjectID: project.ID, AgentID: agent.ID, TaskID: run.TaskID,
 		Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort,
-		PermissionProfile: agent.Permission, WorkingDirectory: project.Path,
+		PermissionProfile: agent.Permission, NetworkPolicy: agent.NetworkPolicy, WorkingDirectory: project.Path,
 		Prompt:       "Continue the task you were working on before it was paused. Pick up where you left off and finish it, then report back.",
 		SystemPrompt: systemPrompt, ThreadID: run.ThreadID, ResumeSessionID: run.ProviderSession,
 		MaxBudget: agent.Budget, AllowUnverifiedModel: agent.AllowUnverifiedModel, Resources: []string{"project:" + project.ID + ":write"},
 		Subagents: subagents, ValidateAfterRun: agent.ValidateAfterRun, MaxCorrectionRuns: agent.MaxCorrectionRuns,
 		StuckDetectionEnabled: stuckSettings.Enabled && !agent.StuckDetectionDisabled, StuckIdleSeconds: stuckSettings.IdleSeconds, StuckRepetitionCap: stuckSettings.RepetitionCap,
+		ReviewBeforeApply: agent.ReviewBeforeApply, BaseCheckpoint: checkpointHash,
 	})
 	if err != nil {
 		return err
@@ -1643,6 +1687,10 @@ func (s *Server) resolveDecision(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if _, _, err := s.scheduler.Submit(r.Context(), job); err != nil {
+			if errors.Is(err, scheduler.ErrSafeMode) {
+				writeError(w, r, 409, "safe_mode", "AI workers are disabled in safe mode", nil)
+				return
+			}
 			writeError(w, r, 409, "run_error", err.Error(), nil)
 			return
 		}

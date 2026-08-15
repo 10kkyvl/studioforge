@@ -70,7 +70,13 @@ paths:
   /settings:
     post:
       summary: Update locale, agent defaults, concurrency, and executable path overrides
-      responses: {"200": {description: Settings applied}}
+      description: >-
+        claude_path, rojo_path, git_path, and studio_mcp_path are validated as
+        executable paths before anything is persisted; a rejected value fails
+        the whole request (no partial writes).
+      responses:
+        "200": {description: Settings applied}
+        "400": {description: "A value failed validation, including invalid_tool_path for the four executable-path settings"}
   /detect-paths:
     get:
       summary: Report where Claude, Rojo, Git, and the Studio MCP launcher appear to be installed
@@ -126,15 +132,19 @@ paths:
       responses:
         "201": {description: Run queued}
         "400": {description: "Empty prompt, unknown task, or task from another project"}
+        "409": {description: "AI workers are disabled in safe mode (safe_mode)"}
   /runs/{id}/{action}:
     post:
       summary: >-
         Pause, resume, cancel, or restart a run; resume submits a new run
-        that continues the target run's saved provider session
+        that continues the target run's saved provider session. pause and
+        cancel remain available in safe mode; resume and restart do not
       parameters:
         - {name: id, in: path, required: true, schema: {type: string}}
         - {name: action, in: path, required: true, schema: {type: string, enum: [pause, resume, cancel, restart]}}
-      responses: {"200": {description: Action accepted}}
+      responses:
+        "200": {description: Action accepted}
+        "409": {description: "resume/restart: AI workers are disabled in safe mode (safe_mode)"}
   /runs/{id}/diff:
     get:
       summary: >-
@@ -186,6 +196,52 @@ paths:
             (dirty_worktree); a later checkpoint already changed a selected
             path (later_change_conflict); the selected hunks no longer apply
             cleanly (patch_check_failed); or the rollback itself failed
+            (rollback_failed)
+  /runs/{id}/review:
+    post:
+      summary: >-
+        Resolve a run's pending review gate. apply keeps every change and
+        completes the run; reject reverts every file in the run's actual
+        diff (a proper in-place revert, not the non-destructive branch
+        SafeRollback creates); apply-selected keeps only the named files and
+        hunks and reverts the rest, resolved as status "partial". files/hunks
+        are only read for apply-selected, and name what to KEEP — the server
+        inverts that against the run's actual diff (parsed fresh from its
+        checkpoint) into what to revert, so a selection stale against the
+        real diff is refused rather than silently misapplied
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action: {type: string, enum: [apply, reject, apply-selected]}
+                files: {type: array, items: {type: string}, description: "apply-selected only: whole-file paths to keep"}
+                hunks:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      path: {type: string}
+                      index: {type: integer, description: 0-based hunk position within that file's diff}
+      responses:
+        "200": {description: "{status: applied|rejected|partial, safetyCommit, revertedFiles, revertedHunks}"}
+        "400": {description: "action is missing or unrecognized (invalid_review_action), or a selection does not match the run's actual diff (invalid_selection)"}
+        "404": {description: Run, project, or a review record for this run was not found (not_found)}
+        "409":
+          description: >-
+            The review was already resolved (review_not_pending) or has
+            expired (review_expired); the project's write lease is held by
+            someone other than this review (project_busy); git is
+            unavailable (git_unavailable) or not a repository
+            (not_git_repo); the worktree has unresolved merge conflicts
+            (dirty_worktree); a later checkpoint already changed a selected
+            path (later_change_conflict); the selected hunks no longer apply
+            cleanly (patch_check_failed); or the revert itself failed
             (rollback_failed)
   /projects/{id}/checkpoints:
     get:

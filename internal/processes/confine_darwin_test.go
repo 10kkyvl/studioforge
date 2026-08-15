@@ -100,6 +100,111 @@ func TestSandboxReapModeIsNotWrapped(t *testing.T) {
 	}
 }
 
+func TestSandboxNonePolicyBlocksOutboundConnections(t *testing.T) {
+	if _, err := os.Stat("/usr/bin/curl"); err != nil {
+		t.Skip("curl not present on this runner")
+	}
+	root := t.TempDir()
+	supervisor := NewSupervisor()
+	defer supervisor.Close(context.Background())
+
+	process, err := supervisor.Start(context.Background(), Spec{
+		ID:          "sandbox-network-none",
+		Kind:        "test",
+		Executable:  "/usr/bin/curl",
+		Args:        []string{"-sS", "--max-time", "5", "https://example.com"},
+		Environment: MinimalEnvironment(nil),
+		Confine:     ConfinementPolicy{Mode: ConfineAgent, WritableRoots: []string{root}, Network: NetworkNone},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output strings.Builder
+	for line := range process.Lines() {
+		output.WriteString(line.Text)
+	}
+	result := process.Wait()
+	if result.ExitCode == 0 {
+		t.Fatalf("exit code = 0, want non-zero for a network policy %q outbound curl; output=%q", NetworkNone, output.String())
+	}
+}
+
+func TestSandboxDangerProfileStillHonoursNetworkNone(t *testing.T) {
+	if _, err := os.Stat("/usr/bin/curl"); err != nil {
+		t.Skip("curl not present on this runner")
+	}
+	supervisor := NewSupervisor()
+	defer supervisor.Close(context.Background())
+
+	process, err := supervisor.Start(context.Background(), Spec{
+		ID:          "sandbox-danger-network-none",
+		Kind:        "test",
+		Executable:  "/usr/bin/curl",
+		Args:        []string{"-sS", "--max-time", "5", "https://example.com"},
+		Environment: MinimalEnvironment(nil),
+		Confine:     ConfinementPolicy{Mode: ConfineReap, Network: NetworkNone},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if process.confinement == nil {
+		t.Fatal("expected ConfineReap to still be wrapped in sandbox-exec when a strict network policy is set")
+	}
+	var output strings.Builder
+	for line := range process.Lines() {
+		output.WriteString(line.Text)
+	}
+	result := process.Wait()
+	if result.ExitCode == 0 {
+		t.Fatalf("exit code = 0, want non-zero for a danger-full-access process under network policy %q; output=%q", NetworkNone, output.String())
+	}
+}
+
+func TestSandboxUnrestrictedPolicyLeavesNetworkAlone(t *testing.T) {
+	if _, err := os.Stat("/usr/bin/curl"); err != nil {
+		t.Skip("curl not present on this runner")
+	}
+	supervisor := NewSupervisor()
+	defer supervisor.Close(context.Background())
+
+	baseline, err := supervisor.Start(context.Background(), Spec{
+		ID:          "sandbox-network-baseline",
+		Kind:        "test",
+		Executable:  "/usr/bin/curl",
+		Args:        []string{"-sS", "--max-time", "5", "https://example.com"},
+		Environment: MinimalEnvironment(nil),
+		Confine:     ConfinementPolicy{Mode: ConfineNone},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselineResult := baseline.Wait()
+	if baselineResult.ExitCode != 0 {
+		t.Skip("no outbound network access on this runner; cannot assert unrestricted is no worse than the baseline")
+	}
+
+	root := t.TempDir()
+	process, err := supervisor.Start(context.Background(), Spec{
+		ID:          "sandbox-network-unrestricted",
+		Kind:        "test",
+		Executable:  "/usr/bin/curl",
+		Args:        []string{"-sS", "--max-time", "5", "https://example.com"},
+		Environment: MinimalEnvironment(nil),
+		Confine:     ConfinementPolicy{Mode: ConfineAgent, WritableRoots: []string{root}, Network: NetworkUnrestricted},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output strings.Builder
+	for line := range process.Lines() {
+		output.WriteString(line.Text)
+	}
+	result := process.Wait()
+	if result.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0: an unrestricted network policy must be no worse than the unconfined baseline; output=%q", result.ExitCode, output.String())
+	}
+}
+
 func TestSandboxMissingWritableRootFailsClosed(t *testing.T) {
 	supervisor := NewSupervisor()
 	defer supervisor.Close(context.Background())

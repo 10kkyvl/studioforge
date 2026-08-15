@@ -64,12 +64,29 @@ operator learns whether confinement actually works on their machine before
 a run needs it, not from a mid-run failure.
 
 **Verification status.** The Windows implementation is exercised on every
-CI run (`go`, `race` jobs, `windows-latest`). The macOS implementation has,
-as of this ADR, only been type-checked and cross-compiled locally; the
-`macos` CI job (`go test ./internal/processes/...` on `macos-latest`) is
-what will exercise it against real hardware going forward — this ADR does
-not claim the macOS behavior has been observed working on real hardware
-beyond what that job reports.
+CI run (`go`, `race` jobs, `windows-latest`), and the `go` job additionally
+runs `go test -run TestConfined ./internal/processes/...`
+(`internal/processes/toolchain_confined_test.go`) with
+`STUDIOFORGE_ALLOW_UNCONFINED` explicitly cleared, so a real `npm install`,
+`go test`, and `go mod download` execute inside a Windows Job Object rather
+than only through the synthetic `TestHelperProcess` binary the rest of the
+suite uses — this has been run and confirmed passing on a real Windows
+machine, not just in CI. The macOS implementation gets the same test file
+run against it by the `macos` CI job (`go test
+./internal/processes/...` on `macos-latest`), which now also installs
+Node via `actions/setup-node@v4` so the `npm install` case has something
+to exercise; unlike the Windows case, nobody has run these toolchain tests
+on real macOS hardware from this repository as of this ADR — the `macos`
+CI job on the pull request that introduces this test file is the first
+real evidence of whether `sandbox-exec`'s allowed-write paths
+(`~/Library/Caches`, `~/.npm`, `~/go/pkg/mod`, …) are actually sufficient
+for `npm install` and `go test` to succeed, not an analysis performed here.
+Rojo is not installed on any CI runner (Windows or macOS), so
+`TestConfinedRojoBuildSucceeds` legitimately skips everywhere in CI today;
+`rojo build` under confinement is exercised only on a machine that happens
+to have Rojo on `PATH`, and has not been verified under `sandbox-exec` at
+all. Network egress under confinement remains untouched by design
+(issue #29) and this status says nothing about it.
 
 ## Alternatives considered
 
@@ -258,12 +275,29 @@ Code — это и есть сам агент со своей моделью р�
 ошибки посреди запуска.
 
 **Статус проверки.** Реализация для Windows выполняется на каждом прогоне
-CI (джобы `go`, `race`, `windows-latest`). Реализация для macOS на момент
-этого ADR проверена только type-check'ом и кросс-компиляцией локально;
-CI-джоб `macos` (`go test ./internal/processes/...` на `macos-latest`) —
-то, что будет исполнять её на реальном железе далее. Этот ADR не
-утверждает, что поведение на macOS уже наблюдалось работающим на реальном
-железе сверх того, что сообщает этот джоб.
+CI (джобы `go`, `race`, `windows-latest`), и джоб `go` дополнительно
+запускает `go test -run TestConfined ./internal/processes/...`
+(`internal/processes/toolchain_confined_test.go`) с явно очищенной
+`STUDIOFORGE_ALLOW_UNCONFINED`, так что настоящие `npm install`, `go test`
+и `go mod download` выполняются внутри реального Windows Job Object, а не
+только через синтетический бинарник `TestHelperProcess`, которым
+пользуется остальной набор тестов, — это прогонялось и подтверждено
+проходящим на реальной машине с Windows, а не только в CI. Тот же файл
+тестов запускается и в CI-джобе `macos` (`go test
+./internal/processes/...` на `macos-latest`), который теперь также
+устанавливает Node через `actions/setup-node@v4`, чтобы сценарию `npm
+install` было что проверять; в отличие от Windows, никто из этого
+репозитория ещё не запускал эти тесты тулчейна на реальном железе macOS —
+джоб `macos` в pull request, вводящем этот файл тестов, станет первым
+реальным подтверждением того, что разрешённых `sandbox-exec` путей на
+запись (`~/Library/Caches`, `~/.npm`, `~/go/pkg/mod`, …) действительно
+хватает для успешного `npm install` и `go test`, а не анализом,
+проведённым здесь. Rojo не установлен ни на одном CI-раннере (ни на
+Windows, ни на macOS), поэтому `TestConfinedRojoBuildSucceeds` законно
+скипается в CI повсеместно; `rojo build` под изоляцией проверяется только
+на машине, где Rojo случайно оказался в `PATH`, и под `sandbox-exec` вообще
+не проверялся. Сетевой доступ под изоляцией по-прежнему намеренно не
+тронут (issue #29), и этот статус ничего о нём не утверждает.
 
 ## Рассмотренные альтернативы
 

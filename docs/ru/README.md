@@ -26,7 +26,7 @@ This page includes the complete Russian guide below. For the full English guide,
 
 ## Первый запуск
 
-Wizard проверяет каталог данных, SQLite, Git, Claude Code/auth, Rojo, официальный Studio MCP launcher и ключ OpenRouter (состояние ключа и доступность каталога моделей). Для повторной проверки откройте Settings. `--safe-mode` отключает AI workers, MCP и Rojo, оставляя диагностику/backup/export. `--mock` создаёт три независимых demo workspace и работает через настоящее domain core/API.
+Wizard проверяет каталог данных, SQLite, Git, Claude Code/auth, Rojo, официальный Studio MCP launcher и ключ OpenRouter (состояние ключа и доступность каталога моделей). Для повторной проверки откройте Settings. `--safe-mode` отказывает в запуске любого run'а, sync Rojo и запуске Studio — все точки входа заканчиваются в одном enforcement (`scheduler.Manager.Submit` для запусков, отдельный флаг того же назначения для Rojo), оставляя диагностику/backup/export доступными; уже идущий с прошлого запуска run всё ещё можно поставить на паузу или отменить. `--mock` создаёт три независимых demo workspace и работает через настоящее domain core/API.
 
 ## NVIDIA NIM
 

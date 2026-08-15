@@ -7,7 +7,10 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,12 +21,25 @@ import (
 	"github.com/10kkyvl/studioforge/internal/diagnostics"
 	"github.com/10kkyvl/studioforge/internal/events"
 	"github.com/10kkyvl/studioforge/internal/models"
+	"github.com/10kkyvl/studioforge/internal/platform/toolpath"
 	"github.com/10kkyvl/studioforge/internal/projects"
 	"github.com/10kkyvl/studioforge/internal/providers"
 	"github.com/10kkyvl/studioforge/internal/providers/mock"
 	"github.com/10kkyvl/studioforge/internal/resources"
 	"github.com/10kkyvl/studioforge/internal/scheduler"
 )
+
+func fakeExecutable(t *testing.T, dir, name string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if runtime.GOOS == "windows" {
+		path += ".exe"
+	}
+	if err := os.WriteFile(path, []byte("stub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
 
 type testAPI struct {
 	server    *Server
@@ -220,6 +236,27 @@ func TestCreateRunWithoutTaskIsUnaffected(t *testing.T) {
 	recorder := postRun(t, a, cookie, "")
 	if recorder.Code != 201 {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestCreateProjectRefusesToCreateADirectoryOutsideAnExistingParent(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	target := filepath.Join(t.TempDir(), "missing-parent", "project")
+	payload, _ := json.Marshal(map[string]any{
+		"name": "Outside Parent", "path": target, "create": true,
+	})
+	request := httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/projects", bytes.NewReader(payload))
+	request.Header.Set("Origin", "http://127.0.0.1:1234")
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	a.handler.ServeHTTP(recorder, request)
+	if recorder.Code != 400 {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if _, err := os.Stat(target); err == nil {
+		t.Fatalf("directory %s was created despite the missing parent", target)
 	}
 }
 
@@ -506,6 +543,163 @@ func waitRunStatus(t *testing.T, store *database.Store, id, status string, timeo
 	t.Fatalf("run %s status=%s wanted=%s", id, last, status)
 }
 
+type reviewFlagOpenCall struct {
+	runID, projectID, checkpoint string
+}
+
+type reviewFlagRecordingGate struct {
+	mu    sync.Mutex
+	calls []reviewFlagOpenCall
+}
+
+func (g *reviewFlagRecordingGate) Open(_ context.Context, runID, projectID, checkpoint string, _ time.Time) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.calls = append(g.calls, reviewFlagOpenCall{runID, projectID, checkpoint})
+	return nil
+}
+func (g *reviewFlagRecordingGate) callCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.calls)
+}
+
+type editingProvider struct{}
+
+func (p *editingProvider) Diagnose(context.Context) providers.Diagnostics {
+	return providers.Diagnostics{Available: true, Authenticated: true}
+}
+func (p *editingProvider) Start(context.Context, providers.RunRequest) (providers.RunHandle, error) {
+	h := &editingHandle{events: make(chan providers.Event, 4), done: make(chan struct{})}
+	go h.run()
+	return h, nil
+}
+func (p *editingProvider) Resume(ctx context.Context, req providers.ResumeRequest) (providers.RunHandle, error) {
+	return p.Start(ctx, req.RunRequest)
+}
+func (p *editingProvider) Cancel(context.Context, string) error { return nil }
+
+type editingHandle struct {
+	events chan providers.Event
+	done   chan struct{}
+	result providers.Result
+}
+
+func (h *editingHandle) run() {
+	defer close(h.events)
+	defer close(h.done)
+	h.events <- providers.Event{Type: "message", RawType: "assistant", Payload: map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{"type": "tool_use", "id": "toolu_1", "name": "Edit", "input": map[string]any{"file_path": "script.lua"}},
+			},
+		},
+	}, At: time.Now().UTC()}
+	h.result = providers.Result{SessionID: "edit-session", ExitCode: 0}
+}
+func (h *editingHandle) Events() <-chan providers.Event { return h.events }
+func (h *editingHandle) Wait() providers.Result         { <-h.done; return h.result }
+func (h *editingHandle) Cancel() error                  { return nil }
+
+func TestRunJobCarriesTheReviewGateFlagAndBaseCheckpoint(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "review-flag.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store := database.NewStore(db)
+
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.invalid")
+	runGit(t, repo, "config", "user.name", "StudioForge Test")
+	if err := os.WriteFile(filepath.Join(repo, "script.lua"), []byte("print('v1')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "-A")
+	runGit(t, repo, "commit", "-m", "initial")
+	if err := os.WriteFile(filepath.Join(repo, "script.lua"), []byte("print('v2')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	project, err := store.CreateProject(ctx, models.Project{Name: "review-flag", Path: repo, Fingerprint: "review-flag"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := store.CreateAgent(ctx, models.Agent{ProjectID: project.ID, ReviewBeforeApply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hub := events.NewHub(store)
+	defer hub.Close()
+	leases := resources.NewManager(time.Second)
+	defer leases.Close()
+	sched := scheduler.New(ctx, store, hub, leases, map[string]providers.Provider{agent.Provider: &editingProvider{}})
+	gate := &reviewFlagRecordingGate{}
+	sched.SetReviewGate(gate)
+	sessions, err := NewSessionManager(time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := projects.NewPathGuard()
+	if _, err := guard.Register(project.ID, project.Path); err != nil {
+		t.Fatal(err)
+	}
+	server, err := New(Dependencies{Store: store, DB: db, Scheduler: sched, Hub: hub, Doctor: &diagnostics.Doctor{DB: db, DataDir: t.TempDir(), MockMode: true}, Sessions: sessions, Guard: guard, AllowedHost: "127.0.0.1:1234", DataDir: t.TempDir(), Leases: leases})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &testAPI{server: server, handler: server.Handler(), store: store, sessions: sessions, scheduler: sched, hub: hub, leases: leases, db: db, cancel: cancel}
+	cookie := bootstrapCookie(t, a)
+
+	body, _ := json.Marshal(map[string]any{"projectId": project.ID, "agentId": agent.ID, "maxBudget": 5, "prompt": "Build the first milestone"})
+	request := httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/runs", bytes.NewReader(body))
+	request.Header.Set("Origin", "http://127.0.0.1:1234")
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	a.handler.ServeHTTP(recorder, request)
+	if recorder.Code != 201 {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var run models.Run
+	if err := json.Unmarshal(recorder.Body.Bytes(), &run); err != nil {
+		t.Fatal(err)
+	}
+	waitRunStatus(t, store, run.ID, "waiting_decision", 3*time.Second)
+
+	if gate.callCount() != 1 {
+		t.Fatalf("Open call count=%d, want 1 (ReviewBeforeApply must have reached the Job)", gate.callCount())
+	}
+	call := gate.calls[0]
+	if call.runID != run.ID || call.projectID != project.ID {
+		t.Fatalf("Open call=%+v", call)
+	}
+	if call.checkpoint == "" {
+		t.Fatal("Open call checkpoint is empty, want the run's BaseCheckpoint to have reached the Job")
+	}
+	checkpoint, err := store.CheckpointForRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if call.checkpoint != checkpoint.CommitHash {
+		t.Fatalf("Open call checkpoint=%q, want the persisted checkpoint %q", call.checkpoint, checkpoint.CommitHash)
+	}
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+}
+
 func TestCancelReturns202AndRunIsImmediatelyRestartable(t *testing.T) {
 	a := newTestAPI(t)
 	cookie := bootstrapCookie(t, a)
@@ -595,10 +789,65 @@ func TestProjectCreationAddsDefaultAgentAndAgentCRUD(t *testing.T) {
 	}
 }
 
+func TestAgentNetworkPolicyValidation(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	projectPath := filepath.Join(t.TempDir(), "network-policy-project")
+	body, _ := json.Marshal(map[string]any{"name": "Network policy project", "path": projectPath, "create": true})
+	request := httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/projects", bytes.NewReader(body))
+	request.Header.Set("Origin", "http://127.0.0.1:1234")
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	a.handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var project models.Project
+	if err := json.Unmarshal(recorder.Body.Bytes(), &project); err != nil {
+		t.Fatal(err)
+	}
+
+	badBody := `{"name":"Bad Policy","role":"QA","provider":"mock","modelAlias":"fast","effort":"low","permission":"read-only","networkPolicy":"nonsense","concurrency":1,"budget":2}`
+	request = httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/projects/"+project.ID+"/agents", strings.NewReader(badBody))
+	request.Header.Set("Origin", "http://127.0.0.1:1234")
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(cookie)
+	recorder = httptest.NewRecorder()
+	a.handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s, want 400 for an unrecognized network policy", recorder.Code, recorder.Body.String())
+	}
+
+	defaultBody := `{"name":"Default Policy","role":"QA","provider":"mock","modelAlias":"fast","effort":"low","permission":"read-only","concurrency":1,"budget":2}`
+	request = httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/projects/"+project.ID+"/agents", strings.NewReader(defaultBody))
+	request.Header.Set("Origin", "http://127.0.0.1:1234")
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(cookie)
+	recorder = httptest.NewRecorder()
+	a.handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("create agent status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var agent models.Agent
+	if err := json.Unmarshal(recorder.Body.Bytes(), &agent); err != nil {
+		t.Fatal(err)
+	}
+	if agent.NetworkPolicy != "unrestricted" {
+		t.Fatalf("networkPolicy=%q, want the default of unrestricted when the field is omitted", agent.NetworkPolicy)
+	}
+}
+
 func TestRuntimeSettingsAreValidatedAndReturned(t *testing.T) {
 	a := newTestAPI(t)
 	cookie := bootstrapCookie(t, a)
-	request := httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/settings", strings.NewReader(`{"default_provider":"openrouter","claude_path":"C:\\tools\\claude.exe","concurrency":"8","playtest_poll_seconds":"5"}`))
+	claudePath := fakeExecutable(t, t.TempDir(), "claude")
+	normalized, err := toolpath.Validate("claude_path", claudePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]string{"default_provider": "openrouter", "claude_path": claudePath, "concurrency": "8", "playtest_poll_seconds": "5"})
+	request := httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/settings", bytes.NewReader(body))
 	request.Header.Set("Origin", "http://127.0.0.1:1234")
 	request.Header.Set("Content-Type", "application/json")
 	request.AddCookie(cookie)
@@ -616,8 +865,53 @@ func TestRuntimeSettingsAreValidatedAndReturned(t *testing.T) {
 		t.Fatal(err)
 	}
 	settings := snapshot["settings"].(map[string]any)
-	if settings["default_provider"] != "openrouter" || settings["claude_path"] != `C:\tools\claude.exe` || settings["concurrency"] != "8" || settings["playtest_poll_seconds"] != "5" {
-		t.Fatalf("settings=%+v", settings)
+	if settings["default_provider"] != "openrouter" || settings["claude_path"] != normalized || settings["concurrency"] != "8" || settings["playtest_poll_seconds"] != "5" {
+		t.Fatalf("settings=%+v want normalized claude_path=%q", settings, normalized)
+	}
+}
+
+func TestSettingsRejectInvalidToolPaths(t *testing.T) {
+	dir := t.TempDir()
+	realGit := fakeExecutable(t, dir, "git")
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"a directory", dir},
+		{"a missing file", filepath.Join(dir, "does-not-exist.exe")},
+		{"a path with arguments appended", realGit + " --upload-pack=evil"},
+		{"a value containing a newline", realGit + "\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newTestAPI(t)
+			cookie := bootstrapCookie(t, a)
+			body, _ := json.Marshal(map[string]string{"locale": "ru", "git_path": tc.value})
+			request := httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/settings", bytes.NewReader(body))
+			request.Header.Set("Origin", "http://127.0.0.1:1234")
+			request.Header.Set("Content-Type", "application/json")
+			request.AddCookie(cookie)
+			recorder := httptest.NewRecorder()
+			a.handler.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			var response struct {
+				Error struct{ Code string } `json:"error"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if response.Error.Code != "invalid_tool_path" {
+				t.Errorf("code=%q want invalid_tool_path", response.Error.Code)
+			}
+			if _, ok, _ := a.store.Setting(context.Background(), "git_path"); ok {
+				t.Error("git_path must not be persisted when the request is rejected")
+			}
+			if _, ok, _ := a.store.Setting(context.Background(), "locale"); ok {
+				t.Error("locale must not be persisted either: a rejected request must not partially apply")
+			}
+		})
 	}
 }
 
@@ -691,32 +985,54 @@ func TestInterruptedRunCanRestart(t *testing.T) {
 	}
 }
 
-func TestSafeModeBlocksActionsThatStartWorkers(t *testing.T) {
+func TestSafeModeBlocksEveryEndpointThatStartsAWorker(t *testing.T) {
 	a := newTestAPI(t)
 	cookie := bootstrapCookie(t, a)
-	a.server.safeMode = true
-	if _, err := a.db.SQL.Exec("UPDATE runs SET status='interrupted' WHERE id='demo-obby-history'"); err != nil {
+
+	correctionJob, err := json.Marshal(scheduler.Job{ProjectID: "demo-obby", AgentID: "demo-obby-orch", TaskID: "", Provider: "mock", Model: "balanced", WorkingDirectory: t.TempDir(), Prompt: "continue"})
+	if err != nil {
 		t.Fatal(err)
 	}
+	decision, err := a.store.CreateDecision(context.Background(), models.Decision{
+		ProjectID: "demo-obby", RunID: "demo-obby-history", Kind: "correction_run",
+		Summary: "Correction run proposed", Detail: "limit reached", Payload: string(correctionJob),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a.server.safeMode = true
+	a.scheduler.SetSafeMode(true)
 	before, err := a.store.ListRuns(context.Background(), "demo-obby", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Resume and restart put a worker back on the queue, so safe mode must refuse them.
-	// Pause and cancel only stop existing work and stay available.
-	for _, action := range []string{"resume", "restart"} {
-		request := httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/runs/demo-obby-history/"+action, strings.NewReader(`{}`))
-		request.Header.Set("Origin", "http://127.0.0.1:1234")
-		request.Header.Set("Content-Type", "application/json")
-		request.AddCookie(cookie)
-		recorder := httptest.NewRecorder()
-		a.handler.ServeHTTP(recorder, request)
-		if recorder.Code != 409 {
-			t.Fatalf("%s in safe mode: status=%d body=%s", action, recorder.Code, recorder.Body.String())
-		}
-		if !strings.Contains(recorder.Body.String(), "safe_mode") {
-			t.Fatalf("%s in safe mode did not report safe_mode: %s", action, recorder.Body.String())
-		}
+
+	cases := []struct {
+		name, method, path, body string
+	}{
+		{"create run", "POST", "/api/v1/runs", `{"projectId":"demo-obby","agentId":"demo-obby-orch","maxBudget":1,"prompt":"Build the first milestone"}`},
+		{"resume", "POST", "/api/v1/runs/demo-obby-history/resume", `{}`},
+		{"restart", "POST", "/api/v1/runs/demo-obby-history/restart", `{}`},
+		{"approve decision", "POST", "/api/v1/decisions/" + decision.ID + "/resolve", `{"approve":true}`},
+		{"start sync", "POST", "/api/v1/projects/demo-obby/sync", `{}`},
+		{"open studio", "POST", "/api/v1/projects/demo-obby/open-studio", `{}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			request := httptest.NewRequest(tc.method, "http://127.0.0.1:1234"+tc.path, strings.NewReader(tc.body))
+			request.Header.Set("Origin", "http://127.0.0.1:1234")
+			request.Header.Set("Content-Type", "application/json")
+			request.AddCookie(cookie)
+			recorder := httptest.NewRecorder()
+			a.handler.ServeHTTP(recorder, request)
+			if recorder.Code != 409 {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			if !strings.Contains(recorder.Body.String(), "safe_mode") {
+				t.Fatalf("did not report safe_mode: %s", recorder.Body.String())
+			}
+		})
 	}
 	after, err := a.store.ListRuns(context.Background(), "demo-obby", 100)
 	if err != nil {
@@ -725,6 +1041,43 @@ func TestSafeModeBlocksActionsThatStartWorkers(t *testing.T) {
 	if len(after) != len(before) {
 		t.Fatalf("safe mode still queued a run: before=%d after=%d", len(before), len(after))
 	}
+}
+
+func TestSafeModeStillAllowsPauseAndCancel(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	post := func(path, body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest("POST", "http://127.0.0.1:1234"+path, strings.NewReader(body))
+		request.Header.Set("Origin", "http://127.0.0.1:1234")
+		request.Header.Set("Content-Type", "application/json")
+		request.AddCookie(cookie)
+		recorder := httptest.NewRecorder()
+		a.handler.ServeHTTP(recorder, request)
+		return recorder
+	}
+	submitRecorder := post("/api/v1/runs", `{"projectId":"demo-obby","agentId":"demo-obby-orch","maxBudget":1,"prompt":"Build the first milestone"}`)
+	if submitRecorder.Code != 201 {
+		t.Fatalf("submit status=%d body=%s", submitRecorder.Code, submitRecorder.Body.String())
+	}
+	var run models.Run
+	if err := json.Unmarshal(submitRecorder.Body.Bytes(), &run); err != nil {
+		t.Fatal(err)
+	}
+	waitRunStatus(t, a.store, run.ID, "running", 5*time.Second)
+
+	a.server.safeMode = true
+
+	pauseRecorder := post("/api/v1/runs/"+run.ID+"/pause", `{}`)
+	if pauseRecorder.Code != 200 {
+		t.Fatalf("pause in safe mode: status=%d body=%s", pauseRecorder.Code, pauseRecorder.Body.String())
+	}
+	waitRunStatus(t, a.store, run.ID, "paused", 5*time.Second)
+
+	cancelRecorder := post("/api/v1/runs/"+run.ID+"/cancel", `{}`)
+	if cancelRecorder.Code != 202 {
+		t.Fatalf("cancel in safe mode: status=%d body=%s", cancelRecorder.Code, cancelRecorder.Body.String())
+	}
+	waitRunStatus(t, a.store, run.ID, "cancelled", 5*time.Second)
 }
 
 type cancelWriter struct {
@@ -936,5 +1289,71 @@ func TestStaticImmutableAssetUsesLongLivedCacheHeader(t *testing.T) {
 	}
 	if cacheControl := recorder.Header().Get("Cache-Control"); cacheControl != "public, max-age=31536000, immutable" {
 		t.Fatalf("cache-control=%s", cacheControl)
+	}
+}
+
+func TestAgentReviewBeforeApplyDefaultsToOff(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	projectPath := filepath.Join(t.TempDir(), "review-gate-project")
+	body, _ := json.Marshal(map[string]any{"name": "Review gate project", "path": projectPath, "create": true})
+	request := httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/projects", bytes.NewReader(body))
+	request.Header.Set("Origin", "http://127.0.0.1:1234")
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	a.handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var project models.Project
+	if err := json.Unmarshal(recorder.Body.Bytes(), &project); err != nil {
+		t.Fatal(err)
+	}
+
+	agentBody := `{"name":"No Gate","role":"QA","provider":"mock","modelAlias":"fast","effort":"low","permission":"read-only","concurrency":1,"budget":2}`
+	request = httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/projects/"+project.ID+"/agents", strings.NewReader(agentBody))
+	request.Header.Set("Origin", "http://127.0.0.1:1234")
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(cookie)
+	recorder = httptest.NewRecorder()
+	a.handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("create agent status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var agent models.Agent
+	if err := json.Unmarshal(recorder.Body.Bytes(), &agent); err != nil {
+		t.Fatal(err)
+	}
+	if agent.ReviewBeforeApply {
+		t.Fatalf("reviewBeforeApply=%v, want the default of off when the field is omitted", agent.ReviewBeforeApply)
+	}
+}
+
+func TestReviewGateExpiryHoursIsValidated(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  int
+	}{
+		{"zero hours is rejected", "0", http.StatusBadRequest},
+		{"200 hours is rejected", "200", http.StatusBadRequest},
+		{"24 hours is accepted", "24", http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newTestAPI(t)
+			cookie := bootstrapCookie(t, a)
+			body, _ := json.Marshal(map[string]string{"review_gate_expiry_hours": tc.value})
+			request := httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/settings", bytes.NewReader(body))
+			request.Header.Set("Origin", "http://127.0.0.1:1234")
+			request.Header.Set("Content-Type", "application/json")
+			request.AddCookie(cookie)
+			recorder := httptest.NewRecorder()
+			a.handler.ServeHTTP(recorder, request)
+			if recorder.Code != tc.want {
+				t.Fatalf("value=%s status=%d want=%d body=%s", tc.value, recorder.Code, tc.want, recorder.Body.String())
+			}
+		})
 	}
 }

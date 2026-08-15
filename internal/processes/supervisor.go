@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -354,4 +355,58 @@ func MinimalEnvironment(extra []string) []string {
 		}
 	}
 	return append(out, extra...)
+}
+func ScrubbedEnvironment(deny func(key string) bool, extra []string) []string {
+	out := []string{}
+	for _, entry := range os.Environ() {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok && deny(key) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return append(out, extra...)
+}
+
+var ProxyEnvKeys = []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"}
+
+func StripEnv(env []string, keys ...string) []string {
+	if len(keys) == 0 {
+		return append([]string(nil), env...)
+	}
+	deny := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		if runtime.GOOS == "windows" {
+			key = strings.ToUpper(key)
+		}
+		deny[key] = struct{}{}
+	}
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok {
+			lookup := key
+			if runtime.GOOS == "windows" {
+				lookup = strings.ToUpper(lookup)
+			}
+			if _, denied := deny[lookup]; denied {
+				continue
+			}
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func ProxyEnvironment(addr string) []string {
+	return []string{
+		"HTTP_PROXY=" + addr,
+		"HTTPS_PROXY=" + addr,
+		"ALL_PROXY=" + addr,
+		"NO_PROXY=",
+		"http_proxy=" + addr,
+		"https_proxy=" + addr,
+		"all_proxy=" + addr,
+		"no_proxy=",
+	}
 }

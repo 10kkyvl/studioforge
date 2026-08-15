@@ -32,7 +32,9 @@
   import { parseAttachments } from '$lib/attachments';
   import Markdown from '$lib/components/Markdown.svelte';
   import StructuredDiff from '$lib/components/StructuredDiff.svelte';
+  import ReviewCard from '$lib/components/ReviewCard.svelte';
   import Select from '$lib/components/ui/Select.svelte';
+  import { isReviewExpired, isReviewGated, reviewExpiresAtMs } from '$lib/review';
   import { foregroundRun, liveThreadRuns, queuedBehindForeground } from '$lib/runQueue';
   import { endsRun, mcpWithheldMessage } from '$lib/runStatus';
   import { LiveDiffDebounce, fileEditEventCount } from '$lib/liveDiff';
@@ -100,6 +102,7 @@
   export let agents: Agent[] = [];
   export let tasks: Task[] = [];
   export let runs: Run[] = [];
+  export let reviewGateExpiryHours: number = 24;
 
   let threads: ChatThread[] = [];
   let selectedThreadId = '';
@@ -696,6 +699,16 @@
   })();
   $: failedRunError =
     latestThreadRun?.status === 'failed' && latestThreadRun.error ? latestThreadRun.error : '';
+  $: reviewGatedRun = latestThreadRun && isReviewGated(latestThreadRun) ? latestThreadRun : null;
+  $: reviewGatedRunEvents = reviewGatedRun
+    ? liveEvents.filter((event) => event.runId === reviewGatedRun.id)
+    : [];
+  $: reviewGatedRunExpiresAtMs = reviewGatedRun
+    ? reviewExpiresAtMs(reviewGatedRun, reviewGatedRunEvents, reviewGateExpiryHours)
+    : 0;
+  $: reviewGatedRunExpired = reviewGatedRun
+    ? isReviewExpired(reviewGatedRunExpiresAtMs, nowMs)
+    : false;
   // A follow-up must not steal the live transcript or Stop button from the
   // run that is actually executing. It becomes foreground only after the
   // predecessor reaches a terminal state (from snapshot or SSE).
@@ -1725,113 +1738,77 @@
         <span>{$translate('error.runFailed')}: {failedRunError}</span>
       </div>
     {/if}
-    {#if loadingDiff}
-      <p class="diff-muted">{$translate('common.loading')}</p>
-    {:else if runDiff}
-      <!-- Above whatever git had to say, including a note explaining why it had
+    {#if reviewGatedRun}
+      <ReviewCard
+        run={reviewGatedRun}
+        events={reviewGatedRunEvents}
+        {reviewGateExpiryHours}
+        onResolved={() => {
+          void loadMessages(selectedThreadId);
+          const id = reviewGatedRun?.id;
+          if (id) void loadRunDiff(id);
+        }}
+      />
+    {/if}
+    {#if !reviewGatedRun || reviewGatedRunExpired}
+      {#if loadingDiff}
+        <p class="diff-muted">{$translate('common.loading')}</p>
+      {:else if runDiff}
+        <!-- Above whatever git had to say, including a note explaining why it had
            nothing: a run that edited Studio directly is exactly the run whose
            empty or unavailable diff is most likely to be read as "nothing
            happened". -->
-      {#if runDiff.studioDirectEdits}
-        <p class="diff-studio-notice">{$translate('chat.diffStudioDirect')}</p>
-      {/if}
-      {#if !(runDiff.studioDirectEdits && runDiff.files.length === 0 && !runDiff.note)}
-        <StructuredDiff
-          stats={runDiff.stats}
-          files={runDiff.files}
-          note={runDiff.note ?? ''}
-          getRawPatch={runDiffRunId ? () => fetchRunDiffPatch(runDiffRunId as string) : null}
-          patchFileName={runDiffRunId ? `run-${runDiffRunId}.patch` : 'changes.patch'}
-          selectable
-          bind:selection={selectiveSelection}
-        />
-      {/if}
-      {#if runDiff.checkpoint}
-        <div class="rollback-row">
-          {#if rollbackResult}
-            <p class="rollback-success">
-              {$translate('chat.rollbackDonePrefix')} <code>{rollbackResult.branch}</code>
-            </p>
-          {:else if confirmingRollback}
-            <div class="rollback-confirm">
-              <p class="rollback-confirm-text">
-                {$translate('chat.rollbackConfirmTitle')}
-                <code>{runDiff.checkpoint.commitHash.slice(0, 7)}</code>
-                ({runDiff.checkpoint.label})
-              </p>
-              <p class="rollback-explain">{$translate('chat.rollbackExplain')}</p>
-              {#if runDiff.studioDirectEdits}
-                <p class="rollback-studio-notice">{$translate('chat.rollbackStudioDirect')}</p>
-              {/if}
-              {#if rollbackError}
-                <p class="rollback-error">{rollbackError}</p>
-              {/if}
-              <div class="rollback-actions">
-                <button
-                  type="button"
-                  onclick={() => (confirmingRollback = false)}
-                  disabled={rollingBack}
-                >
-                  {$translate('common.cancel')}
-                </button>
-                <button
-                  type="button"
-                  class="rollback-confirm-button"
-                  disabled={rollingBack}
-                  onclick={doRollback}
-                >
-                  {rollingBack
-                    ? $translate('chat.rollbackWorking')
-                    : $translate('chat.rollbackConfirmButton')}
-                </button>
-              </div>
-            </div>
-          {:else}
-            <button
-              type="button"
-              class="rollback-button"
-              onclick={() => (confirmingRollback = true)}
-            >
-              {$translate('chat.rollbackButton')}
-            </button>
-          {/if}
-        </div>
-        {@const selCount = selectionCount(selectiveSelection)}
-        {#if selectiveRollbackResult || selCount.files > 0 || selCount.hunks > 0}
-          <div class="rollback-row selective-rollback-row">
-            {#if selectiveRollbackResult}
+        {#if runDiff.studioDirectEdits}
+          <p class="diff-studio-notice">{$translate('chat.diffStudioDirect')}</p>
+        {/if}
+        {#if !(runDiff.studioDirectEdits && runDiff.files.length === 0 && !runDiff.note)}
+          <StructuredDiff
+            stats={runDiff.stats}
+            files={runDiff.files}
+            note={runDiff.note ?? ''}
+            getRawPatch={runDiffRunId ? () => fetchRunDiffPatch(runDiffRunId as string) : null}
+            patchFileName={runDiffRunId ? `run-${runDiffRunId}.patch` : 'changes.patch'}
+            selectable
+            bind:selection={selectiveSelection}
+          />
+        {/if}
+        {#if runDiff.checkpoint}
+          <div class="rollback-row">
+            {#if rollbackResult}
               <p class="rollback-success">
-                {$translate('chat.revertDone')}: {selectionSummaryLabel({
-                  files: selectiveRollbackResult.revertedFiles,
-                  hunks: selectiveRollbackResult.revertedHunks,
-                })}
-                {#if selectiveRollbackResult.safetyCommit}
-                  <code>{selectiveRollbackResult.safetyCommit.slice(0, 7)}</code>
-                {/if}
+                {$translate('chat.rollbackDonePrefix')} <code>{rollbackResult.branch}</code>
               </p>
-            {:else if confirmingSelectiveRollback}
+            {:else if confirmingRollback}
               <div class="rollback-confirm">
-                <p class="rollback-confirm-text">{$translate('chat.revertConfirm')}</p>
-                {#if selectiveRollbackError}
-                  <p class="rollback-error">{selectiveRollbackError}</p>
+                <p class="rollback-confirm-text">
+                  {$translate('chat.rollbackConfirmTitle')}
+                  <code>{runDiff.checkpoint.commitHash.slice(0, 7)}</code>
+                  ({runDiff.checkpoint.label})
+                </p>
+                <p class="rollback-explain">{$translate('chat.rollbackExplain')}</p>
+                {#if runDiff.studioDirectEdits}
+                  <p class="rollback-studio-notice">{$translate('chat.rollbackStudioDirect')}</p>
+                {/if}
+                {#if rollbackError}
+                  <p class="rollback-error">{rollbackError}</p>
                 {/if}
                 <div class="rollback-actions">
                   <button
                     type="button"
-                    onclick={() => (confirmingSelectiveRollback = false)}
-                    disabled={selectiveRollingBack}
+                    onclick={() => (confirmingRollback = false)}
+                    disabled={rollingBack}
                   >
                     {$translate('common.cancel')}
                   </button>
                   <button
                     type="button"
                     class="rollback-confirm-button"
-                    disabled={selectiveRollingBack}
-                    onclick={doSelectiveRollback}
+                    disabled={rollingBack}
+                    onclick={doRollback}
                   >
-                    {selectiveRollingBack
+                    {rollingBack
                       ? $translate('chat.rollbackWorking')
-                      : $translate('chat.revertSelected')}
+                      : $translate('chat.rollbackConfirmButton')}
                   </button>
                 </div>
               </div>
@@ -1839,13 +1816,63 @@
               <button
                 type="button"
                 class="rollback-button"
-                onclick={() => (confirmingSelectiveRollback = true)}
+                onclick={() => (confirmingRollback = true)}
               >
-                {$translate('chat.revertSelected')}
-                {selectionSummaryLabel(selCount)}
+                {$translate('chat.rollbackButton')}
               </button>
             {/if}
           </div>
+          {@const selCount = selectionCount(selectiveSelection)}
+          {#if selectiveRollbackResult || selCount.files > 0 || selCount.hunks > 0}
+            <div class="rollback-row selective-rollback-row">
+              {#if selectiveRollbackResult}
+                <p class="rollback-success">
+                  {$translate('chat.revertDone')}: {selectionSummaryLabel({
+                    files: selectiveRollbackResult.revertedFiles,
+                    hunks: selectiveRollbackResult.revertedHunks,
+                  })}
+                  {#if selectiveRollbackResult.safetyCommit}
+                    <code>{selectiveRollbackResult.safetyCommit.slice(0, 7)}</code>
+                  {/if}
+                </p>
+              {:else if confirmingSelectiveRollback}
+                <div class="rollback-confirm">
+                  <p class="rollback-confirm-text">{$translate('chat.revertConfirm')}</p>
+                  {#if selectiveRollbackError}
+                    <p class="rollback-error">{selectiveRollbackError}</p>
+                  {/if}
+                  <div class="rollback-actions">
+                    <button
+                      type="button"
+                      onclick={() => (confirmingSelectiveRollback = false)}
+                      disabled={selectiveRollingBack}
+                    >
+                      {$translate('common.cancel')}
+                    </button>
+                    <button
+                      type="button"
+                      class="rollback-confirm-button"
+                      disabled={selectiveRollingBack}
+                      onclick={doSelectiveRollback}
+                    >
+                      {selectiveRollingBack
+                        ? $translate('chat.rollbackWorking')
+                        : $translate('chat.revertSelected')}
+                    </button>
+                  </div>
+                </div>
+              {:else}
+                <button
+                  type="button"
+                  class="rollback-button"
+                  onclick={() => (confirmingSelectiveRollback = true)}
+                >
+                  {$translate('chat.revertSelected')}
+                  {selectionSummaryLabel(selCount)}
+                </button>
+              {/if}
+            </div>
+          {/if}
         {/if}
       {/if}
     {/if}

@@ -118,7 +118,21 @@ func (d *Doctor) Run(ctx context.Context) models.Diagnostics {
 		report.Checks = append(report.Checks, models.Check{Name: "dataDirectory", Status: "ok", Message: "Data directory is writable"})
 	}
 	report.Checks = append(report.Checks, confinementCheck())
+	report.Checks = append(report.Checks, networkPolicyCheck())
+	for i := range report.Checks {
+		report.Checks[i] = redactCheck(report.Checks[i])
+	}
+	for name, check := range report.Dependencies {
+		report.Dependencies[name] = redactCheck(check)
+	}
 	return report
+}
+
+func redactCheck(c models.Check) models.Check {
+	c.Message = security.Redact(c.Message)
+	c.Version = security.Redact(c.Version)
+	c.Path = security.Redact(c.Path)
+	return c
 }
 
 // confinementCheck reports whether OS confinement (internal/processes,
@@ -141,6 +155,25 @@ func confinementCheck() models.Check {
 		return models.Check{Name: "confinement", Status: "error", Message: scope + " Confinement is unavailable: " + err.Error(), Help: help}
 	}
 	return models.Check{Name: "confinement", Status: "ok", Message: scope, Help: help}
+}
+
+// networkPolicyCheck reports what network policy StudioForge can actually
+// enforce on this platform, so an operator learns before a run starts that a
+// stricter policy either isolates the network (macOS, via sandbox-exec) or
+// makes StudioForge refuse to start the agent's command at all (Windows and
+// Linux), rather than silently running it without network isolation.
+func networkPolicyCheck() models.Check {
+	const help = "See the network policy documentation for what StudioForge enforces per platform."
+	err := processes.EnforcesNetworkPolicy(processes.NetworkNone)
+	if runtime.GOOS != "darwin" {
+		scope := fmt.Sprintf("On %s, unrestricted is the only network policy that runs; registry-only and none make StudioForge refuse to start the agent's command instead of running it without network isolation.", runtime.GOOS)
+		return models.Check{Name: "network-policy", Status: "ok", Message: scope, Help: help}
+	}
+	scope := "On macOS, the registry-only and none network policies are enforced via sandbox-exec."
+	if err != nil {
+		return models.Check{Name: "network-policy", Status: "error", Message: scope + " Enforcement is unavailable: " + err.Error(), Help: help}
+	}
+	return models.Check{Name: "network-policy", Status: "ok", Message: scope, Help: help}
 }
 
 func keyStateStatus(keyState string) string {
@@ -201,12 +234,14 @@ func executableCheck(ctx context.Context, name string, args []string, help strin
 	return models.Check{Name: name, Status: "ok", Path: path, Version: strings.TrimSpace(string(out))}
 }
 
+var createBundleFile = os.Create
+
 func (d *Doctor) ExportBundle(ctx context.Context, target string) error {
 	report := d.Run(ctx)
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return err
 	}
-	file, err := os.Create(target)
+	file, err := createBundleFile(target)
 	if err != nil {
 		return err
 	}

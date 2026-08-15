@@ -2,6 +2,7 @@ package toolpath
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -154,5 +155,118 @@ func TestDetectAllCoversEveryTool(t *testing.T) {
 func TestStudioLauncherIsNotExecuted(t *testing.T) {
 	if s, ok := specs()["studio_mcp_path"]; !ok || s.versionArgs != nil {
 		t.Error("studio_mcp_path must be identified by existence, never by execution")
+	}
+}
+
+func TestValidateAcceptsEmptyAsAutoDetect(t *testing.T) {
+	for _, value := range []string{"", "   "} {
+		normalized, err := Validate("git_path", value)
+		if err != nil || normalized != "" {
+			t.Errorf("value=%q normalized=%q err=%v, want (\"\", nil)", value, normalized, err)
+		}
+	}
+}
+
+func TestValidateRefusesADirectory(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Validate("git_path", dir); !errors.Is(err, ErrToolPathInvalid) {
+		t.Fatalf("a directory must be refused, got err=%v", err)
+	}
+}
+
+func TestValidateRefusesAMissingFile(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist.exe")
+	if _, err := Validate("claude_path", missing); !errors.Is(err, ErrToolPathInvalid) {
+		t.Fatalf("a missing file must be refused, got err=%v", err)
+	}
+}
+
+func TestValidateRefusesArgumentsInsideThePath(t *testing.T) {
+	dir := t.TempDir()
+	path := fakeTool(t, dir, "git", "git version 2.99.0")
+	if _, err := Validate("git_path", path+" --upload-pack=evil"); !errors.Is(err, ErrToolPathInvalid) {
+		t.Fatalf("trailing arguments must be refused, got err=%v", err)
+	}
+}
+
+func TestValidateRefusesNewlinesAndQuotes(t *testing.T) {
+	dir := t.TempDir()
+	path := fakeTool(t, dir, "git", "git version 2.99.0")
+	for _, value := range []string{path + "\n", path + "\r", `"` + path + `"`, path + "'"} {
+		if _, err := Validate("git_path", value); !errors.Is(err, ErrToolPathInvalid) {
+			t.Errorf("value=%q must be refused, got err=%v", value, err)
+		}
+	}
+}
+
+func TestValidateRefusesASurroundingSpace(t *testing.T) {
+	dir := t.TempDir()
+	path := fakeTool(t, dir, "git", "git version 2.99.0")
+	for _, value := range []string{" " + path, path + " "} {
+		if _, err := Validate("git_path", value); !errors.Is(err, ErrToolPathInvalid) {
+			t.Errorf("value=%q must be refused, got err=%v", value, err)
+		}
+	}
+}
+
+func TestValidateRefusesANonExecutableExtensionOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PATHEXT enforcement only applies on Windows")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "claude.txt")
+	if err := os.WriteFile(path, []byte("not an executable"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Validate("claude_path", path); !errors.Is(err, ErrToolPathInvalid) {
+		t.Fatalf("a non-PATHEXT extension must be refused, got err=%v", err)
+	}
+}
+
+func TestValidateResolvesSymlinkToRealPath(t *testing.T) {
+	dir := t.TempDir()
+	real := fakeTool(t, dir, "git", "git version 2.99.0")
+	link := filepath.Join(dir, "git-link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable in this environment: %v", err)
+	}
+	normalized, err := Validate("git_path", link)
+	if err != nil {
+		t.Fatalf("a symlink to a valid tool must be accepted, got err=%v", err)
+	}
+	want := resolve(real)
+	if normalized != want {
+		t.Errorf("normalized=%q want=%q (the real path, not the symlink)", normalized, want)
+	}
+}
+
+func TestValidateAllowsStudioMCPWithoutAnExecuteBit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mcp.launcher")
+	if err := os.WriteFile(path, []byte("launcher"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	normalized, err := Validate("studio_mcp_path", path)
+	if err != nil {
+		t.Fatalf("studio_mcp_path must not require an execute bit, got err=%v", err)
+	}
+	if normalized == "" {
+		t.Error("normalized path must not be empty")
+	}
+}
+
+func TestValidateAllowsABareNameFoundOnPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+	}
+	dir := t.TempDir()
+	fakeTool(t, dir, "git", "git version 2.99.0")
+	t.Setenv("PATH", dir)
+	normalized, err := Validate("git_path", "git")
+	if err != nil {
+		t.Fatalf("a bare name found on PATH must be accepted, got err=%v", err)
+	}
+	if normalized == "" {
+		t.Error("normalized path must not be empty")
 	}
 }

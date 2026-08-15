@@ -12,8 +12,6 @@ import (
 	"sync"
 )
 
-var ErrOutsideProject = errors.New("path is outside the registered project root")
-
 type PathGuard struct {
 	mu    sync.RWMutex
 	roots map[string]string
@@ -58,37 +56,6 @@ func (g *PathGuard) Register(id, path string) (string, error) {
 	g.roots[id] = root
 	g.mu.Unlock()
 	return root, nil
-}
-
-func (g *PathGuard) Resolve(projectID, relative string) (string, error) {
-	g.mu.RLock()
-	root, ok := g.roots[projectID]
-	g.mu.RUnlock()
-	if !ok {
-		return "", errors.New("project root is not registered")
-	}
-	if filepath.IsAbs(relative) {
-		return "", ErrOutsideProject
-	}
-	target, err := Canonical(filepath.Join(root, relative))
-	if err != nil {
-		return "", err
-	}
-	if !within(root, target) {
-		return "", ErrOutsideProject
-	}
-	return target, nil
-}
-
-func within(root, target string) bool {
-	r := filepath.Clean(root)
-	t := filepath.Clean(target)
-	if runtime.GOOS == "windows" {
-		r = strings.ToLower(r)
-		t = strings.ToLower(t)
-	}
-	rel, err := filepath.Rel(r, t)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
 func Fingerprint(path string) string {

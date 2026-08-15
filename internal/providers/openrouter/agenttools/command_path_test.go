@@ -56,7 +56,7 @@ func TestResolveWorkspaceCommandRefusesAnExecutableInsideTheProject(t *testing.T
 	// Put the project itself on PATH, which is the only way LookPath would find
 	// the planted file — and exactly the case the check exists for.
 	t.Setenv("PATH", root)
-	resolved, refusal := resolveWorkspaceCommand("git", root)
+	resolved, refusal := resolveWorkspaceCommand("git", mustTestWorkspace(t, root))
 	if refusal == "" {
 		t.Fatalf("resolveWorkspaceCommand resolved to %q inside the project, want a refusal", resolved)
 	}
@@ -65,9 +65,37 @@ func TestResolveWorkspaceCommandRefusesAnExecutableInsideTheProject(t *testing.T
 	}
 }
 
+func TestResolveWorkspaceCommandRefusesADifferentlyCasedWorkspacePath(t *testing.T) {
+	root := t.TempDir()
+	if !caseInsensitiveRoot(root) {
+		t.Skip("temp dir is on a case-sensitive filesystem; a differently cased path is simply a different file there")
+	}
+	differentlyCasedRoot := swapCase(root)
+	if differentlyCasedRoot == root {
+		t.Skip("temp dir path has no letters to swap the case of")
+	}
+	name := "git"
+	if runtime.GOOS == "windows" {
+		name = "git.exe"
+	}
+	planted := filepath.Join(root, name)
+	if err := os.WriteFile(planted, []byte("#!/bin/sh\necho pwned\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ws := mustTestWorkspace(t, root)
+	t.Setenv("PATH", differentlyCasedRoot)
+	resolved, refusal := resolveWorkspaceCommand("git", ws)
+	if refusal == "" {
+		t.Fatalf("resolveWorkspaceCommand resolved to %q through a differently cased workspace path, want a refusal", resolved)
+	}
+	if !strings.Contains(refusal, "inside the project") {
+		t.Errorf("refused for the wrong reason: %s", refusal)
+	}
+}
+
 func TestResolveWorkspaceCommandReportsAMissingTool(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	if _, refusal := resolveWorkspaceCommand("git", t.TempDir()); !strings.Contains(refusal, "not found on PATH") {
+	if _, refusal := resolveWorkspaceCommand("git", mustTestWorkspace(t, t.TempDir())); !strings.Contains(refusal, "not found on PATH") {
 		t.Errorf("refusal = %q, want it to name the missing tool", refusal)
 	}
 }
@@ -75,7 +103,7 @@ func TestResolveWorkspaceCommandReportsAMissingTool(t *testing.T) {
 // A real tool outside the project resolves to an absolute path, which is what
 // gets executed — the supervisor does no checking of its own.
 func TestResolveWorkspaceCommandReturnsAnAbsolutePathOutsideTheProject(t *testing.T) {
-	resolved, refusal := resolveWorkspaceCommand(goToolName(), t.TempDir())
+	resolved, refusal := resolveWorkspaceCommand(goToolName(), mustTestWorkspace(t, t.TempDir()))
 	if refusal != "" {
 		t.Skipf("the Go toolchain is not on PATH in this environment: %s", refusal)
 	}
@@ -85,6 +113,15 @@ func TestResolveWorkspaceCommandReturnsAnAbsolutePathOutsideTheProject(t *testin
 }
 
 func goToolName() string { return "go" }
+
+func mustTestWorkspace(t *testing.T, root string) *Workspace {
+	t.Helper()
+	ws, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ws
+}
 
 // End to end through the tool, which is what actually protects a run: the
 // two-step bypass must fail at the second step.

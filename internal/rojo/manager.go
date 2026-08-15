@@ -63,6 +63,7 @@ type Manager struct {
 	executable string
 	mu         sync.Mutex
 	sessions   map[string]*Session
+	safeMode   bool
 }
 
 func New(supervisor *processes.Supervisor, executable string) *Manager {
@@ -70,6 +71,20 @@ func New(supervisor *processes.Supervisor, executable string) *Manager {
 		executable = "rojo"
 	}
 	return &Manager{supervisor: supervisor, executable: executable, sessions: map[string]*Session{}}
+}
+
+var ErrSafeMode = errors.New("rojo is disabled in safe mode")
+
+func (m *Manager) SetSafeMode(on bool) {
+	m.mu.Lock()
+	m.safeMode = on
+	m.mu.Unlock()
+}
+
+func (m *Manager) SafeMode() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.safeMode
 }
 func (m *Manager) SetExecutable(executable string) {
 	if strings.TrimSpace(executable) == "" {
@@ -100,6 +115,9 @@ func (m *Manager) Diagnose(ctx context.Context) Diagnostics {
 // runs to completion instead of starting a serve session, so a fresh project
 // can be opened in Studio as a self-contained place file.
 func (m *Manager) Build(ctx context.Context, projectFile, output string) error {
+	if m.SafeMode() {
+		return ErrSafeMode
+	}
 	if !strings.HasSuffix(projectFile, ".project.json") {
 		return errors.New("Rojo project file must end with .project.json")
 	}
@@ -119,6 +137,9 @@ func (m *Manager) Build(ctx context.Context, projectFile, output string) error {
 // InstallPlugin installs the Rojo Studio plugin into the local Plugins folder so
 // a freshly opened place can live-sync without a manual plugin setup step.
 func (m *Manager) InstallPlugin(ctx context.Context) error {
+	if m.SafeMode() {
+		return ErrSafeMode
+	}
 	diag := m.Diagnose(ctx)
 	if !diag.Available {
 		return errors.New(diag.Message)
@@ -140,6 +161,9 @@ func AllocatePort() (int, error) {
 	return listener.Addr().(*net.TCPAddr).Port, nil
 }
 func (m *Manager) Start(ctx context.Context, projectID, projectFile string) (*Session, error) {
+	if m.SafeMode() {
+		return nil, ErrSafeMode
+	}
 	if filepath.Ext(projectFile) != ".json" || !strings.HasSuffix(projectFile, ".project.json") {
 		return nil, errors.New("Rojo project file must end with .project.json")
 	}

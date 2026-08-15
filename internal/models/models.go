@@ -56,6 +56,7 @@ type Agent struct {
 	Effort               string  `json:"effort"`
 	Enabled              bool    `json:"enabled"`
 	Permission           string  `json:"permission"`
+	NetworkPolicy        string  `json:"networkPolicy"`
 	Concurrency          int     `json:"concurrency"`
 	Budget               float64 `json:"budget"`
 	SystemPrompt         string  `json:"systemPrompt"`
@@ -71,6 +72,7 @@ type Agent struct {
 	// (on by default globally): set for an agent that is expected by design to
 	// run very long, so a naturally long session never gets flagged.
 	StuckDetectionDisabled bool `json:"stuckDetectionDisabled"`
+	ReviewBeforeApply      bool `json:"reviewBeforeApply"`
 }
 
 type Task struct {
@@ -143,7 +145,8 @@ type Run struct {
 	// changes the open place directly (see mcp.MutatesPlace). Those changes
 	// never touch git, so a run's diff and a rollback both leave them
 	// untouched no matter what they show.
-	StudioDirectEdits bool `json:"studioDirectEdits,omitempty"`
+	StudioDirectEdits bool   `json:"studioDirectEdits,omitempty"`
+	NetworkPolicy     string `json:"networkPolicy,omitempty"`
 }
 
 type ChatThread struct {
@@ -227,6 +230,18 @@ type Checkpoint struct {
 	Branch     string    `json:"branch"`
 	Label      string    `json:"label"`
 	CreatedAt  time.Time `json:"createdAt"`
+}
+
+type RunReview struct {
+	ID             string     `json:"id"`
+	ProjectID      string     `json:"projectId"`
+	RunID          string     `json:"runId"`
+	CheckpointHash string     `json:"checkpointHash"`
+	Status         string     `json:"status"`
+	Selection      string     `json:"selection"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	ExpiresAt      time.Time  `json:"expiresAt"`
+	ResolvedAt     *time.Time `json:"resolvedAt,omitempty"`
 }
 
 type StudioSession struct {

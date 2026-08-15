@@ -19,6 +19,9 @@ func sweepStaleProfiles() {}
 // go looking for it. ConfineReap claims no boundary, only reaping, which the
 // process group already provides here.
 func applyConfinement(cmd *exec.Cmd, spec Spec) (Confinement, error) {
+	if err := EnforcesNetworkPolicy(spec.Confine.Network); err != nil {
+		return nil, err
+	}
 	switch spec.Confine.Mode {
 	case ConfineNone, ConfineReap:
 		return nil, nil

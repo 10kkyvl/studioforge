@@ -30,6 +30,7 @@ func (s *Store) PruneEvents(ctx context.Context, retentionDays int) (int64, erro
 		JOIN runs r ON r.id = re.run_id
 		WHERE r.status IN (` + placeholders + `)
 		  AND r.finished_at IS NOT NULL AND r.finished_at < ?
+		  AND re.event_type != 'network'
 		  AND NOT (re.event_type = 'message' AND re.raw_type NOT LIKE '%.message.partial')
 		LIMIT ?
 	)`

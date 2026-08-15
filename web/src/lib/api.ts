@@ -5,6 +5,8 @@ import type {
   Checkpoint,
   DetectedPaths,
   ProjectDiff,
+  ReviewAction,
+  ReviewResolution,
   RollbackSelection,
   RunDiff,
   RunDiffStructured,
@@ -53,12 +55,42 @@ export function friendlyError(err: unknown, t: (key: TranslationKey) => string):
   if (err instanceof APIError) {
     if (err.code === 'timeout') return t('error.timeout');
     if (err.code === 'network') return t('error.network');
+    if (err.code === 'project_parent_missing') return t('error.projectPathParentMissing');
+    if (err.code === 'project_path_unsafe') return t('error.projectPathUnsafe');
     if (err.status === 401 || err.status === 403) return t('error.session');
     if (err.status === 404) return t('error.notFound');
     if (err.status !== undefined && err.status >= 500) return t('error.server');
     return err.message;
   }
   return err instanceof Error ? err.message : String(err);
+}
+
+export function reviewActionErrorMessage(err: unknown, t: (key: TranslationKey) => string): string {
+  if (err instanceof APIError) {
+    switch (err.code) {
+      case 'invalid_review_action':
+        return t('error.reviewInvalidAction');
+      case 'invalid_selection':
+        return t('error.reviewInvalidSelection');
+      case 'review_not_pending':
+        return t('error.reviewNotPending');
+      case 'review_expired':
+        return t('error.reviewExpired');
+      case 'project_busy':
+        return t('error.reviewProjectBusy');
+      case 'dirty_worktree':
+        return t('error.rollbackDirty');
+      case 'later_change_conflict':
+        return t('error.rollbackLaterChange');
+      case 'patch_check_failed':
+        return t('error.rollbackPatchCheck');
+      case 'not_git_repo':
+        return t('error.rollbackNotGitRepo');
+      default:
+        break;
+    }
+  }
+  return friendlyError(err, t);
 }
 
 async function parse<T>(response: Response): Promise<T> {
@@ -175,6 +207,16 @@ export const rollbackRun = (runId: string) =>
   post<{ branch: string; commitHash: string }>(`/runs/${runId}/rollback`, {});
 export const rollbackRunSelective = (runId: string, selection: RollbackSelection) =>
   post<SelectiveRollbackResult>(`/runs/${runId}/rollback`, selection);
+export const resolveReview = (
+  runId: string,
+  action: ReviewAction,
+  selection: RollbackSelection = { files: [], hunks: [] },
+) =>
+  post<ReviewResolution>(`/runs/${runId}/review`, {
+    action,
+    files: selection.files,
+    hunks: selection.hunks,
+  });
 export const getStudioStatus = (projectId?: string) =>
   request<StudioStatus>(
     projectId ? `/studio-status?project=${encodeURIComponent(projectId)}` : '/studio-status',
@@ -266,6 +308,7 @@ function openSharedStream(after?: number) {
     'event',
     'error',
     'stderr',
+    'review',
   ]) {
     stream.addEventListener(type, handler as EventListener);
   }

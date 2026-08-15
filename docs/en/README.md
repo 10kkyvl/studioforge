@@ -24,7 +24,7 @@ From source, install Go 1.25+, Node.js 22+, npm, and Git, then run `./scripts/de
 
 The wizard checks the data directory, database, Git, Claude Code/authentication, an OpenRouter API key's verification state, Rojo, and the official Studio MCP launcher. Each item shows the detected version/path (or, for OpenRouter, key state and catalog reachability) and remediation. **Open dashboard** records completion; Doctor remains available in Settings.
 
-`--safe-mode` disables provider workers, MCP, and Rojo. Data, backups, exports, and diagnostics remain available. `--mock` seeds three isolated demo workspaces and exercises the production domain/API.
+`--safe-mode` refuses to start any run — `POST /runs`, `resume`, `restart`, and approving a pending correction decision all end at the same enforcement point (`scheduler.Manager.Submit`) — and refuses to start Rojo sync or launch Studio. Data, backups, exports, and diagnostics remain available; a run already in flight from before the restart can still be paused or cancelled. `--mock` seeds three isolated demo workspaces and exercises the production domain/API.
 
 ## OpenRouter
 
