@@ -370,6 +370,23 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ### Fixed
 
+- **A stored tool path could look wrong on Windows CI runners even though
+  startup validated it correctly.** `TestStartupAcceptsAValidStoredToolPath`
+  compared `validatedToolSetting`'s result — which resolves through
+  `toolpath.Validate` and, with it, `filepath.EvalSymlinks` — against the raw
+  path `t.TempDir()` handed back, which on the `windows-latest` runner is an
+  8.3 short name (`RUNNER~1`) because the `runneradmin` account name is longer
+  than 8 characters. `EvalSymlinks` resolves that short name to its long form,
+  so the two spellings of the same file never matched as strings — the same
+  trap `Workspace.Contains` hit in `3a13c95`. The stored path was validated
+  correctly the whole time; only the test's comparison was fragile. It now
+  compares by file identity with `os.SameFile` instead of by string equality
+  (`internal/app/app_test.go`), and a new `TestValidateAcceptsAShortPathForm-
+  OnWindows` drives `toolpath.Validate` through a real 8.3 short path obtained
+  from `GetShortPathName`, so the case has direct coverage rather than relying
+  on a CI runner's account name
+  (`internal/platform/toolpath/toolpath_windows_test.go`).
+
 - **The playtest recorded the console ten times over.** Studio answers every
   `get_console_output` call with the whole buffer rather than what is new since
   the last one, and the poll loop appended each answer wholesale, so with the

@@ -60,7 +60,15 @@ func TestStartupAcceptsAValidStoredToolPath(t *testing.T) {
 	if got == "" {
 		t.Fatal("validatedToolSetting for a valid stored path returned empty")
 	}
-	if filepath.Clean(got) != filepath.Clean(path) {
-		t.Fatalf("validatedToolSetting = %q, want the normalized form of %q", got, path)
+	gotInfo, err := os.Stat(got)
+	if err != nil {
+		t.Fatalf("stat validatedToolSetting result %q: %v", got, err)
+	}
+	wantInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat stored path %q: %v", path, err)
+	}
+	if !os.SameFile(gotInfo, wantInfo) {
+		t.Fatalf("validatedToolSetting = %q, want the same file as %q", got, path)
 	}
 }

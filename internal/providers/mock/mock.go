@@ -47,8 +47,15 @@ func writeMockEdit(req providers.RunRequest) bool {
 		slog.Warn("mock provider failed to write its edit file", "run_id", req.RunID, "path", path, "error", err)
 		return false
 	}
-	stageMockEdit(req.WorkingDirectory)
+	if isGitWorkingDirectory(req.WorkingDirectory) {
+		stageMockEdit(req.WorkingDirectory)
+	}
 	return true
+}
+
+func isGitWorkingDirectory(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, ".git"))
+	return err == nil
 }
 
 func stageMockEdit(dir string) {
