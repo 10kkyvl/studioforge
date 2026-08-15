@@ -560,6 +560,17 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   which OS the daemon happened to run on. The volume check is now host-independent
   (`internal/providers/openrouter/agenttools/tool_shell.go`).
 
+- **A project path spelled differently from its resolved form no longer looks
+  like an escape.** `Workspace.Contains` compared the caller's path against a
+  root it had already run through `filepath.EvalSymlinks`, so the same location
+  written another way — a Windows 8.3 short name like `C:\Users\RUNNER~1\...`,
+  or a path reaching the project through a symlinked parent — failed the prefix
+  comparison and every Claude file write under it was refused as "outside the
+  project". Containment is now decided by resolving the path, which is the
+  stricter check to begin with: it is what catches a symlink pointing out of the
+  project. A path genuinely outside is refused exactly as before
+  (`internal/providers/openrouter/agenttools/workspace.go`).
+
 ### Security
 
 - **Raised the Go floor from 1.25.12 to 1.25.13.** `govulncheck` reported five

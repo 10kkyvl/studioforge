@@ -71,7 +71,16 @@ func (w *Workspace) Contains(path string) error {
 	}
 	target = filepath.Clean(target)
 	if !pathWithinRoot(w.root, target) {
-		return fmt.Errorf("path is outside the project: %s", path)
+		// The root was stored in its resolved spelling, so a caller handing us
+		// the same location spelled differently — a Windows 8.3 short name like
+		// RUNNER~1, or a path through a symlinked parent — fails a plain prefix
+		// comparison while being genuinely inside the project. Resolving decides
+		// it, and resolving is the stricter check anyway: it is what catches a
+		// symlink pointing out of the project.
+		if err := ensureNoSymlinkEscape(w.root, target); err != nil {
+			return fmt.Errorf("path is outside the project: %s", path)
+		}
+		return nil
 	}
 	return ensureNoSymlinkEscape(w.root, target)
 }

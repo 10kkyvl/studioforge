@@ -1,6 +1,8 @@
 package agenttools
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -68,5 +70,32 @@ func TestTruncateBytesNeverSplitsAUTF8Sequence(t *testing.T) {
 	}
 	if got := truncateBytes(source, 0); got != "" {
 		t.Fatalf("a zero limit should yield an empty string, got %q", got)
+	}
+}
+
+// The root is stored in its resolved spelling, so a caller can hand Contains
+// the same location spelled differently and have it look like an escape. On the
+// Windows CI runners that spelling is an 8.3 short name (RUNNER~1); everywhere
+// else a symlinked parent produces the same shape, which is what this covers.
+func TestContainsAcceptsADifferentlySpelledRootPath(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(filepath.Join(real, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("cannot create a directory symlink here: %v", err)
+	}
+	ws, err := NewWorkspace(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Contains(filepath.Join(link, "src", "main.lua")); err != nil {
+		t.Fatalf("a path into the project through a symlinked parent must be accepted: %v", err)
+	}
+	outside := filepath.Join(base, "elsewhere", "main.lua")
+	if err := ws.Contains(outside); err == nil {
+		t.Fatal("a path genuinely outside the project must still be refused")
 	}
 }
