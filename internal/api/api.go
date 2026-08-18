@@ -1052,13 +1052,22 @@ func subagentsFor(lead models.Agent, all []models.Agent, projectContext string) 
 	return subagents
 }
 
-// ensureUIReference places StudioForge's Roblox interface reference in a project
-// so a run that needs it can open it. Best effort: the compact rules in the
+// ensureUIReference places StudioForge's Roblox interface references in a project
+// so a run that needs them can open them. Best effort: the compact rules in the
 // system prompt stand on their own, so a read-only project directory costs the
-// agent the deeper reference rather than the run.
+// agent the deeper references rather than the run.
 func (s *Server) ensureUIReference(root string) {
-	if err := projects.EnsureReference(root, prompts.RobloxUIReferenceFile, prompts.RobloxUIReference); err != nil {
-		s.logger.Warn("write Roblox UI reference failed", "project_path", root, "error", err)
+	references := []struct {
+		path string
+		body string
+	}{
+		{prompts.RobloxUIReferenceFile, prompts.RobloxUIReference},
+		{prompts.RobloxUICraftFile, prompts.RobloxUICraft},
+	}
+	for _, reference := range references {
+		if err := projects.EnsureReference(root, reference.path, reference.body); err != nil {
+			s.logger.Warn("write Roblox UI reference failed", "project_path", root, "reference", reference.path, "error", err)
+		}
 	}
 }
 

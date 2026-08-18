@@ -119,3 +119,56 @@ func TestRobloxUIReferenceIsShippedAndSubstantial(t *testing.T) {
 		}
 	}
 }
+
+func TestRobloxUICoreNamesWhereTheTreeLives(t *testing.T) {
+	for _, want := range []string{"StarterGui", "ReplicatedStorage", "LocalScript"} {
+		if !strings.Contains(RobloxUICore, want) {
+			t.Errorf("the compact rules must say where the tree lives: missing %q", want)
+		}
+	}
+	if !strings.Contains(RobloxUICore, RobloxUICraftFile) {
+		t.Errorf("the compact rules must point at %q", RobloxUICraftFile)
+	}
+}
+
+func TestRobloxUICraftIsShippedAndSubstantial(t *testing.T) {
+	if len(RobloxUICraft) < 4000 {
+		t.Fatalf("the craft reference is %d bytes; it is meant to be the fuller document", len(RobloxUICraft))
+	}
+	for _, want := range []string{
+		"ViewportFrame", "Path2D", "generate_procedural_model",
+		"UIShadow", "ClipsDescendants", "UIGradient",
+		"UIScale", "Activated", "MouseEnter",
+		"LuckiestGuy", "RobotoMono",
+		"StarterGui", "ReplicatedStorage",
+	} {
+		if !strings.Contains(RobloxUICraft, want) {
+			t.Errorf("the craft reference must cover %q", want)
+		}
+	}
+}
+
+// The craft document earns its length by recording behaviour that contradicts a
+// reasonable guess. If those disappear it has drifted into restating the docs.
+func TestRobloxUICraftKeepsTheCounterintuitiveFindings(t *testing.T) {
+	for _, want := range []string{
+		"does not fail on a family that does not exist",
+		"ignores `UICorner`",
+		"do not stack",
+	} {
+		if !strings.Contains(RobloxUICraft, want) {
+			t.Errorf("the craft reference must keep the finding %q", want)
+		}
+	}
+}
+
+// The two references must stay distinct documents rather than one growing a copy
+// of the other.
+func TestRobloxUIReferencesAreDistinct(t *testing.T) {
+	if RobloxUICraft == RobloxUIReference {
+		t.Fatal("the two references are the same document")
+	}
+	if RobloxUICraftFile == RobloxUIReferenceFile {
+		t.Fatal("the two references would be written to the same path")
+	}
+}

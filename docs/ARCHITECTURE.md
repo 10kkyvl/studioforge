@@ -226,8 +226,11 @@ plugin loading or dynamic linking.
   one part not composed here — it is built from the run's actual Studio grant, which does not exist
   until the run starts, so the scheduler and the in-process agent loop append it (see step 7 of the
   run lifecycle). `ui.go` holds the compact interface rules, `TaskTouchesUI` which decides whether a
-  run carries them, and the embedded fuller reference StudioForge writes into a project as
-  `.agent/roblox-ui.md`. The earlier structured, multi-section `Assemble`/`Input` template (with its
+  run carries them, and the two embedded references StudioForge writes into a project:
+  `.agent/roblox-ui.md` (mechanics — surfaces, layering, safe area, animation) and
+  `.agent/roblox-ui-craft.md` (making a screen look built rather than generated — icons through
+  `ViewportFrame`, which font families actually load, native `UIShadow`, hover/press motion, and the
+  checklist to run before calling a screen done). The earlier structured, multi-section `Assemble`/`Input` template (with its
   own memory/blackboard/playtest/review sections) was deleted along with its dead
   `DecisionRequest`/`PlaytestResult`/`ReviewResult` result types — it never had a caller outside its
   own test.

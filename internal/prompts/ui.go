@@ -23,6 +23,27 @@ const RobloxUIReferenceFile = ".agent/roblox-ui.md"
 //go:embed reference/roblox-ui.md
 var RobloxUIReference string
 
+// RobloxUICraftFile is where the craft reference is written inside a project.
+// It sits beside RobloxUIReferenceFile for the same reason: read on demand, not
+// carried in every prompt.
+const RobloxUICraftFile = ".agent/roblox-ui-craft.md"
+
+// RobloxUICraft is the second interface reference: what separates an interface
+// that reads as a shipped game from one that reads as a mockup. It is a separate
+// document rather than more of roblox-ui.md because the two answer different
+// questions — that one is how to make an interface that survives a phone, this
+// one is how to make it look deliberate — and an agent that only needs the first
+// should not have to read past the second to find it.
+//
+// Much of it records engine behaviour that contradicts a reasonable guess:
+// Font.new falling back silently on a missing family, ClipsDescendants ignoring
+// UICorner, two UIStroke children merging rather than stacking. Those cost a run
+// nothing to get wrong and produce no error, so they are worth shipping rather
+// than leaving to be rediscovered.
+//
+//go:embed reference/roblox-ui-craft.md
+var RobloxUICraft string
+
 // RobloxUICore is the part of the interface rules that is not worth making the
 // agent fetch: the handful of defaults that decide whether what it builds
 // survives a screen that is not the one it was looking at. None of these
@@ -38,7 +59,8 @@ const RobloxUICore = "## Building Roblox interfaces\n\n" +
 	"- Set `AnchorPoint` when you centre or right-align something: `AnchorPoint = Vector2.new(0.5, 0.5)` with `Position = UDim2.fromScale(0.5, 0.5)` is centred at any size, an offset computed from half the parent's width is not.\n" +
 	"- Constrain what stretching would ruin: `UIAspectRatioConstraint` on buttons and icons so they don't become rectangles, and `UITextSizeConstraint` wherever you set `TextScaled`, or text collapses on a phone and balloons on a monitor.\n" +
 	"- Check your work at more than one shape before calling it done — a tall phone and a wide monitor disagree about almost every layout mistake.\n" +
-	"- The full reference is at `" + RobloxUIReferenceFile + "` in the project: surface types, layering, the topbar and safe area, animation, and making UI look intentional rather than default. Read it before building anything larger than a single frame."
+	"- Build the tree as real Instances under `StarterGui` rather than having a `LocalScript` construct it on join: StarterGui is already cloned into every player's `PlayerGui`, and a scripted tree is one nobody can select or edit in Explorer. Script only what changes at runtime — text, bars, colours that follow rarity, lists whose length depends on data. Repeated pieces go in `ReplicatedStorage` as templates to clone, never left loose in `Workspace`.\n" +
+	"- Two references ship with the project. `" + RobloxUIReferenceFile + "` covers the mechanics: surface types, layering, the topbar and safe area, animation. `" + RobloxUICraftFile + "` covers making it look built rather than generated: icons through `ViewportFrame`, which font families actually load, native `UIShadow`, hover and press motion, and the checklist to run before calling a screen done. Read both before building anything larger than a single frame."
 
 // uiWords are whole words that mean interface work on their own.
 var uiWords = map[string]bool{

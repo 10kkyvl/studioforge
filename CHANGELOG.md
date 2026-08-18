@@ -10,6 +10,30 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ### Added
 
+- **A second interface reference ships with every project, covering what makes a
+  screen look built rather than generated.** `.agent/roblox-ui-craft.md`
+  (`internal/prompts/reference/roblox-ui-craft.md`, embedded as
+  `prompts.RobloxUICraft`) is written beside `roblox-ui.md` by the same
+  write-once `EnsureReference` path, at project creation and on the first run
+  whose task text looks like interface work. Where `roblox-ui.md` answers how to
+  build an interface that survives a phone, this one answers how to make it look
+  deliberate: icons as real models in a `ViewportFrame` fed by
+  `generate_procedural_model`, `Path2D` for outline glyphs, primitives only for
+  chrome; native `UIShadow` instead of a duplicated plate; hover and press motion
+  driven through `UIScale` with the in-flight tween cancelled first; and a
+  closing checklist written to be run against a screenshot rather than against
+  the code. Its content was verified against a live Studio 0.734, and it
+  deliberately records the places the engine contradicts a reasonable guess —
+  `Font.new` silently falling back to the default face on a family that is not
+  installed (which is why several plausible display fonts render thin rather than
+  erroring), `ClipsDescendants` clipping to the raw rectangle and ignoring
+  `UICorner`, two `UIStroke` children merging rather than stacking, and
+  `UIShadow` taking `UDim`/`UDim2` where numbers look right. `RobloxUICore`
+  gained the one rule that has to arrive before the agent opens anything —
+  build the tree as Instances under `StarterGui`, script only what changes,
+  keep templates in `ReplicatedStorage` — and now points at both documents
+  (`internal/prompts/ui.go`, `internal/api/api.go`).
+
 - **A pending review gate can now be resolved.** `POST
   /api/v1/runs/{id}/review` accepts `{"action": "apply" | "reject" |
   "apply-selected", "files": [...], "hunks": [...]}` and returns
@@ -259,6 +283,76 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   `JOBOBJECT_NET_RATE_CONTROL`, a driver-based firewall, a
   TLS-terminating proxy).
 
+- **Chat images open full size.** A thumbnail is capped at 220x160 so a screenshot does not shove the conversation off the screen, which leaves a whole Studio viewport too small to read. Clicking one — pasted or captured — opens it at full size over the page; click anywhere outside it, the close button, or Escape to dismiss (`web/src/lib/components/views/ChatView.svelte`).
+- **A screenshot the agent takes while it works now appears in the chat.** Until
+  now `screen_capture` fed the model's own context and was discarded at the end
+  of the turn, so the one participant who could not see what the agent saw was
+  the operator — who is the only one able to say whether the shop actually looks
+  right. The image is now saved content-addressed into the project's
+  `.studioforge/attachments/` and announced as a message carrying the same
+  `## Attached images` block a pasted image uses, so it renders as a thumbnail
+  live and again after a reload, with no new frontend concept. Both provider
+  paths are covered: the in-process loop saves the bridge's decoded image, and
+  the Claude adapter pulls the base64 out of the CLI's own `tool_result` blocks,
+  which it used to pass through untouched. The prompt asks for a screenshot only
+  when the run's grant actually permits `screen_capture`, and asks the agent to
+  capture freely for its own checking but to show the operator only what they
+  asked to see. That is backed by a limit rather than left to the model: at most
+  three images per run reach the chat, and never the same image twice, since
+  content-addressed paths make a repeat of an unchanged screen recognisable. Best effort: an image
+  that cannot be decoded or written costs a thumbnail, never the run
+  (`internal/attachments`, `internal/providers/openrouter/agentloop.go`,
+  `internal/providers/claudecode/claude.go`, `internal/prompts/studio.go`,
+  `web/src/lib/components/views/ChatView.svelte`).
+
+- **An agent on OpenRouter or NVIDIA now asks the operator a question with a tool instead of a text
+  convention.** `studioforge_question` takes the question and its 2–4 options as schema-validated
+  arguments, and StudioForge writes the fenced block itself from them. The model never formats
+  anything, so the failures the old convention had — a sentence before the fence, a different
+  info-string, JSON that is nearly right — become a tool error the agent can see and retry rather
+  than a question card that silently never renders. The turn ends where the question was asked, so
+  the agent cannot answer itself and carry on. Everything downstream is unchanged, so a question
+  asked this way parks the run and renders identically, live and after a page reload; the run
+  event's raw type records which path it came from. The tool is offered under every permission
+  profile, read-only included — asking changes nothing in the project. Claude keeps the text fence,
+  which always works (`internal/providers/openrouter/agenttools/tool_question.go`,
+  `internal/providers/openrouter/agentloop.go`, `internal/api/api.go`).
+- **An agent asked to build an interface now gets told how Roblox interfaces work.** Sizing in fixed
+  pixels, hand-placed positions, missing `AnchorPoint`, unconstrained `TextScaled` — none of these
+  produce an error, so the console stays clean, the playtest passes, and the operator finds out by
+  opening the game on a phone, which is where most Roblox sessions are. A run whose task text is
+  about interface work (matched in English and Russian) carries a compact set of rules, and the
+  fuller reference is written into the project as `.agent/roblox-ui.md`, where every provider can
+  read it and the operator can edit it. It is written once and never overwritten, and it is
+  deliberately not one of the files loaded into every prompt (`internal/prompts/ui.go`,
+  `internal/prompts/reference/roblox-ui.md`, `internal/projects/scaffold.go`).
+- **The house rules now say how much to write and how far to go beyond the request.** Current models
+  default to long narration between tool calls and to quietly widening a task — extra abstractions,
+  unrequested tidying — which costs more here than in a developer tool, because the audience is
+  Roblox creators rather than developers reading a build log (`internal/prompts/houserules.go`).
+- **How often the playtest polls the console is now a setting, not a constant.** The window it polls
+  for has been configurable for a while (`playtest_window_seconds`); the interval within it was a
+  hardcoded three seconds, even though `ValidateRequest.PollInterval` already existed and was already
+  honoured — nothing ever set it. `playtest_poll_seconds` (default 3, accepted between 1 and 60) now
+  reaches it, alongside the window in **Settings**, so a place that prints rarely can be polled less
+  often and one being watched closely can be polled more (`internal/api/api.go`, `internal/app/app.go`,
+  `web/src/lib/components/views/SettingsView.svelte`).
+- **A run that changed Studio directly, bypassing git, is now flagged instead of quietly vanishing
+  from the diff.** `execute_luau`, `multi_edit`, `insert_asset` and the rest of the tools that mutate
+  the open place write into Studio's own session, not the project's working tree, so a run that used
+  one looked from the diff panel exactly like a run that changed nothing — "No changes to show for
+  this run" read the same whether the agent left the place untouched or rebuilt half of it from a
+  script. `mcp.MutatesPlace` classifies which Studio tools count (`subagent` and `skill` included on
+  purpose: both hand the turn to Roblox's own agent inside Studio, whose own tool calls never reach
+  this provider's event stream, so excluding them would reproduce the exact miss this closes), and the
+  scheduler watches every provider's own tool-call events for one, unconditionally — never gated
+  behind the per-agent stuck-detection opt-out, which has nothing to do with whether Studio was
+  changed. The diff panel now says so in place of, or above, the usual message, and the rollback
+  confirmation states plainly that Studio-side changes will not be undone by restoring a commit
+  (`internal/roblox/mcp/config.go`, `internal/scheduler/studio_mutation.go`,
+  `internal/migrations/sql/016_studio_direct_edits.sql`, `internal/api/diff.go`,
+  `web/src/lib/components/views/ChatView.svelte`).
+
 ### Changed
 
 - **Every screen spent its first 130 pixels announcing which screen it was.** An
@@ -368,108 +462,6 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   log is striped and column-aligned instead of a wall of undifferentiated JSON
   (`web/src/lib/components/NewProjectDialog.svelte`, `web/src/app.css`).
 
-### Fixed
-
-- **A stored tool path could look wrong on Windows CI runners even though
-  startup validated it correctly.** `TestStartupAcceptsAValidStoredToolPath`
-  compared `validatedToolSetting`'s result — which resolves through
-  `toolpath.Validate` and, with it, `filepath.EvalSymlinks` — against the raw
-  path `t.TempDir()` handed back, which on the `windows-latest` runner is an
-  8.3 short name (`RUNNER~1`) because the `runneradmin` account name is longer
-  than 8 characters. `EvalSymlinks` resolves that short name to its long form,
-  so the two spellings of the same file never matched as strings — the same
-  trap `Workspace.Contains` hit in `3a13c95`. The stored path was validated
-  correctly the whole time; only the test's comparison was fragile. It now
-  compares by file identity with `os.SameFile` instead of by string equality
-  (`internal/app/app_test.go`), and a new `TestValidateAcceptsAShortPathForm-
-  OnWindows` drives `toolpath.Validate` through a real 8.3 short path obtained
-  from `GetShortPathName`, so the case has direct coverage rather than relying
-  on a CI runner's account name
-  (`internal/platform/toolpath/toolpath_windows_test.go`).
-
-- **The playtest recorded the console ten times over.** Studio answers every
-  `get_console_output` call with the whole buffer rather than what is new since
-  the last one, and the poll loop appended each answer wholesale, so with the
-  default 30-second window and 3-second interval a line printed early in the
-  window was stored roughly ten times and the collected console grew
-  quadratically with the length of the window — which meant lengthening the
-  window made the record of it worse. The loop now appends only the part of a
-  poll's answer that extends the previous one, and keeps the whole answer when
-  it does not extend it, so a rotated or truncated buffer loses nothing. This is
-  deliberately not a line-level de-duplication: a line the place genuinely
-  printed twice is real output and survives, while `dedupeEntries` keeps taking
-  the opposite tradeoff for the error list that feeds a correction prompt, where
-  a repeat is noise rather than evidence (`internal/roblox/mcp/validator.go`).
-
-- **The playtest reported `passed` when all it had shown was the absence of eight
-  substrings.** A script that silently does nothing still prints a banner on
-  startup, so the console was non-empty, no marker matched, and the run was
-  reported to the creator as playtested and fine while the game was broken —
-  absence of evidence presented as evidence of absence, which is worse than
-  reporting nothing, because the operator stops looking. The outcome is now
-  called `no_errors_detected` and worded to match in both locales, and it is
-  claimed only when `get_studio_state` confirms the place actually entered Play
-  mode; a clean console without that confirmation is `inconclusive`, since
-  "nothing went wrong" and "nothing ran" are otherwise the same reading. The
-  stored value is migrated so existing runs stay readable. `failed` keeps its
-  meaning and its behaviour (`internal/roblox/mcp/validator.go`,
-  `internal/migrations/sql/015_validation_no_errors_detected.sql`).
-
-- **`run_command`'s allowlist checked the executable's name, not its identity.**
-  It matched on the basename alone, and the value it had just validated went
-  straight to `exec.CommandContext` with no further checking. A `workspace-write`
-  agent may write files — that is what the profile means — so the bypass was two
-  steps: write `git.cmd` into the project, run `./git.cmd`. The `command` must
-  now be a bare executable name; anything carrying a path separator or a volume
-  is refused. The name is then resolved with `exec.LookPath` and the **resolved
-  absolute path** is what actually runs, with a resolution landing inside the
-  project refused outright — an allowlisted name found in the workspace is the
-  agent's own file, not the tool. `danger-full-access` is unchanged, being
-  explicitly the profile for arbitrary commands. This does not make
-  `workspace-write` a sandbox: the build-tool route stays open by design and
-  `docs/SECURITY.md` says so
-  (`internal/providers/openrouter/agenttools/tool_shell.go`).
-
-- **The tag name in `POST /api/v1/projects/{id}/git/tag` reached `git tag`'s
-  argv unsanitized.** A name like `-d`, `--file=/etc/passwd`, or `-F../../x`
-  could be read by `git` as an option rather than the tag being created,
-  letting a request delete a tag, read an arbitrary file into a tag message,
-  or otherwise reshape the command the API meant to run. `internal/gitops`
-  now validates every ref and tag-name string before it becomes argv:
-  `validateTagName` rejects anything empty, over-length, leading with `-`,
-  containing whitespace or control characters, `~ ^ : ? * [ \`, a
-  leading/trailing `.`, a `/`, a `.lock` suffix, or `..`; `validateRef`
-  applies equivalent leading-dash/length/character checks to the commit refs
-  used by `DiffCommit`, `DiffRange`, `SafeRollback`, and
-  `SelectiveRollback`. `Tag` now runs `git tag -a -m <message> -- <name>`, so
-  `--` marks the end of options for the positional tag name, the same
-  pattern `SelectiveRollback` already used for `checkout`/`rm` path
-  arguments; it is deliberately not added before ref arguments to
-  `diff`/`cat-file`/`merge-base`, where `--` means "pathspec follows", not
-  "revision follows", and would silently break those commands instead of
-  securing them. An option-shaped tag name is now rejected with 400
-  `invalid_name` instead of a generic 409 `tag_failed`
-  (`internal/gitops/git.go`, `internal/gitops/rollback.go`,
-  `internal/api/git.go`, `docs/SECURITY.md`).
-
-### Documentation
-
-- **A design for agent-authored tests in Studio, with the execution path settled
-  against a live session** ([ADR 0004](docs/adr/0004-agent-authored-tests.md)).
-  The validation loop enters Play mode and watches the console; nobody plays the
-  game, so it can only ever catch what breaks on its own at startup. The
-  load-bearing question was whether a test could be executed inside Studio and a
-  structured result returned, and it now has an answer: `execute_luau` accepts
-  `datamodel_type` `Edit`, `Server` and `Client` — and only those; `Play` is
-  rejected outright — with `Server` and `Client` both reaching the *running*
-  game. `TestService` is fully reachable and `HttpService:JSONEncode` round-trips
-  through the tool result, so a named-case report can come back today with the
-  tool surface StudioForge already has. The ADR answers the six questions #41
-  requires, and recommends building it as two issues while explicitly deferring
-  the accumulating project-level suite, which has an unsolved problem in it.
-
-### Changed
-
 - **A Claude run's file tools are now held inside the project, on the two
   profiles where that can be enforced.** Setting the subprocess's working
   directory is a starting point, not a boundary, so the same StudioForge
@@ -560,80 +552,6 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   (`internal/roblox/mcp/validator.go`, `internal/roblox/mcp/client.go`,
   `internal/scheduler/scheduler.go`, `internal/app/app.go`).
 
-### Added
-
-- **Chat images open full size.** A thumbnail is capped at 220x160 so a screenshot does not shove the conversation off the screen, which leaves a whole Studio viewport too small to read. Clicking one — pasted or captured — opens it at full size over the page; click anywhere outside it, the close button, or Escape to dismiss (`web/src/lib/components/views/ChatView.svelte`).
-- **A screenshot the agent takes while it works now appears in the chat.** Until
-  now `screen_capture` fed the model's own context and was discarded at the end
-  of the turn, so the one participant who could not see what the agent saw was
-  the operator — who is the only one able to say whether the shop actually looks
-  right. The image is now saved content-addressed into the project's
-  `.studioforge/attachments/` and announced as a message carrying the same
-  `## Attached images` block a pasted image uses, so it renders as a thumbnail
-  live and again after a reload, with no new frontend concept. Both provider
-  paths are covered: the in-process loop saves the bridge's decoded image, and
-  the Claude adapter pulls the base64 out of the CLI's own `tool_result` blocks,
-  which it used to pass through untouched. The prompt asks for a screenshot only
-  when the run's grant actually permits `screen_capture`, and asks the agent to
-  capture freely for its own checking but to show the operator only what they
-  asked to see. That is backed by a limit rather than left to the model: at most
-  three images per run reach the chat, and never the same image twice, since
-  content-addressed paths make a repeat of an unchanged screen recognisable. Best effort: an image
-  that cannot be decoded or written costs a thumbnail, never the run
-  (`internal/attachments`, `internal/providers/openrouter/agentloop.go`,
-  `internal/providers/claudecode/claude.go`, `internal/prompts/studio.go`,
-  `web/src/lib/components/views/ChatView.svelte`).
-
-- **An agent on OpenRouter or NVIDIA now asks the operator a question with a tool instead of a text
-  convention.** `studioforge_question` takes the question and its 2–4 options as schema-validated
-  arguments, and StudioForge writes the fenced block itself from them. The model never formats
-  anything, so the failures the old convention had — a sentence before the fence, a different
-  info-string, JSON that is nearly right — become a tool error the agent can see and retry rather
-  than a question card that silently never renders. The turn ends where the question was asked, so
-  the agent cannot answer itself and carry on. Everything downstream is unchanged, so a question
-  asked this way parks the run and renders identically, live and after a page reload; the run
-  event's raw type records which path it came from. The tool is offered under every permission
-  profile, read-only included — asking changes nothing in the project. Claude keeps the text fence,
-  which always works (`internal/providers/openrouter/agenttools/tool_question.go`,
-  `internal/providers/openrouter/agentloop.go`, `internal/api/api.go`).
-- **An agent asked to build an interface now gets told how Roblox interfaces work.** Sizing in fixed
-  pixels, hand-placed positions, missing `AnchorPoint`, unconstrained `TextScaled` — none of these
-  produce an error, so the console stays clean, the playtest passes, and the operator finds out by
-  opening the game on a phone, which is where most Roblox sessions are. A run whose task text is
-  about interface work (matched in English and Russian) carries a compact set of rules, and the
-  fuller reference is written into the project as `.agent/roblox-ui.md`, where every provider can
-  read it and the operator can edit it. It is written once and never overwritten, and it is
-  deliberately not one of the files loaded into every prompt (`internal/prompts/ui.go`,
-  `internal/prompts/reference/roblox-ui.md`, `internal/projects/scaffold.go`).
-- **The house rules now say how much to write and how far to go beyond the request.** Current models
-  default to long narration between tool calls and to quietly widening a task — extra abstractions,
-  unrequested tidying — which costs more here than in a developer tool, because the audience is
-  Roblox creators rather than developers reading a build log (`internal/prompts/houserules.go`).
-- **How often the playtest polls the console is now a setting, not a constant.** The window it polls
-  for has been configurable for a while (`playtest_window_seconds`); the interval within it was a
-  hardcoded three seconds, even though `ValidateRequest.PollInterval` already existed and was already
-  honoured — nothing ever set it. `playtest_poll_seconds` (default 3, accepted between 1 and 60) now
-  reaches it, alongside the window in **Settings**, so a place that prints rarely can be polled less
-  often and one being watched closely can be polled more (`internal/api/api.go`, `internal/app/app.go`,
-  `web/src/lib/components/views/SettingsView.svelte`).
-- **A run that changed Studio directly, bypassing git, is now flagged instead of quietly vanishing
-  from the diff.** `execute_luau`, `multi_edit`, `insert_asset` and the rest of the tools that mutate
-  the open place write into Studio's own session, not the project's working tree, so a run that used
-  one looked from the diff panel exactly like a run that changed nothing — "No changes to show for
-  this run" read the same whether the agent left the place untouched or rebuilt half of it from a
-  script. `mcp.MutatesPlace` classifies which Studio tools count (`subagent` and `skill` included on
-  purpose: both hand the turn to Roblox's own agent inside Studio, whose own tool calls never reach
-  this provider's event stream, so excluding them would reproduce the exact miss this closes), and the
-  scheduler watches every provider's own tool-call events for one, unconditionally — never gated
-  behind the per-agent stuck-detection opt-out, which has nothing to do with whether Studio was
-  changed. The diff panel now says so in place of, or above, the usual message, and the rollback
-  confirmation states plainly that Studio-side changes will not be undone by restoring a commit
-  (`internal/roblox/mcp/config.go`, `internal/scheduler/studio_mutation.go`,
-  `internal/migrations/sql/016_studio_direct_edits.sql`, `internal/api/diff.go`,
-  `web/src/lib/components/views/ChatView.svelte`).
-
-### Changed
-
 - **The Studio tool rules are now built from the run's actual grant, instead of being sent on every
   run.** Studio access is withheld often and by design — more than one Studio open, an ambiguous
   place name, a missing launcher — and those runs were still carrying a page describing a dozen
@@ -671,6 +589,88 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   subagent never sees (`internal/api/api.go`).
 
 ### Fixed
+
+- **A stored tool path could look wrong on Windows CI runners even though
+  startup validated it correctly.** `TestStartupAcceptsAValidStoredToolPath`
+  compared `validatedToolSetting`'s result — which resolves through
+  `toolpath.Validate` and, with it, `filepath.EvalSymlinks` — against the raw
+  path `t.TempDir()` handed back, which on the `windows-latest` runner is an
+  8.3 short name (`RUNNER~1`) because the `runneradmin` account name is longer
+  than 8 characters. `EvalSymlinks` resolves that short name to its long form,
+  so the two spellings of the same file never matched as strings — the same
+  trap `Workspace.Contains` hit in `3a13c95`. The stored path was validated
+  correctly the whole time; only the test's comparison was fragile. It now
+  compares by file identity with `os.SameFile` instead of by string equality
+  (`internal/app/app_test.go`), and a new `TestValidateAcceptsAShortPathForm-
+  OnWindows` drives `toolpath.Validate` through a real 8.3 short path obtained
+  from `GetShortPathName`, so the case has direct coverage rather than relying
+  on a CI runner's account name
+  (`internal/platform/toolpath/toolpath_windows_test.go`).
+
+- **The playtest recorded the console ten times over.** Studio answers every
+  `get_console_output` call with the whole buffer rather than what is new since
+  the last one, and the poll loop appended each answer wholesale, so with the
+  default 30-second window and 3-second interval a line printed early in the
+  window was stored roughly ten times and the collected console grew
+  quadratically with the length of the window — which meant lengthening the
+  window made the record of it worse. The loop now appends only the part of a
+  poll's answer that extends the previous one, and keeps the whole answer when
+  it does not extend it, so a rotated or truncated buffer loses nothing. This is
+  deliberately not a line-level de-duplication: a line the place genuinely
+  printed twice is real output and survives, while `dedupeEntries` keeps taking
+  the opposite tradeoff for the error list that feeds a correction prompt, where
+  a repeat is noise rather than evidence (`internal/roblox/mcp/validator.go`).
+
+- **The playtest reported `passed` when all it had shown was the absence of eight
+  substrings.** A script that silently does nothing still prints a banner on
+  startup, so the console was non-empty, no marker matched, and the run was
+  reported to the creator as playtested and fine while the game was broken —
+  absence of evidence presented as evidence of absence, which is worse than
+  reporting nothing, because the operator stops looking. The outcome is now
+  called `no_errors_detected` and worded to match in both locales, and it is
+  claimed only when `get_studio_state` confirms the place actually entered Play
+  mode; a clean console without that confirmation is `inconclusive`, since
+  "nothing went wrong" and "nothing ran" are otherwise the same reading. The
+  stored value is migrated so existing runs stay readable. `failed` keeps its
+  meaning and its behaviour (`internal/roblox/mcp/validator.go`,
+  `internal/migrations/sql/015_validation_no_errors_detected.sql`).
+
+- **`run_command`'s allowlist checked the executable's name, not its identity.**
+  It matched on the basename alone, and the value it had just validated went
+  straight to `exec.CommandContext` with no further checking. A `workspace-write`
+  agent may write files — that is what the profile means — so the bypass was two
+  steps: write `git.cmd` into the project, run `./git.cmd`. The `command` must
+  now be a bare executable name; anything carrying a path separator or a volume
+  is refused. The name is then resolved with `exec.LookPath` and the **resolved
+  absolute path** is what actually runs, with a resolution landing inside the
+  project refused outright — an allowlisted name found in the workspace is the
+  agent's own file, not the tool. `danger-full-access` is unchanged, being
+  explicitly the profile for arbitrary commands. This does not make
+  `workspace-write` a sandbox: the build-tool route stays open by design and
+  `docs/SECURITY.md` says so
+  (`internal/providers/openrouter/agenttools/tool_shell.go`).
+
+- **The tag name in `POST /api/v1/projects/{id}/git/tag` reached `git tag`'s
+  argv unsanitized.** A name like `-d`, `--file=/etc/passwd`, or `-F../../x`
+  could be read by `git` as an option rather than the tag being created,
+  letting a request delete a tag, read an arbitrary file into a tag message,
+  or otherwise reshape the command the API meant to run. `internal/gitops`
+  now validates every ref and tag-name string before it becomes argv:
+  `validateTagName` rejects anything empty, over-length, leading with `-`,
+  containing whitespace or control characters, `~ ^ : ? * [ \`, a
+  leading/trailing `.`, a `/`, a `.lock` suffix, or `..`; `validateRef`
+  applies equivalent leading-dash/length/character checks to the commit refs
+  used by `DiffCommit`, `DiffRange`, `SafeRollback`, and
+  `SelectiveRollback`. `Tag` now runs `git tag -a -m <message> -- <name>`, so
+  `--` marks the end of options for the positional tag name, the same
+  pattern `SelectiveRollback` already used for `checkout`/`rm` path
+  arguments; it is deliberately not added before ref arguments to
+  `diff`/`cat-file`/`merge-base`, where `--` means "pathspec follows", not
+  "revision follows", and would silently break those commands instead of
+  securing them. An option-shaped tag name is now rejected with 400
+  `invalid_name` instead of a generic 409 `tag_failed`
+  (`internal/gitops/git.go`, `internal/gitops/rollback.go`,
+  `internal/api/git.go`, `docs/SECURITY.md`).
 
 - **A Windows drive prefix is now refused as a command name on every host, not
   just on Windows.** `checkCommandIsPlainName` leaned on `filepath.VolumeName`,
@@ -742,6 +742,20 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   failing the daemon to start over one stale settings row.
 
 ### Documentation
+
+- **A design for agent-authored tests in Studio, with the execution path settled
+  against a live session** ([ADR 0004](docs/adr/0004-agent-authored-tests.md)).
+  The validation loop enters Play mode and watches the console; nobody plays the
+  game, so it can only ever catch what breaks on its own at startup. The
+  load-bearing question was whether a test could be executed inside Studio and a
+  structured result returned, and it now has an answer: `execute_luau` accepts
+  `datamodel_type` `Edit`, `Server` and `Client` — and only those; `Play` is
+  rejected outright — with `Server` and `Client` both reaching the *running*
+  game. `TestService` is fully reachable and `HttpService:JSONEncode` round-trips
+  through the tool result, so a named-case report can come back today with the
+  tool surface StudioForge already has. The ADR answers the six questions #41
+  requires, and recommends building it as two issues while explicitly deferring
+  the accumulating project-level suite, which has an unsolved problem in it.
 
 - **Two ADRs record the design behind this cycle's two security-facing
   features.** [ADR 0006](docs/adr/0006-network-egress-policy.md) covers the
