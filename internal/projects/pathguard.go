@@ -13,6 +13,7 @@ import (
 )
 
 var ErrOutsideProject = errors.New("path is outside the registered project root")
+var ErrProjectRootNotRegistered = errors.New("project root is not registered")
 
 type PathGuard struct {
 	mu    sync.RWMutex
@@ -65,7 +66,7 @@ func (g *PathGuard) Resolve(projectID, relative string) (string, error) {
 	root, ok := g.roots[projectID]
 	g.mu.RUnlock()
 	if !ok {
-		return "", errors.New("project root is not registered")
+		return "", ErrProjectRootNotRegistered
 	}
 	if filepath.IsAbs(relative) {
 		return "", ErrOutsideProject

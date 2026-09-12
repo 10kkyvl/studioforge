@@ -3,6 +3,7 @@ package processes
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +25,20 @@ func TestHelperProcess(t *testing.T) {
 			_ = os.WriteFile(marker, []byte(strconv.Itoa(i)), 0o644)
 			time.Sleep(20 * time.Millisecond)
 		}
+	}
+	if marker := os.Getenv("STUDIOFORGE_HELPER_WRITE_ONCE"); marker != "" {
+		_ = os.WriteFile(marker, []byte("outside"), 0o644)
+		os.Exit(0)
+	}
+	if addr := os.Getenv("STUDIOFORGE_HELPER_CONNECT_ADDR"); addr != "" {
+		conn, err := net.DialTimeout("tcp", addr, time.Second)
+		if err == nil {
+			_ = conn.Close()
+			if marker := os.Getenv("STUDIOFORGE_HELPER_CONNECT_MARKER"); marker != "" {
+				_ = os.WriteFile(marker, []byte("connected"), 0o644)
+			}
+		}
+		os.Exit(0)
 	}
 	if marker := os.Getenv("STUDIOFORGE_HELPER_SPAWN_CHILD"); marker != "" {
 		child := exec.Command(os.Args[0], "-test.run=TestHelperProcess")

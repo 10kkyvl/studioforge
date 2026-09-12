@@ -161,6 +161,35 @@ type RunStore interface {
 	CreateCheckpoint(ctx context.Context, checkpoint models.Checkpoint) error
 	ThreadSessionBefore(ctx context.Context, threadID, runID string) (string, error)
 }
+
+type pendingReviewStore interface {
+	ListDecisions(context.Context, string) ([]models.Decision, error)
+}
+
+// ReviewRequest is emitted once, at the end of a provider turn, when an
+// agent's opt-in review gate is enabled. The provider has already applied its
+// edits in the working tree; the proposer records the pending decision and
+// returns true when the run should park in the existing waiting_decision state.
+type ReviewRequest struct {
+	Job        *Job
+	SessionID  string
+	BaseCommit string
+	Timeout    time.Duration
+}
+
+type ReviewProposal struct {
+	Pending    bool
+	DecisionID string
+}
+
+// ReviewProposer is the application-owned bridge to the durable decisions
+// table. Keeping it outside scheduler avoids making the provider-neutral
+// scheduler know Git or HTTP/API concerns.
+type ReviewProposer func(context.Context, ReviewRequest) (ReviewProposal, error)
+
+// ReviewTimeoutHandler rejects a pending review when its bounded wait ends.
+type ReviewTimeoutHandler func(context.Context, ReviewRequest) error
+
 type Job struct {
 	RunID, ProjectID, AgentID, TaskID, Provider, Model, Effort, PermissionProfile string
 	WorkingDirectory, Prompt, SystemPrompt, Scenario                              string
@@ -174,6 +203,7 @@ type Job struct {
 	MaxBudget            float64
 	AllowUnverifiedModel bool
 	IdempotencyKey       string
+	BaseCommit           string
 	// Attachments are project-relative paths to images attached to this job's
 	// prompt. Only ever set on a fresh user turn: resumeRun, restart, and
 	// buildCorrectionJob leave it empty since images are per-user-turn only.
@@ -208,6 +238,12 @@ type Job struct {
 	// consecutive repeats of the same short tool-call sequence, with no file
 	// edit and no new console/tool-result text, count as stuck.
 	StuckRepetitionCap int
+	// ReviewBeforeApply pauses after a successful provider turn until an
+	// operator chooses Apply, Reject, or Apply selected. Off by default.
+	ReviewBeforeApply    bool
+	ReviewTimeoutSeconds int
+	EgressPolicy         string
+	RegistryHosts        []string
 }
 
 // MCPGrant is the MCP access a run receives. An empty ConfigPath means none;
@@ -304,6 +340,8 @@ type Manager struct {
 	provision                                                     MCPProvisioner
 	validate                                                      MCPValidator
 	propose                                                       DecisionProposer
+	review                                                        ReviewProposer
+	reviewTimeout                                                 ReviewTimeoutHandler
 	memoryStore                                                   *memory.Store
 	mu                                                            sync.Mutex
 	queue                                                         *fairQueue
@@ -318,11 +356,12 @@ type Manager struct {
 	tick time.Duration
 }
 type execution struct {
-	cancel   context.CancelFunc
-	pausing  bool
-	running  bool
-	provider providers.Provider
-	job      *Job
+	cancel     context.CancelFunc
+	pausing    bool
+	running    bool
+	provider   providers.Provider
+	job        *Job
+	reviewWait chan ReviewOutcome
 	// question is set once a fully-buffered assistant message in this run
 	// carried a studioforge-question fenced block, so the run's final
 	// transition lands on waiting_decision instead of completed.
@@ -350,6 +389,11 @@ type execution struct {
 	obsCountAtToolCall   []int
 	distinctObservations map[string]bool
 	recentObservations   []string
+}
+
+type ReviewOutcome struct {
+	Approved bool
+	Error    string
 }
 
 func New(parent context.Context, store RunStore, hub *events.Hub, leases *resources.Manager, adapters map[string]providers.Provider) *Manager {
@@ -398,7 +442,7 @@ func (m *Manager) createRun(ctx context.Context, j *Job) (models.Run, bool, erro
 	if closed {
 		return models.Run{}, false, errors.New("scheduler is closed")
 	}
-	run, created, err := m.store.CreateRun(ctx, models.Run{ID: j.RunID, ProjectID: j.ProjectID, AgentID: j.AgentID, TaskID: j.TaskID, Provider: j.Provider, ModelAlias: j.Model, Status: "queued", Phase: "queued", ThreadID: j.ThreadID, PromptSnapshot: j.Prompt, ParentRunID: j.ParentRunID, CorrectionDepth: j.CorrectionDepth}, j.IdempotencyKey)
+	run, created, err := m.store.CreateRun(ctx, models.Run{ID: j.RunID, ProjectID: j.ProjectID, AgentID: j.AgentID, TaskID: j.TaskID, Provider: j.Provider, ModelAlias: j.Model, Status: "queued", Phase: "queued", ThreadID: j.ThreadID, PromptSnapshot: j.Prompt, BaseCommit: j.BaseCommit, ParentRunID: j.ParentRunID, CorrectionDepth: j.CorrectionDepth}, j.IdempotencyKey)
 	if err != nil || !created {
 		return run, created, err
 	}
@@ -479,6 +523,7 @@ func (m *Manager) signal() {
 }
 func (m *Manager) run(ctx context.Context, e *execution) {
 	j := e.job
+	reviewApproved := false
 	defer m.finished(j)
 	allowed, limit, used, err := m.store.BudgetAllowed(ctx, j.ProjectID, j.MaxBudget)
 	if err != nil {
@@ -488,6 +533,32 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 	if !allowed {
 		m.fail(ctx, j, fmt.Sprintf("budget ceiling reached (used %.2f of %.2f)", used, limit))
 		return
+	}
+	if j.ReviewBeforeApply && j.Mode != "plan" {
+		m.mu.Lock()
+		reviewConfigured := m.review != nil
+		m.mu.Unlock()
+		if !reviewConfigured {
+			m.fail(context.Background(), j, "review gate is enabled but unavailable")
+			return
+		}
+		if strings.TrimSpace(j.BaseCommit) == "" {
+			m.fail(context.Background(), j, "review gate requires a Git checkpoint")
+			return
+		}
+	}
+	if decisions, ok := m.store.(pendingReviewStore); ok {
+		pending, err := decisions.ListDecisions(ctx, "pending")
+		if err != nil {
+			m.fail(context.Background(), j, "check pending review: "+err.Error())
+			return
+		}
+		for _, decision := range pending {
+			if decision.Kind == "review_before_apply" && decision.ProjectID == j.ProjectID {
+				m.fail(context.Background(), j, "project has a pending review; resolve it before starting another run")
+				return
+			}
+		}
 	}
 	m.transition(ctx, j, "queued", "waiting_resources", "resources", first(j.Resources), "")
 	lease, err := m.leases.Acquire(ctx, j.RunID, j.Resources)
@@ -500,6 +571,22 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 		return
 	}
 	defer lease.Release()
+	// A queued writer may have passed the first check while another run was
+	// still producing its review. Recheck after acquiring the project lease so
+	// an orphaned or daemon-recovered pending decision cannot be bypassed.
+	if decisions, ok := m.store.(pendingReviewStore); ok {
+		pending, err := decisions.ListDecisions(ctx, "pending")
+		if err != nil {
+			m.fail(context.Background(), j, "check pending review: "+err.Error())
+			return
+		}
+		for _, decision := range pending {
+			if decision.Kind == "review_before_apply" && decision.ProjectID == j.ProjectID {
+				m.fail(context.Background(), j, "project has a pending review; resolve it before starting another run")
+				return
+			}
+		}
+	}
 	m.transition(ctx, j, "waiting_resources", "starting", "provider_start", "", "")
 	m.mu.Lock()
 	provision := m.provision
@@ -518,7 +605,7 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 	if grant.Context != "" {
 		prompt = "Current Roblox Studio place state (do not re-list it, build on it):\n" + grant.Context + "\n\n" + prompt
 	}
-	req := providers.RunRequest{RunID: j.RunID, ProjectID: j.ProjectID, AgentID: j.AgentID, ThreadID: j.ThreadID, WorkingDirectory: j.WorkingDirectory, Prompt: prompt, SystemPrompt: j.SystemPrompt, Mode: j.Mode, Model: j.Model, Effort: j.Effort, PermissionProfile: j.PermissionProfile, MaxBudget: j.MaxBudget, AllowUnverifiedModel: j.AllowUnverifiedModel, Scenario: j.Scenario, MCPConfigPath: grant.ConfigPath, AllowedTools: grant.AllowedTools, Subagents: j.Subagents, Attachments: j.Attachments}
+	req := providers.RunRequest{RunID: j.RunID, ProjectID: j.ProjectID, AgentID: j.AgentID, ThreadID: j.ThreadID, WorkingDirectory: j.WorkingDirectory, Prompt: prompt, SystemPrompt: j.SystemPrompt, Mode: j.Mode, Model: j.Model, Effort: j.Effort, PermissionProfile: j.PermissionProfile, MaxBudget: j.MaxBudget, AllowUnverifiedModel: j.AllowUnverifiedModel, Scenario: j.Scenario, MCPConfigPath: grant.ConfigPath, AllowedTools: grant.AllowedTools, Subagents: j.Subagents, Attachments: j.Attachments, EgressPolicy: j.EgressPolicy, RegistryHosts: j.RegistryHosts}
 	resumeSession := j.ResumeSessionID
 	if j.ResumeThread && j.ThreadID != "" {
 		resumeSession, err = m.store.ThreadSessionBefore(ctx, j.ThreadID, j.RunID)
@@ -648,6 +735,113 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 		m.transition(context.Background(), j, "running", "waiting_decision", "waiting_decision", "", "")
 		return
 	}
+	// A review gate is deliberately checked at the natural batch boundary: the
+	// provider turn has ended, so twenty edits produce one decision rather than
+	// twenty per-tool prompts. The callback records the durable decision and
+	// the run parks in the same waiting_decision state used by questions and
+	// stuck escalation. It returns false for non-Git/no-diff runs.
+	if j.ReviewBeforeApply && j.Mode != "plan" {
+		m.mu.Lock()
+		review := m.review
+		m.mu.Unlock()
+		if review == nil {
+			m.fail(context.Background(), j, "review gate is enabled but unavailable")
+			return
+		}
+		if review != nil {
+			timeout := time.Duration(j.ReviewTimeoutSeconds) * time.Second
+			if timeout <= 0 {
+				timeout = 5 * time.Minute
+			}
+			reviewReq := ReviewRequest{Job: j, SessionID: result.SessionID, BaseCommit: j.BaseCommit, Timeout: timeout}
+			m.mu.Lock()
+			e.reviewWait = make(chan ReviewOutcome, 1)
+			wait := e.reviewWait
+			m.mu.Unlock()
+			if ctx.Err() != nil {
+				m.finalizeStopped(e, "running")
+				return
+			}
+			proposal, reviewErr := review(ctx, reviewReq)
+			if reviewErr != nil {
+				m.mu.Lock()
+				e.reviewWait = nil
+				m.mu.Unlock()
+				m.fail(context.Background(), j, "review gate failed: "+reviewErr.Error())
+				return
+			}
+			if proposal.Pending {
+				m.transition(context.Background(), j, "running", "waiting_decision", "waiting_decision", "", "review required before applying file changes")
+				timer := time.NewTimer(timeout)
+				heartbeat := time.NewTicker(validationHeartbeatInterval(m.leases.TTL()))
+				for {
+					select {
+					case outcome := <-wait:
+						timer.Stop()
+						heartbeat.Stop()
+						m.mu.Lock()
+						e.reviewWait = nil
+						m.mu.Unlock()
+						if !outcome.Approved {
+							message := outcome.Error
+							if message == "" {
+								message = "review rejected; file changes were restored to the checkpoint"
+							}
+							m.transition(context.Background(), j, "waiting_decision", "failed", "failed", "", message)
+							return
+						}
+						reviewApproved = true
+						m.transition(context.Background(), j, "waiting_decision", "running", "agent", "", "review approved")
+						goto reviewResolved
+					case <-timer.C:
+						heartbeat.Stop()
+						m.mu.Lock()
+						handler := m.reviewTimeout
+						e.reviewWait = nil
+						m.mu.Unlock()
+						message := "review expired; file changes were rejected automatically"
+						if handler != nil {
+							handlerCtx, cancel := context.WithTimeout(context.Background(), reviewResolutionTimeout)
+							err := handler(handlerCtx, reviewReq)
+							cancel()
+							if err != nil {
+								slog.Warn("review timeout handler failed", "run_id", j.RunID, "error", err)
+								message = "review expired; automatic rejection failed and current file changes were preserved for manual review"
+							}
+						}
+						m.transition(context.Background(), j, "waiting_decision", "failed", "failed", "", message)
+						return
+					case <-ctx.Done():
+						timer.Stop()
+						heartbeat.Stop()
+						m.mu.Lock()
+						e.reviewWait = nil
+						m.mu.Unlock()
+						m.finalizeStopped(e, "waiting_decision")
+						return
+					case <-heartbeat.C:
+						if err := lease.Heartbeat(); err != nil {
+							m.mu.Lock()
+							handler := m.reviewTimeout
+							e.reviewWait = nil
+							m.mu.Unlock()
+							if handler != nil {
+								handlerCtx, cancel := context.WithTimeout(context.Background(), reviewResolutionTimeout)
+								_ = handler(handlerCtx, reviewReq)
+								cancel()
+							}
+							m.transition(context.Background(), j, "waiting_decision", "failed", "failed", "", "project lock was lost while waiting for review")
+							return
+						}
+					}
+				}
+			reviewResolved:
+			}
+			m.mu.Lock()
+			e.reviewWait = nil
+			m.mu.Unlock()
+		}
+	}
 	m.mu.Lock()
 	mem := m.memoryStore
 	m.mu.Unlock()
@@ -672,7 +866,14 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 		m.finalizeStopped(e, "running")
 		return
 	}
-	m.transition(context.Background(), j, "running", "completed", "verified", "", "")
+	finalPhase := "verified"
+	if reviewApproved {
+		// Approval means the operator accepted the reviewed snapshot. No
+		// validation necessarily ran, so do not claim the stronger verified
+		// phase merely because the scheduler reached its normal completion tail.
+		finalPhase = "applied"
+	}
+	m.transition(context.Background(), j, "running", "completed", finalPhase, "", "")
 }
 
 // validationHeartbeatFraction and its clamps size the validation phase's own
@@ -683,6 +884,7 @@ const (
 	validationHeartbeatFraction = 3
 	minValidationHeartbeat      = 500 * time.Millisecond
 	maxValidationHeartbeat      = 5 * time.Second
+	reviewResolutionTimeout     = 15 * time.Second
 )
 
 func validationHeartbeatInterval(ttl time.Duration) time.Duration {
@@ -830,6 +1032,7 @@ func (m *Manager) scheduleCorrection(ctx context.Context, j *Job, sessionID stri
 			return
 		}
 		if hash != "" {
+			correction.BaseCommit = hash
 			checkpoint := models.Checkpoint{RunID: run.ID, ProjectID: j.ProjectID, CommitHash: hash, Branch: branch, Label: checkpointLabel, CreatedAt: time.Now().UTC()}
 			if err := m.store.CreateCheckpoint(ctx, checkpoint); err != nil {
 				slog.Error("persist checkpoint before correction run failed; abandoning correction", "run_id", run.ID, "project_id", j.ProjectID, "error", err)
@@ -859,6 +1062,8 @@ func buildCorrectionJob(j *Job, sessionID string, validation ValidationResult) J
 		MaxBudget: j.MaxBudget, AllowUnverifiedModel: j.AllowUnverifiedModel, Prompt: correctionPrompt(validation),
 		ParentRunID: j.RunID, CorrectionDepth: j.CorrectionDepth + 1,
 		MaxCorrectionRuns: j.MaxCorrectionRuns, ValidateAfterRun: j.ValidateAfterRun,
+		ReviewBeforeApply: j.ReviewBeforeApply, ReviewTimeoutSeconds: j.ReviewTimeoutSeconds,
+		EgressPolicy: j.EgressPolicy, RegistryHosts: append([]string(nil), j.RegistryHosts...),
 		MemoryEntryIDs: append([]string(nil), j.MemoryEntryIDs...),
 		IdempotencyKey: "correction:" + j.RunID,
 	}
@@ -881,6 +1086,41 @@ func (m *Manager) SetDecisionProposer(p DecisionProposer) {
 	m.mu.Lock()
 	m.propose = p
 	m.mu.Unlock()
+}
+
+// SetReviewProposer installs the review-before-apply bridge. Opt-in jobs fail
+// closed when it is absent, so they can never run without a durable decision
+// path and rollback checkpoint.
+func (m *Manager) SetReviewProposer(p ReviewProposer) {
+	m.mu.Lock()
+	m.review = p
+	m.mu.Unlock()
+}
+
+func (m *Manager) SetReviewTimeoutHandler(h ReviewTimeoutHandler) {
+	m.mu.Lock()
+	m.reviewTimeout = h
+	m.mu.Unlock()
+}
+
+// ResolveReview wakes the run that is holding its project lease for a pending
+// review. It returns an error when the daemon has no in-memory waiter (for
+// example after restart); the API then performs the durable terminal update.
+func (m *Manager) ResolveReview(runID string, approved bool, message string) error {
+	m.mu.Lock()
+	e, ok := m.active[runID]
+	if !ok || e.reviewWait == nil {
+		m.mu.Unlock()
+		return errors.New("review run is not active")
+	}
+	wait := e.reviewWait
+	m.mu.Unlock()
+	select {
+	case wait <- ReviewOutcome{Approved: approved, Error: message}:
+		return nil
+	default:
+		return errors.New("review has already been resolved")
+	}
 }
 
 // proposeCorrectionDecision offers an operator the chance to override an
@@ -1075,8 +1315,24 @@ func (m *Manager) Cancel(ctx context.Context, runID string) error {
 	e, ok := m.active[runID]
 	if ok {
 		e.cancelling = true
-		e.cancel()
+		reviewPending := e.reviewWait != nil
+		reviewHandler := m.reviewTimeout
+		job := *e.job
 		m.mu.Unlock()
+		// A pending review still has the provider's edits live in the project.
+		// Resolve it before cancelling the waiting goroutine so the handler can
+		// verify and restore the reviewed snapshot while this run still owns the
+		// project lease. The handler is serialized with ordinary API decisions.
+		if reviewPending && reviewHandler != nil {
+			timeout := time.Duration(job.ReviewTimeoutSeconds) * time.Second
+			if timeout <= 0 {
+				timeout = 5 * time.Minute
+			}
+			handlerCtx, cancel := context.WithTimeout(context.Background(), reviewResolutionTimeout)
+			_ = reviewHandler(handlerCtx, ReviewRequest{Job: &job, BaseCommit: job.BaseCommit, Timeout: timeout})
+			cancel()
+		}
+		e.cancel()
 		return nil
 	}
 	// A run that is still queued has no goroutine and no provider process, so

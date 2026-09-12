@@ -38,6 +38,12 @@
   });
 
   let showCreate = false;
+  function parseHosts(value: string): string[] {
+    return value
+      .split(',')
+      .map((host) => host.trim().toLowerCase())
+      .filter(Boolean);
+  }
   const blankDraft: Partial<Agent> = {
     name: '',
     role: $translate('team.defaultRole'),
@@ -50,6 +56,9 @@
     budget: 10,
     validateAfterRun: false,
     maxCorrectionRuns: 1,
+    egressPolicy: 'unrestricted',
+    registryHosts: [],
+    reviewBeforeApply: false,
   };
   let draft: Partial<Agent> = { ...blankDraft };
 
@@ -128,6 +137,23 @@
       ></label
     >
     <label
+      >{$translate('team.egressPolicy')}<select bind:value={draft.egressPolicy}
+        ><option value="unrestricted">{$translate('team.egressUnrestricted')}</option><option
+          value="registry-only">{$translate('team.egressRegistry')}</option
+        ><option value="none">{$translate('team.egressNone')}</option></select
+      ></label
+    >
+    {#if draft.egressPolicy === 'registry-only'}
+      <label class="field-span-2"
+        >{$translate('team.registryHosts')}<input
+          value={(draft.registryHosts ?? []).join(', ')}
+          oninput={(event) =>
+            (draft.registryHosts = parseHosts((event.currentTarget as HTMLInputElement).value))}
+          placeholder="registry.npmjs.org, proxy.example"
+        /></label
+      >
+    {/if}
+    <label
       >{$translate('common.budget')}<input
         type="number"
         min="0"
@@ -153,6 +179,12 @@
         >
       {/if}
     {/if}
+    <label class="checkbox"
+      ><input type="checkbox" bind:checked={draft.reviewBeforeApply} /><span
+        >{$translate('team.reviewBeforeApply')}</span
+      ></label
+    >
+    <p class="path-hint">{$translate('team.reviewBeforeApplyHint')}</p>
     <button class="primary" type="submit" disabled={busy === 'agent-create'}
       ><Plus size={16} />{$translate('team.create')}</button
     >
@@ -226,6 +258,23 @@
           ></label
         >
         <label
+          >{$translate('team.egressPolicy')}<select bind:value={agent.egressPolicy}
+            ><option value="unrestricted">{$translate('team.egressUnrestricted')}</option><option
+              value="registry-only">{$translate('team.egressRegistry')}</option
+            ><option value="none">{$translate('team.egressNone')}</option></select
+          ></label
+        >
+        {#if agent.egressPolicy === 'registry-only'}
+          <label class="field-span-2"
+            >{$translate('team.registryHosts')}<input
+              value={(agent.registryHosts ?? []).join(', ')}
+              oninput={(event) =>
+                (agent.registryHosts = parseHosts((event.currentTarget as HTMLInputElement).value))}
+              placeholder="registry.npmjs.org, proxy.example"
+            /></label
+          >
+        {/if}
+        <label
           >{$translate('common.budget')}<input
             type="number"
             min="0"
@@ -256,6 +305,12 @@
             >
           {/if}
         {/if}
+        <label class="checkbox"
+          ><input type="checkbox" bind:checked={agent.reviewBeforeApply} /><span
+            >{$translate('team.reviewBeforeApply')}</span
+          ></label
+        >
+        <p class="path-hint">{$translate('team.reviewBeforeApplyHint')}</p>
         <footer>
           <button type="submit" disabled={busy === `agent-${agent.id}`}
             ><Save size={15} />{$translate('common.save')}</button

@@ -24,6 +24,48 @@ see [Browser/session security](#browsersession-security)) exist to stop a **web 
 site's script** from driving the daemon through your browser, not to stop same-user malware. Keep
 the workstation itself trustworthy; that is the actual boundary.
 
+## Agent process containment and network policy
+
+Agent-started child processes carry an explicit containment request. On macOS,
+StudioForge wraps the command in `sandbox-exec` and permits writes only under
+the canonical project root and a per-run temporary/cache directory. On
+Windows, each run is assigned to a Job Object with a process-count limit, a
+generous job-memory limit, and kill-on-close semantics. A Windows Job Object
+does not restrict filesystem paths; the child can still reach paths allowed to
+the operator's account. Linux has a `bwrap` backend for CI/future deployments;
+required containment refuses to start when `bwrap` is absent.
+
+Containment setup is fail-closed when requested: a missing backend, invalid
+project root, or failed Windows Job Object assignment returns a start error and
+the child is killed. Agent shell and Claude starts select the platform backend
+from the permission profile: project writes are confined on macOS/Linux for
+workspace-write, read-only is write-denied apart from the per-run cache, and
+danger-full-access preserves the operator's filesystem permissions.
+The wrapper adds one process start/assignment step per command; no persistent
+privileged service or driver is installed.
+
+Network policy is a separate field. `unrestricted` is the compatibility
+default, and `none` denies outbound traffic in the macOS profile and unshares
+the Linux network namespace. On macOS, `registry-only` routes through a
+per-run loopback proxy: the sandbox can reach only that localhost port, and the
+proxy permits exact configured hostnames on port 443 before it resolves or
+dials them. Linux `bwrap` has no host filter and the Windows Job Object has no
+network filtering, so `registry-only` fails closed on those platforms with a
+policy-specific error instead of silently becoming unrestricted. These policies
+apply only to agent-started children; StudioForge's own provider API traffic and
+local Studio MCP traffic are not covered.
+
+Claude Code is the exception to restrictive child egress policies: its CLI
+process owns the model-provider connection, so StudioForge rejects `none` and
+`registry-only` for Claude rather than blocking the provider API by accident.
+Those policies remain available for OpenRouter/NVIDIA child tools, whose
+provider API runs in the daemon.
+
+The macOS backend benchmark (`BenchmarkRequiredContainmentStart`) measured
+about 8.8 ms per `touch` process on an Apple M4 Pro (20 runs, September 2026,
+including the wrapper start and teardown). This is a reference measurement,
+not a promise for every command, filesystem, or Windows machine.
+
 ## What access the tool receives
 
 Enumerated honestly, StudioForge can:
@@ -58,22 +100,18 @@ directly, and does not open any listener other than the one loopback (or explici
   then requires the resolved path to exist and be a directory.
 - The same file defines `PathGuard.Resolve`, which additionally rejects `..` traversal and a
   symlink used to escape back out of an already-registered root (both cases are unit-tested in
-  `internal/projects/pathguard_test.go`). Be precise about what this buys you today: **no HTTP
-  handler in `internal/api` calls `Resolve`** — StudioForge exposes no endpoint that accepts a
-  project-relative file path from the browser, so there is nothing in the live server for that
-  per-path guard to gate yet. It is available for a future feature (for example, a file browser)
-  that would need it.
+  `internal/projects/pathguard_test.go`). The read-only project file browser calls `Resolve` for
+  every requested path before listing a directory or opening a file; it caps text reads at 1 MB,
+  flags binary files, and does not edit project files.
 - What a run can and cannot touch, in practice: StudioForge itself reads exactly two files from a
   project — `.agent/constitution.yaml` and `.agent/requirements.md` — verbatim, and prepends them to
   the run's system prompt (`internal/projects/context.go`). It also writes a Rojo skeleton on first
   registration if none exists (`internal/projects/scaffold.go`), and builds/writes a place file under
   `.studioforge/` when you open Studio. Beyond that, the two providers differ in a way worth being
-  precise about: **a Claude run's subprocess itself runs with the full filesystem permissions of the
-  user account that started StudioForge.** `claude` is started with its working directory (`cmd.Dir`)
-  set to the project's canonical root, but StudioForge does not sandbox, chroot, or otherwise fence
-  that process's own file access — whatever the CLI (or a tool it invokes) chooses to read or write,
-  it can, anywhere the OS account can reach. Claude Code has no OS-level sandbox from StudioForge's
-  side, only its own tool-approval gate. **An OpenRouter run's file tools are contained by
+  precise about: **a Claude run's subprocess uses the platform containment backend when one is
+  required.** macOS denies writes outside the project and per-run cache/temp roots; Windows Job
+  Objects enforce process lifetime/resources but do not fence filesystem paths; Linux refuses a
+  required start when `bwrap` is unavailable. **An OpenRouter run's file tools are contained by
   StudioForge's own code, not by the model's good behavior**: `agenttools.Workspace` resolves every
   path a workspace tool touches (list/read/search/grep/create/edit/patch/mkdir/git) against the
   project's canonical root, rejects absolute paths and `..` traversal, and rejects a symlink used to
@@ -90,8 +128,8 @@ directly, and does not open any listener other than the one loopback (or explici
   `npm run`, `make` or `cargo` can always arrange to execute code by writing it into a test file, an
   npm script or a Makefile recipe first. Treat `workspace-write` as "this agent can run code in this
   project", not as isolation, and reserve `danger-full-access` for when you also want it reaching
-  outside the project. Real isolation would need an OS-level sandbox, which StudioForge does not
-  currently implement — see [docs/KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
+  outside the project. The OS boundary is platform-specific and the allowlist remains a separate
+  barrier — see [docs/KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
 
 ## Roblox Studio access
 
@@ -183,8 +221,9 @@ directly, and does not open any listener other than the one loopback (or explici
     non-interactive mode has no user to prompt), `danger-full-access` → `bypassPermissions`
     (everything is auto-approved, including arbitrary commands Claude chooses to run). Plan mode
     (the chat "Plan" toggle) always forces `--permission-mode plan` regardless of the agent's
-    profile. Claude Code enforces this itself; StudioForge applies no additional OS-level sandbox
-    around the Claude process on any tier, including `danger-full-access`.
+    profile. Claude Code enforces this itself; StudioForge also applies the platform process
+    boundary described above. Windows Job Objects still provide process lifetime/resource limits,
+    not filesystem path isolation.
   - OpenRouter: StudioForge's own `agenttools` package enforces the profile directly, tool by tool,
     rather than delegating to the model or an external sandbox — see
     [Local file access](#local-file-access) for the workspace-containment detail. `read-only` exposes
@@ -366,9 +405,9 @@ OS credential store StudioForge itself reads the API key from.
 - Real end-to-end paths against an actual Claude account or an actual Roblox Studio instance run only
   behind opt-in environment variables (`STUDIOFORGE_REAL_CLAUDE=1`, `STUDIOFORGE_REAL_STUDIO=1`);
   the default `go test ./...` (and CI) exercises fakes only.
-- `PathGuard.Resolve`'s traversal/symlink-escape check has no live caller (see
-  [Local file access](#local-file-access)) — do not read its unit tests as evidence that a specific
-  HTTP endpoint is guarded, because none currently calls it.
+- `PathGuard.Resolve` protects the read-only project file browser. Traversal and symlink escapes are
+  rejected before a directory is listed or a file is opened; text reads are capped at 1 MB and
+  binary files are flagged instead of returned.
 - Safe mode's run-blocking check is not repeated on the run-restart endpoint (see
   [Command execution](#command-execution)).
 - **Free OpenRouter models are less predictable than paid ones.** Quality, latency, and rate limits

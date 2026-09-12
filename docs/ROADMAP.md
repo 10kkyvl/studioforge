@@ -35,7 +35,9 @@ description if it ever does.
   already provides natively.
 - Autonomous, long-running agent loops beyond the bounded correction-run chain the validation loop
   now schedules.
-- Background polling for the Studio Sessions view, instead of the operator's own **Refresh** click.
-  Deliberately not done yet: every probe spawns a launcher process that competes with a running agent
-  for Studio's single WS host slot, so an unattended poll interval trades that risk for convenience
-  this beta does not yet need.
+- Background polling for the Studio Sessions view is available in Settings. It defaults
+  to a conservative 60-second interval (`studio_sessions_poll_interval_seconds=60`), can be disabled
+  with 0, and is suspended while any Claude,
+  OpenRouter, or NVIDIA run or Studio validation holds a grant. A grant cancels and drains an
+  in-flight listing before it opens its own launcher connection, and a short quiet gap follows the
+  last release so a correction run cannot race the next poll.

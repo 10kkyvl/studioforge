@@ -27,6 +27,7 @@
   import { aggregateOpenRouterMessages } from '$lib/openrouterStream';
   import { parseAttachments } from '$lib/attachments';
   import Markdown from '$lib/components/Markdown.svelte';
+  import DiffViewer from '$lib/components/DiffViewer.svelte';
   import { foregroundRun, liveThreadRuns, queuedBehindForeground } from '$lib/runQueue';
   import { endsRun, mcpWithheldMessage } from '$lib/runStatus';
   import {
@@ -84,6 +85,7 @@
   export let agents: Agent[] = [];
   export let tasks: Task[] = [];
   export let runs: Run[] = [];
+  export let onOpenFile: (projectId: string, path: string) => void = () => {};
 
   let threads: ChatThread[] = [];
   let selectedThreadId = '';
@@ -103,6 +105,8 @@
   let errorRetry: (() => void) | null = null;
   let sentRunId: string | null = null;
   let runDiff: RunDiff | null = null;
+  let runDiffProjectId = '';
+  let diffGeneration = 0;
   let loadingDiff = false;
   let confirmingRollback = false;
   let rollingBack = false;
@@ -834,14 +838,26 @@
   }
 
   async function loadRunDiff(runId: string) {
+    const requestGeneration = ++diffGeneration;
+    const generation = projectGeneration;
+    const threadId = selectedThreadId;
+    const runProjectId = [...submittedRuns, ...runs].find((run) => run.id === runId)?.projectId;
+    if (!runProjectId) return;
+    const current = () =>
+      requestGeneration === diffGeneration &&
+      generation === projectGeneration &&
+      threadId === selectedThreadId;
     loadingDiff = true;
     resetRollbackState();
     try {
-      runDiff = await getRunDiff(runId);
+      const result = await getRunDiff(runId);
+      if (!current()) return;
+      runDiffProjectId = runProjectId;
+      runDiff = result;
     } catch (cause) {
-      if (cause instanceof APIError) runDiff = null;
+      if (current() && cause instanceof APIError) runDiff = null;
     } finally {
-      loadingDiff = false;
+      if (current()) loadingDiff = false;
     }
   }
 
@@ -1406,7 +1422,7 @@
       {#if runDiff.diff.trim() !== '' && !runDiff.note}
         <details class="diff-panel">
           <summary>{$translate('chat.diffChangedFiles')}</summary>
-          <pre class="diff-pre">{runDiff.diff}</pre>
+          <DiffViewer diff={runDiff.diff} projectId={runDiffProjectId} {onOpenFile} />
         </details>
       {:else}
         <p class="diff-muted">{runDiff.note || $translate('chat.diffNoChanges')}</p>

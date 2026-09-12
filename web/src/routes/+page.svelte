@@ -4,6 +4,7 @@
   import {
     Activity,
     FolderKanban,
+    FileCode2,
     Gauge,
     Languages,
     ListChecks,
@@ -46,6 +47,7 @@
   import NewProjectDialog from '$lib/components/NewProjectDialog.svelte';
   import ActivityView from '$lib/components/views/ActivityView.svelte';
   import ChatView from '$lib/components/views/ChatView.svelte';
+  import UsageView from '$lib/components/views/UsageView.svelte';
   import OverviewView from '$lib/components/views/OverviewView.svelte';
   import ProjectsView from '$lib/components/views/ProjectsView.svelte';
   import RunsView from '$lib/components/views/RunsView.svelte';
@@ -53,12 +55,15 @@
   import StudiosView from '$lib/components/views/StudiosView.svelte';
   import TasksView from '$lib/components/views/TasksView.svelte';
   import TeamView from '$lib/components/views/TeamView.svelte';
+  import FilesView from '$lib/components/views/FilesView.svelte';
 
   type View =
     | 'chat'
     | 'projects'
     | 'activity'
     | 'overview'
+    | 'usage'
+    | 'files'
     | 'team'
     | 'tasks'
     | 'runs'
@@ -75,6 +80,8 @@
   let wizardSuspended = false;
   let selectedProjectId = '';
   let selectedRunId = '';
+  let fileOpenPath = '';
+  let fileOpenProjectId = '';
   let events: RunEvent[] = [];
   let streamOnline = false;
   let theme = 'system';
@@ -118,6 +125,8 @@
     { id: 'projects', icon: FolderKanban, key: 'nav.projects' },
     { id: 'activity', icon: Activity, key: 'nav.activity' },
     { id: 'overview', icon: Gauge, key: 'nav.overview' },
+    { id: 'usage', icon: Gauge, key: 'usage.title' },
+    { id: 'files', icon: FileCode2, key: 'nav.files' },
     { id: 'team', icon: Users, key: 'nav.team' },
     { id: 'tasks', icon: ListChecks, key: 'nav.tasks' },
     { id: 'runs', icon: TerminalSquare, key: 'nav.runs' },
@@ -133,7 +142,13 @@
     },
     {
       label: 'nav.groupProject',
-      items: [navById.get('projects')!, navById.get('overview')!, navById.get('team')!],
+      items: [
+        navById.get('projects')!,
+        navById.get('overview')!,
+        navById.get('usage')!,
+        navById.get('files')!,
+        navById.get('team')!,
+      ],
     },
     {
       label: 'nav.groupMonitor',
@@ -476,6 +491,9 @@
         studio_auto_open: settings.studio_auto_open === 'false' ? 'false' : 'true',
         concurrency: String(settings.concurrency),
         playtest_window_seconds: String(settings.playtest_window_seconds),
+        studio_sessions_poll_interval_seconds: String(
+          settings.studio_sessions_poll_interval_seconds,
+        ),
         openrouter_data_collection: settings.openrouter_data_collection ?? '',
         openrouter_zdr: settings.openrouter_zdr ?? '',
         openrouter_allow_fallbacks: settings.openrouter_allow_fallbacks ?? '',
@@ -507,9 +525,18 @@
       await refresh();
     });
   }
-  async function resolveDecision(decisionId: string, approve: boolean) {
+  async function resolveDecision(
+    decisionId: string,
+    approveOrAction: boolean | string,
+    selectedFiles: string[] = [],
+    selectedHunks: { path: string; index: number }[] = [],
+  ) {
     await action(`decision-${decisionId}`, async () => {
-      await post(`/decisions/${decisionId}/resolve`, { approve });
+      const body =
+        typeof approveOrAction === 'string'
+          ? { action: approveOrAction, selectedFiles, hunks: selectedHunks }
+          : { approve: approveOrAction };
+      await post(`/decisions/${decisionId}/resolve`, body);
       await refresh();
     });
   }
@@ -599,7 +626,10 @@
           {#each group.items as item}
             <button
               class:active={view === item.id}
-              onclick={() => (view = item.id)}
+              onclick={() => {
+                if (item.id === 'files') fileOpenPath = '';
+                view = item.id;
+              }}
               title={`Alt+${item.index + 1}`}
               aria-current={view === item.id ? 'page' : undefined}
             >
@@ -695,6 +725,12 @@
                 onSent={(id) => {
                   selectedRunId = id;
                 }}
+                onOpenFile={(projectId, path) => {
+                  selectedProjectId = projectId;
+                  fileOpenProjectId = projectId;
+                  fileOpenPath = path;
+                  view = 'files';
+                }}
                 onSynced={() => void refresh()}
                 onEnsureStream={connectStream}
               />
@@ -737,6 +773,19 @@
                   view = 'runs';
                 }}
               />
+            {:else if view === 'usage'}
+              <UsageView
+                project={selectedProject}
+                onOpenRun={(runId) => {
+                  selectedRunId = runId;
+                  view = 'runs';
+                }}
+              />
+            {:else if view === 'files'}
+              <FilesView
+                project={selectedProject}
+                openPath={selectedProjectId === fileOpenProjectId ? fileOpenPath : ''}
+              />
             {:else if view === 'team'}
               <TeamView
                 agents={snapshot.agents}
@@ -773,6 +822,7 @@
                 {payloadText}
                 decisions={snapshot.decisions}
                 onResolveDecision={resolveDecision}
+                onResolveReviewDecision={resolveDecision}
                 busy={busy.startsWith('run-')}
               />
             {:else if view === 'studios'}
@@ -783,6 +833,7 @@
                 onBind={bindStudio}
                 onRecognise={recogniseStudio}
                 detected={studioSessionsDetected}
+                refreshState={snapshot.studioRefresh}
                 onRefresh={refreshStudioSessions}
                 busy={busy === 'studio-sessions-refresh'}
               />

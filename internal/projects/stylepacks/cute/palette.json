@@ -1,0 +1,10 @@
+{
+  "surface": "#FFF7E8",
+  "surfaceAlt": "#FFEFD2",
+  "text": "#3B2942",
+  "muted": "#806B7A",
+  "primary": "#F4779A",
+  "secondary": "#82CDB2",
+  "accent": "#F5C95B",
+  "focus": "#4FA8D8"
+}

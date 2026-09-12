@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/10kkyvl/studioforge/internal/models"
 )
@@ -122,5 +123,36 @@ func TestResolveUnknownDecisionErrors(t *testing.T) {
 	_, store := testDB(t)
 	if err := store.ResolveDecision(context.Background(), "does-not-exist", "approved"); err == nil {
 		t.Fatal("resolving a decision that does not exist must error")
+	}
+}
+
+func TestReviewDecisionRoundTripsDiffAndExpires(t *testing.T) {
+	_, store := testDB(t)
+	ctx := context.Background()
+	project, run := seedDecisionFixture(t, store)
+	expires := time.Now().UTC().Add(time.Minute)
+	decision, err := store.CreateDecision(ctx, models.Decision{
+		ProjectID: project.ID, RunID: run.ID, Kind: "review_before_apply",
+		Summary: "review", Payload: `{"diff":"diff --git a/a b/a\n","files":["a"]}`, ExpiresAt: &expires,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := store.ListDecisions(ctx, "pending")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].Diff == "" || len(pending[0].Files) != 1 || pending[0].ExpiresAt == nil {
+		t.Fatalf("pending review=%+v", pending)
+	}
+	if err := store.ExpireDecision(ctx, decision.ID); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := store.Decision(ctx, decision.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Status != "denied" || resolved.ResolvedAt == nil || resolved.Detail == "" {
+		t.Fatalf("expired review=%+v", resolved)
 	}
 }

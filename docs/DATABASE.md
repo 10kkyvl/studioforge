@@ -39,3 +39,17 @@ CGO-free драйвер `modernc.org/sqlite` используется через
 Doctor запускает `PRAGMA integrity_check` и `foreign_key_check`. Корректное завершение выполняет `wal_checkpoint(TRUNCATE)`. Backup использует `VACUUM INTO`, поэтому база и WAL остаются согласованным источником во время работы daemon. Тесты миграций также обновляют базу, созданную на первой миграции, и сравнивают её канонические таблицы, колонки, типы и индексы со свежей установкой.
 
 Миграция `015_memory_management.sql` добавляет закрепление памяти и связь записей с запусками, в которые они подставлены. Удаление памяти удаляет только эти связи, сохраняя исходные запуски. `016_studio_changes.sql` добавляет отдельный журнал операций Studio: ID вызова, объект, имена свойств и исход. Обе таблицы не затрагиваются очисткой событий запусков. Shim открывает готовую БД без запуска миграций.
+
+## Project usage reporting
+
+`GET /api/v1/projects/{id}/usage` reads durable `usage_records` for money and
+accounting dates, and `runs` for token counters (including cache tokens).
+It never relies on verbose `run_events`. Costs are bucketed in UTC by day and
+Monday-starting week. Per-run costs sum accounting records; token totals read
+one run summary, avoiding duplicate cache counts. A `recorded` flag distinguishes
+missing usage from recorded zero cost. The displayed active daily ceiling and
+last-24-hour spend use the same query as the pre-run budget gate; lifetime spend
+is separate. Typical duration uses the existing last-20-completed-runs query.
+`TestUsageReportRetainsAccountingAfterPruning` confirms that pruning old terminal
+run events leaves the complete report unchanged. The Web UI exports the visible
+sort order to CSV with spreadsheet formula prefixes escaped.

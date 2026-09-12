@@ -19,6 +19,10 @@ type Spec struct {
 	ID, Kind, ProjectID, RunID, Executable, WorkingDirectory string
 	Args, Environment                                        []string
 	MaxRuntime                                               time.Duration
+	// Containment is deliberately explicit. Internal daemon helpers may opt
+	// out, while every agent-started process opts in and fails closed if the
+	// platform cannot establish the requested boundary.
+	Containment ContainmentSpec
 }
 type Line struct {
 	Stream string
@@ -41,6 +45,8 @@ type Process struct {
 	once         sync.Once
 	droppedLines atomic.Int64
 	collectors   sync.WaitGroup
+	cleanup      func()
+	networkLogs  func() []NetworkObservation
 }
 type Supervisor struct {
 	mu        sync.Mutex
@@ -74,6 +80,16 @@ func (s *Supervisor) Start(parent context.Context, spec Spec) (*Process, error) 
 	cmd.Dir = spec.WorkingDirectory
 	if len(spec.Environment) > 0 {
 		cmd.Env = append([]string(nil), spec.Environment...)
+	}
+	tempCleanup, err := allocateContainmentTemp(&spec.Containment)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("process confinement temp: %w", err)
+	}
+	if err := prepareContainment(cmd, spec.Containment); err != nil {
+		tempCleanup()
+		cancel()
+		return nil, fmt.Errorf("process confinement: %w", err)
 	}
 	configureProcessTree(cmd)
 	if spec.MaxRuntime > 0 {
@@ -110,12 +126,21 @@ func (s *Supervisor) Start(parent context.Context, spec Spec) (*Process, error) 
 		cancel()
 		return nil, fmt.Errorf("stderr pipe: %w", err)
 	}
-	if err := cmd.Start(); err != nil {
+	cleanup, err := startContainedCommand(cmd, spec.Containment)
+	if err != nil {
+		tempCleanup()
 		s.unreserve(spec.ID)
 		cancel()
 		return nil, fmt.Errorf("start %s: %w", spec.Kind, err)
 	}
 	p.result.StartedAt = time.Now().UTC()
+	p.cleanup = func() {
+		if cleanup != nil {
+			cleanup()
+		}
+		tempCleanup()
+	}
+	p.networkLogs = networkObservationReader(cmd)
 
 	s.mu.Lock()
 	delete(s.reserving, spec.ID)
@@ -138,6 +163,9 @@ func (s *Supervisor) Start(parent context.Context, spec Spec) (*Process, error) 
 			p.result.ExitCode = cmd.ProcessState.ExitCode()
 		}
 		p.mu.Unlock()
+		if p.cleanup != nil {
+			p.cleanup()
+		}
 		close(p.lines)
 		cancel()
 		s.mu.Lock()
@@ -181,8 +209,15 @@ func (p *Process) collect(reader io.Reader, stream string) {
 		}
 	}
 }
-func (p *Process) Lines() <-chan Line  { return p.lines }
-func (p *Process) DroppedLines() int64 { return p.droppedLines.Load() }
+func (p *Process) Lines() <-chan Line           { return p.lines }
+func (p *Process) DroppedLines() int64          { return p.droppedLines.Load() }
+func (p *Process) Containment() ContainmentSpec { return p.spec.Containment }
+func (p *Process) NetworkObservations() []NetworkObservation {
+	if p.networkLogs == nil {
+		return nil
+	}
+	return p.networkLogs()
+}
 func (p *Process) PID() int {
 	if p.cmd.Process == nil {
 		return 0

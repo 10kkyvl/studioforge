@@ -5,8 +5,11 @@ import type {
   DetectedPaths,
   MemoryEntry,
   RunDiff,
+  ProjectFileContent,
+  ProjectFiles,
   RunEvent,
   Snapshot,
+  StylePack,
   StudioStatus,
   SyncStatus,
   Task,
@@ -49,6 +52,10 @@ export function friendlyError(err: unknown, t: (key: TranslationKey) => string):
   if (err instanceof APIError) {
     if (err.code === 'timeout') return t('error.timeout');
     if (err.code === 'network') return t('error.network');
+    if (err.code === 'file_too_large') return t('files.tooLarge');
+    if (err.code === 'path_outside_project') return t('files.pathOutside');
+    if (err.code === 'file_not_found' || err.code === 'directory_read_failed')
+      return t('files.loadError');
     if (err.status === 401 || err.status === 403) return t('error.session');
     if (err.status === 404) return t('error.notFound');
     if (err.status !== undefined && err.status >= 500) return t('error.server');
@@ -154,6 +161,10 @@ export const setCloudPlace = (projectId: string, cloudPlace: string): Promise<vo
   );
 export const getPace = (projectId: string) =>
   request<{ typicalSeconds: number; samples: number }>(`/projects/${projectId}/pace`);
+export const getProjectStyles = (projectId: string) =>
+  request<{ styles: StylePack[]; selected: string }>(`/projects/${projectId}/styles`);
+export const setProjectStyle = (projectId: string, style: string) =>
+  post<{ style: string; pack: StylePack }>(`/projects/${projectId}/style`, { style });
 export const getMemory = (projectId: string) =>
   request<{ entries: MemoryEntry[] }>(`/projects/${projectId}/memory`).then((body) => body.entries);
 export const updateMemory = (entryId: string, patch: { content?: string; pinned?: boolean }) =>
@@ -166,6 +177,14 @@ export const deleteMemory = (entryId: string): Promise<void> =>
 export const clearMemory = (projectId: string) =>
   request<{ deleted: number }>(`/projects/${projectId}/memory`, { method: 'DELETE' });
 export const getRunDiff = (runId: string) => request<RunDiff>(`/runs/${runId}/diff`);
+export const getProjectFiles = (projectId: string, path = '') =>
+  request<ProjectFiles>(
+    `/projects/${encodeURIComponent(projectId)}/files?path=${encodeURIComponent(path)}`,
+  );
+export const getProjectFileContent = (projectId: string, path: string) =>
+  request<ProjectFileContent>(
+    `/projects/${encodeURIComponent(projectId)}/files/content?path=${encodeURIComponent(path)}`,
+  );
 export const rollbackRun = (runId: string) =>
   post<{ branch: string; commitHash: string }>(`/runs/${runId}/rollback`, {});
 export const getStudioStatus = (projectId?: string) =>
@@ -299,3 +318,6 @@ export function connectEvents(
 
 export const getStudioChanges = (runId: string) =>
   request<import('$lib/types').StudioChange[]>(`/runs/${runId}/studio-changes`);
+
+export const getUsage = (projectId: string) =>
+  request<import('./usage').UsageReport>(`/projects/${encodeURIComponent(projectId)}/usage`);

@@ -34,6 +34,7 @@ import (
 	"github.com/10kkyvl/studioforge/internal/providers/openrouter/catalog"
 	"github.com/10kkyvl/studioforge/internal/providers/openrouter/credential"
 	"github.com/10kkyvl/studioforge/internal/resources"
+	"github.com/10kkyvl/studioforge/internal/reviewgate"
 	"github.com/10kkyvl/studioforge/internal/scheduler"
 	"github.com/10kkyvl/studioforge/internal/tasks"
 	"github.com/10kkyvl/studioforge/internal/webui"
@@ -75,6 +76,10 @@ type GitOps interface {
 	Tag(ctx context.Context, projectPath, name string) error
 }
 
+type reviewGitOps interface {
+	Resolve(ctx context.Context, root, commit string, expected reviewgate.Snapshot, action string, selected []string, hunks []reviewgate.HunkSelection) error
+}
+
 type Memory interface {
 	Search(ctx context.Context, projectID, query string, limit int) ([]memory.Entry, error)
 	List(ctx context.Context, projectID string) ([]memory.Entry, error)
@@ -105,6 +110,7 @@ type Server struct {
 	studioOpenCheck       func(context.Context, string) (StudioOpenCheck, error)
 	studioStatus          func(context.Context, string) (StudioStatus, error)
 	refreshStudioSessions StudioSessionsRefresher
+	studioSessionsState   func() StudioSessionsState
 	syncer                Syncer
 	git                   GitOps
 	memory                Memory
@@ -113,6 +119,7 @@ type Server struct {
 	orCreds               *credential.Manager
 	orCatalog             *catalog.Service
 	nvidiaCreds           *credential.Manager
+	reviewMu              sync.Mutex
 }
 type Dependencies struct {
 	Store                 *database.Store
@@ -130,6 +137,7 @@ type Dependencies struct {
 	StudioOpenCheck       func(context.Context, string) (StudioOpenCheck, error)
 	StudioStatus          func(context.Context, string) (StudioStatus, error)
 	RefreshStudioSessions StudioSessionsRefresher
+	StudioSessionsState   func() StudioSessionsState
 	Sync                  Syncer
 	Git                   GitOps
 	Memory                Memory
@@ -152,7 +160,13 @@ func New(d Dependencies) (*Server, error) {
 	if d.Logger == nil {
 		d.Logger = slog.Default()
 	}
-	return &Server{store: d.Store, db: d.DB, scheduler: d.Scheduler, hub: d.Hub, doctor: d.Doctor, sessions: d.Sessions, guard: d.Guard, safeMode: d.SafeMode, allowedHost: d.AllowedHost, dataDir: d.DataDir, logger: d.Logger, applySetting: d.ApplySetting, studio: d.Studio, studioOpenCheck: d.StudioOpenCheck, studioStatus: d.StudioStatus, refreshStudioSessions: d.RefreshStudioSessions, syncer: d.Sync, git: d.Git, memory: d.Memory, stuckSettings: d.StuckSettings, leases: d.Leases, orCreds: d.OpenRouterCreds, orCatalog: d.OpenRouterCatalog, nvidiaCreds: d.NVIDIACreds, assets: assets, csp: contentSecurityPolicy(assets)}, nil
+	server := &Server{store: d.Store, db: d.DB, scheduler: d.Scheduler, hub: d.Hub, doctor: d.Doctor, sessions: d.Sessions, guard: d.Guard, safeMode: d.SafeMode, allowedHost: d.AllowedHost, dataDir: d.DataDir, logger: d.Logger, applySetting: d.ApplySetting, studio: d.Studio, studioOpenCheck: d.StudioOpenCheck, studioStatus: d.StudioStatus, refreshStudioSessions: d.RefreshStudioSessions, studioSessionsState: d.StudioSessionsState, syncer: d.Sync, git: d.Git, memory: d.Memory, stuckSettings: d.StuckSettings, leases: d.Leases, orCreds: d.OpenRouterCreds, orCatalog: d.OpenRouterCatalog, nvidiaCreds: d.NVIDIACreds, assets: assets, csp: contentSecurityPolicy(assets)}
+	if d.Scheduler != nil {
+		d.Scheduler.SetReviewProposer(server.proposeReview)
+		d.Scheduler.SetReviewTimeoutHandler(server.expireReviewRequest)
+	}
+	server.schedulePendingReviewExpiries()
+	return server, nil
 }
 
 func contentSecurityPolicy(assets fs.FS) string {
@@ -172,9 +186,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/studio-status", s.studioStatusHandler)
 	mux.HandleFunc("POST /api/v1/projects", s.createProject)
 	mux.HandleFunc("POST /api/v1/projects/{id}/archive", s.archiveProject)
+	mux.HandleFunc("GET /api/v1/projects/{id}/styles", s.listProjectStyles)
+	mux.HandleFunc("GET /api/v1/projects/{id}/style", s.getProjectStyle)
+	mux.HandleFunc("POST /api/v1/projects/{id}/style", s.setProjectStyle)
+	mux.HandleFunc("PUT /api/v1/projects/{id}/style", s.setProjectStyle)
+	mux.HandleFunc("PATCH /api/v1/projects/{id}/style", s.setProjectStyle)
 	mux.HandleFunc("POST /api/v1/projects/{id}/open-studio", s.openStudio)
 	mux.HandleFunc("POST /api/v1/projects/{id}/sync", s.startSync)
 	mux.HandleFunc("DELETE /api/v1/projects/{id}/sync", s.stopSync)
+	mux.HandleFunc("GET /api/v1/projects/{id}/files", s.projectFiles)
+	mux.HandleFunc("GET /api/v1/projects/{id}/files/content", s.projectFileContent)
 	mux.HandleFunc("POST /api/v1/projects/{id}/tasks", s.createTaskHandler)
 	mux.HandleFunc("POST /api/v1/tasks/{taskId}", s.updateTaskHandler)
 	mux.HandleFunc("DELETE /api/v1/tasks/{taskId}", s.deleteTaskHandler)
@@ -187,6 +208,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/projects/{id}/cloud-place", s.getCloudPlace)
 	mux.HandleFunc("POST /api/v1/projects/{id}/cloud-place", s.setCloudPlace)
 	mux.HandleFunc("GET /api/v1/projects/{id}/pace", s.pace)
+	mux.HandleFunc("GET /api/v1/projects/{id}/usage", s.projectUsage)
 	mux.HandleFunc("GET /api/v1/projects/{id}/memory", s.listMemory)
 	mux.HandleFunc("DELETE /api/v1/projects/{id}/memory", s.clearMemory)
 	mux.HandleFunc("PATCH /api/v1/memory/{entryId}", s.updateMemory)
@@ -349,7 +371,7 @@ func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 	settings := map[string]any{"locale": locale, "setupComplete": setupDone && setup == "true", "safeMode": s.safeMode}
 	defaults := map[string]string{
 		"default_provider": "claude", "default_model": "default", "default_effort": "medium",
-		"claude_path": "", "rojo_path": "", "git_path": "", "studio_mcp_path": "", "studio_auto_open": "true", "concurrency": "6", "playtest_window_seconds": "30",
+		"claude_path": "", "rojo_path": "", "git_path": "", "studio_mcp_path": "", "studio_auto_open": "true", "concurrency": "6", "playtest_window_seconds": "30", "studio_sessions_poll_interval_seconds": "60",
 		"stuck_detection_enabled": "true", "stuck_idle_seconds": "600", "stuck_repetition_cap": "6",
 		"openrouter_data_collection": "", "openrouter_zdr": "", "openrouter_allow_fallbacks": "",
 	}
@@ -360,7 +382,11 @@ func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 		}
 		settings[key] = value
 	}
-	writeJSON(w, 200, map[string]any{"projects": projectsList, "runs": runs, "agents": agents, "tasks": tasks, "studios": studios, "decisions": decisions, "diagnostics": s.doctor.Run(ctx), "settings": settings})
+	studioState := StudioSessionsState{}
+	if s.studioSessionsState != nil {
+		studioState = s.studioSessionsState()
+	}
+	writeJSON(w, 200, map[string]any{"projects": projectsList, "runs": runs, "agents": agents, "tasks": tasks, "studios": studios, "studioRefresh": studioState, "decisions": decisions, "diagnostics": s.doctor.Run(ctx), "settings": settings})
 }
 
 // detectPaths reports where the external tools appear to be installed, so the
@@ -421,7 +447,7 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 		"locale": true, "theme": true, "setup_complete": true, "concurrency": true,
 		"default_provider": true, "default_model": true, "default_effort": true,
 		"claude_path": true, "rojo_path": true, "git_path": true, "studio_mcp_path": true, "studio_auto_open": true,
-		"playtest_window_seconds": true,
+		"playtest_window_seconds": true, "studio_sessions_poll_interval_seconds": true,
 		"stuck_detection_enabled": true, "stuck_idle_seconds": true, "stuck_repetition_cap": true,
 		"openrouter_data_collection": true, "openrouter_zdr": true, "openrouter_allow_fallbacks": true,
 		"event_retention_days": true,
@@ -454,6 +480,13 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 			seconds, err := strconv.Atoi(value)
 			if err != nil || seconds <= 0 {
 				writeError(w, r, 400, "invalid_playtest_window", "Playtest window must be a positive number of seconds", nil)
+				return
+			}
+		}
+		if key == "studio_sessions_poll_interval_seconds" {
+			seconds, err := strconv.Atoi(value)
+			if err != nil || seconds < 0 || seconds > 3600 {
+				writeError(w, r, 400, "invalid_studio_poll_interval", "Studio sessions poll interval must be 0 (disabled) or between 1 and 3600 seconds", nil)
 				return
 			}
 		}
@@ -588,11 +621,21 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, 500, "scaffold_failed", "Project directory could not be prepared with its Rojo skeleton", err)
 		return
 	}
+	if err := projects.EnsureStylePacks(root); err != nil {
+		writeError(w, r, 500, "style_scaffold_failed", "Project directory could not be prepared with its style packs", err)
+		return
+	}
+	s.ensureUIReference(root)
 	project, err := s.store.CreateProject(r.Context(), models.Project{ID: id, Name: name, Path: root, Fingerprint: projects.Fingerprint(root), Description: body.Description})
 	if err != nil {
 		writeError(w, r, 409, "project_conflict", "Unable to register project", err)
 		return
 	}
+	if err := s.store.SetProjectStyle(r.Context(), project.ID, projects.DefaultStyleName); err != nil {
+		writeError(w, r, 500, "database_error", "Project was created but its style could not be saved", err)
+		return
+	}
+	project.Style = projects.DefaultStyleName
 	studioNotice := ""
 	if body.OpenStudio && s.studio != nil {
 		switch outcome, check := s.studioOpenGate(r.Context(), project.ID); outcome {
@@ -637,6 +680,11 @@ func normalizeAgent(agent *models.Agent) error {
 	agent.ModelAlias = strings.TrimSpace(agent.ModelAlias)
 	agent.Effort = strings.ToLower(strings.TrimSpace(agent.Effort))
 	agent.Permission = strings.ToLower(strings.TrimSpace(agent.Permission))
+	agent.EgressPolicy = strings.ToLower(strings.TrimSpace(agent.EgressPolicy))
+	for i := range agent.RegistryHosts {
+		agent.RegistryHosts[i] = strings.ToLower(strings.TrimSpace(agent.RegistryHosts[i]))
+	}
+	agent.RegistryHosts = compactStrings(agent.RegistryHosts)
 	if agent.Name == "" {
 		return errors.New("agent name is required")
 	}
@@ -661,6 +709,15 @@ func normalizeAgent(agent *models.Agent) error {
 	if agent.Permission != "read-only" && agent.Permission != "workspace-write" && agent.Permission != "danger-full-access" {
 		return errors.New("permission must be read-only, workspace-write, or danger-full-access")
 	}
+	if agent.EgressPolicy == "" {
+		agent.EgressPolicy = "unrestricted"
+	}
+	if agent.EgressPolicy != "unrestricted" && agent.EgressPolicy != "registry-only" && agent.EgressPolicy != "none" {
+		return errors.New("egress policy must be unrestricted, registry-only, or none")
+	}
+	if agent.EgressPolicy == "registry-only" && len(agent.RegistryHosts) == 0 {
+		return errors.New("registry-only egress policy requires at least one registry host")
+	}
 	if agent.Concurrency < 1 || agent.Concurrency > 16 {
 		return errors.New("agent concurrency must be between 1 and 16")
 	}
@@ -668,6 +725,18 @@ func normalizeAgent(agent *models.Agent) error {
 		return errors.New("agent budget must be between 0 and 10000")
 	}
 	return nil
+}
+
+func compactStrings(values []string) []string {
+	out := values[:0]
+	seen := map[string]bool{}
+	for _, value := range values {
+		if value != "" && !seen[value] {
+			seen[value] = true
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
@@ -790,6 +859,135 @@ func (s *Server) createThread(w http.ResponseWriter, r *http.Request) {
 // leadAgentSettingKey is the project_settings key under which the chosen
 // lead agent's ID is stored.
 const leadAgentSettingKey = "lead_agent_id"
+
+// ensureUIReference writes the universal mechanics references on first use.
+// References and styles both use write-once deployment so an operator can edit
+// either document in the project without a later StudioForge update clobbering
+// it. A read-only project simply loses the optional deep reference; compact
+// mechanics remain in the prompt.
+func (s *Server) ensureUIReference(root string) {
+	for _, reference := range []struct {
+		path string
+		body string
+	}{
+		{prompts.RobloxUIReferenceFile, prompts.RobloxUIReference},
+		{prompts.RobloxUICraftFile, prompts.RobloxUICraft},
+	} {
+		if err := projects.EnsureReference(root, reference.path, reference.body); err != nil {
+			s.logger.Warn("write Roblox UI reference failed", "project_path", root, "reference", reference.path, "error", err)
+		}
+	}
+}
+
+func (s *Server) listProjectStyles(w http.ResponseWriter, r *http.Request) {
+	project, err := s.store.Project(r.Context(), r.PathValue("id"))
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, r, 404, "not_found", "Project not found", err)
+		return
+	}
+	if err != nil {
+		writeError(w, r, 500, "database_error", "Unable to load project", err)
+		return
+	}
+	if err := projects.EnsureStylePacks(project.Path); err != nil {
+		writeError(w, r, 500, "style_scaffold_failed", "Unable to install the default style packs", err)
+		return
+	}
+	packs, err := projects.ListStylePacks(project.Path)
+	if err != nil {
+		writeError(w, r, 500, "style_read_failed", "Unable to read project style packs", err)
+		return
+	}
+	style, err := s.store.ProjectStyle(r.Context(), project.ID)
+	if err != nil {
+		writeError(w, r, 500, "database_error", "Unable to read project style", err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"styles": packs, "selected": style})
+}
+
+func (s *Server) getProjectStyle(w http.ResponseWriter, r *http.Request) {
+	project, err := s.store.Project(r.Context(), r.PathValue("id"))
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, r, 404, "not_found", "Project not found", err)
+		return
+	}
+	if err != nil {
+		writeError(w, r, 500, "database_error", "Unable to load project", err)
+		return
+	}
+	if err := projects.EnsureStylePacks(project.Path); err != nil {
+		writeError(w, r, 500, "style_scaffold_failed", "Unable to install the default style packs", err)
+		return
+	}
+	style, err := s.store.ProjectStyle(r.Context(), project.ID)
+	if err != nil {
+		writeError(w, r, 500, "database_error", "Unable to read project style", err)
+		return
+	}
+	packs, err := projects.ListStylePacks(project.Path)
+	if err != nil {
+		writeError(w, r, 500, "style_read_failed", "Unable to read project style packs", err)
+		return
+	}
+	for _, pack := range packs {
+		if pack.Name == style {
+			writeJSON(w, 200, map[string]any{"style": style, "pack": pack})
+			return
+		}
+	}
+	writeJSON(w, 200, map[string]any{"style": style})
+}
+
+func (s *Server) setProjectStyle(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Style string `json:"style"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, r, 400, "invalid_json", err.Error(), nil)
+		return
+	}
+	style := strings.ToLower(strings.TrimSpace(body.Style))
+	if !projects.ValidStyleName(style) {
+		writeError(w, r, 400, "invalid_style", "Style names may contain lowercase letters, numbers, '-' and '_'", nil)
+		return
+	}
+	project, err := s.store.Project(r.Context(), r.PathValue("id"))
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, r, 404, "not_found", "Project not found", err)
+		return
+	}
+	if err != nil {
+		writeError(w, r, 500, "database_error", "Unable to load project", err)
+		return
+	}
+	if err := projects.EnsureStylePacks(project.Path); err != nil {
+		writeError(w, r, 500, "style_scaffold_failed", "Unable to install the default style packs", err)
+		return
+	}
+	packs, err := projects.ListStylePacks(project.Path)
+	if err != nil {
+		writeError(w, r, 500, "style_read_failed", "Unable to read project style packs", err)
+		return
+	}
+	var selected projects.StylePack
+	found := false
+	for _, pack := range packs {
+		if pack.Name == style {
+			selected, found = pack, true
+			break
+		}
+	}
+	if !found {
+		writeError(w, r, 400, "style_not_found", "Install the style pack in .agent/styles before selecting it", nil)
+		return
+	}
+	if err := s.store.SetProjectStyle(r.Context(), project.ID, style); err != nil {
+		writeError(w, r, 500, "database_error", "Unable to save project style", err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"style": style, "pack": selected})
+}
 
 // CloudPlaceSettingKey is the project_settings key under which the display
 // name of the roblox.com place a project is edited as is stored. It is empty
@@ -1146,6 +1344,36 @@ func (s *Server) checkpointBeforeRun(project models.Project, provider, mode stri
 	return commit, onBranch
 }
 
+// reviewGateReady is checked immediately before a job is submitted. An
+// opted-in run must have the durable rollback point and Git bridge in place
+// before its provider can edit the workspace; failing later in the proposer
+// would leave edits with no safe operator decision available.
+func (s *Server) reviewGateReady(agent models.Agent, mode, checkpoint string) error {
+	if !agent.ReviewBeforeApply || mode == "plan" {
+		return nil
+	}
+	if !checkpointWritingProvider(agent.Provider) || strings.TrimSpace(checkpoint) == "" || s.git == nil {
+		return errors.New("review-before-apply requires a Git checkpoint and Git integration")
+	}
+	return nil
+}
+
+func (s *Server) ensureNoPendingReview(ctx context.Context, projectID string) error {
+	if s.store == nil {
+		return nil
+	}
+	decisions, err := s.store.ListDecisions(ctx, "pending")
+	if err != nil {
+		return fmt.Errorf("check pending review: %w", err)
+	}
+	for _, decision := range decisions {
+		if decision.Kind == "review_before_apply" && decision.ProjectID == projectID {
+			return errors.New("project has a pending review; resolve it before starting another run")
+		}
+	}
+	return nil
+}
+
 // persistCheckpoint links a taken checkpoint to the run it protects. Best
 // effort for the same reason checkpointBeforeRun is: the commit already exists
 // on disk and is recoverable by hand even if this row never lands.
@@ -1321,7 +1549,22 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	if s.stuckSettings != nil {
 		stuckSettings = s.stuckSettings()
 	}
-	projectContext := projects.LoadContext(project.Path)
+	if err := projects.EnsureStylePacks(project.Path); err != nil {
+		writeError(w, r, 500, "style_scaffold_failed", "Unable to install the project's default style packs", err)
+		return
+	}
+	if project.Style == "" {
+		project.Style, err = s.store.ProjectStyle(r.Context(), project.ID)
+		if err != nil {
+			writeError(w, r, 500, "database_error", "Unable to read project style", err)
+			return
+		}
+	}
+	projectContext := projects.LoadContext(project.Path, project.Style)
+	if prompts.TaskTouchesUI(body.Prompt) {
+		s.ensureUIReference(project.Path)
+		projectContext = strings.TrimSpace(projectContext + "\n\n" + prompts.RobloxUICore)
+	}
 	var selectedMemoryIDs []string
 	if s.memory != nil {
 		if entries, err := s.memory.Search(r.Context(), project.ID, body.Prompt, 5); err != nil {
@@ -1339,7 +1582,15 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	// Carry the house rules and the project's standing context so the operator need
 	// not re-explain the project — or which language to answer in — on every message.
 	systemPrompt := prompts.ForRun(agent.SystemPrompt, projectContext)
+	if err := s.ensureNoPendingReview(r.Context(), project.ID); err != nil {
+		writeError(w, r, 409, "review_pending", err.Error(), nil)
+		return
+	}
 	checkpointHash, checkpointBranch := s.checkpointBeforeRun(project, agent.Provider, body.Mode)
+	if err := s.reviewGateReady(agent, body.Mode, checkpointHash); err != nil {
+		writeError(w, r, 409, "review_gate_unavailable", err.Error(), nil)
+		return
+	}
 	if taskID != "" {
 		// Re-check right before submission, not just at the top of the
 		// handler: a dependency's status can change while the rest of this
@@ -1358,7 +1609,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	}
 	key := r.Header.Get("Idempotency-Key")
 	stuckDetectionEnabled := stuckSettings.Enabled && !agent.StuckDetectionDisabled && !stuckContinueSuppresses(prevStuckEscalated, rawPrompt)
-	run, created, err := s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: project.ID, AgentID: agent.ID, TaskID: taskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, WorkingDirectory: project.Path, Prompt: body.Prompt, SystemPrompt: systemPrompt, Mode: body.Mode, ThreadID: thread.ID, ResumeThread: true, Scenario: body.Scenario, MaxBudget: maxBudget, AllowUnverifiedModel: agent.AllowUnverifiedModel, Resources: []string{"project:" + project.ID + ":write"}, IdempotencyKey: key, Subagents: subagents, ValidateAfterRun: agent.ValidateAfterRun, MaxCorrectionRuns: agent.MaxCorrectionRuns, MemoryEntryIDs: selectedMemoryIDs, StuckDetectionEnabled: stuckDetectionEnabled, StuckIdleSeconds: stuckSettings.IdleSeconds, StuckRepetitionCap: stuckSettings.RepetitionCap, Attachments: body.Attachments})
+	run, created, err := s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: project.ID, AgentID: agent.ID, TaskID: taskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, WorkingDirectory: project.Path, Prompt: body.Prompt, SystemPrompt: systemPrompt, Mode: body.Mode, ThreadID: thread.ID, ResumeThread: true, Scenario: body.Scenario, MaxBudget: maxBudget, AllowUnverifiedModel: agent.AllowUnverifiedModel, Resources: []string{"project:" + project.ID + ":write"}, IdempotencyKey: key, Subagents: subagents, ValidateAfterRun: agent.ValidateAfterRun, MaxCorrectionRuns: agent.MaxCorrectionRuns, MemoryEntryIDs: selectedMemoryIDs, StuckDetectionEnabled: stuckDetectionEnabled, StuckIdleSeconds: stuckSettings.IdleSeconds, StuckRepetitionCap: stuckSettings.RepetitionCap, Attachments: body.Attachments, BaseCommit: checkpointHash, ReviewBeforeApply: agent.ReviewBeforeApply, ReviewTimeoutSeconds: 300, EgressPolicy: agent.EgressPolicy, RegistryHosts: agent.RegistryHosts})
 	if err != nil {
 		writeError(w, r, 400, "run_error", err.Error(), nil)
 		return
@@ -1476,6 +1727,9 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 			err = errors.New("the original agent is missing or disabled")
 			break
 		}
+		if err = projects.EnsureStylePacks(project.Path); err != nil {
+			break
+		}
 		if validateErr := s.validateOpenRouterAgent(r.Context(), agent, true); validateErr != nil {
 			err = validateErr
 			break
@@ -1506,20 +1760,28 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 		if s.stuckSettings != nil {
 			stuckSettings = s.stuckSettings()
 		}
+		if err = s.ensureNoPendingReview(r.Context(), project.ID); err != nil {
+			break
+		}
 		checkpointHash, checkpointBranch := s.checkpointBeforeRun(project, agent.Provider, "")
+		if err = s.reviewGateReady(*agent, "", checkpointHash); err != nil {
+			break
+		}
 		restarted, created, submitErr := s.scheduler.Submit(r.Context(), scheduler.Job{
 			ProjectID: run.ProjectID, AgentID: run.AgentID, TaskID: run.TaskID,
 			Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort,
 			PermissionProfile: agent.Permission, WorkingDirectory: project.Path,
 			Prompt:       "Restart the interrupted task. Inspect the previous failure and complete the task with verification.",
-			SystemPrompt: prompts.ForRun(agent.SystemPrompt, projects.LoadContext(project.Path)),
+			SystemPrompt: prompts.ForRun(agent.SystemPrompt, projects.LoadContext(project.Path, project.Style)),
 			ThreadID:     run.ThreadID,
 			MaxBudget:    agent.Budget, AllowUnverifiedModel: agent.AllowUnverifiedModel,
 			Resources:        []string{"project:" + run.ProjectID + ":write"},
 			Subagents:        subagentsFor(*agent, agents),
 			ValidateAfterRun: agent.ValidateAfterRun, MaxCorrectionRuns: agent.MaxCorrectionRuns,
+			BaseCommit: checkpointHash, ReviewBeforeApply: agent.ReviewBeforeApply, ReviewTimeoutSeconds: 300,
 			StuckDetectionEnabled: stuckSettings.Enabled && !agent.StuckDetectionDisabled,
 			StuckIdleSeconds:      stuckSettings.IdleSeconds, StuckRepetitionCap: stuckSettings.RepetitionCap,
+			EgressPolicy: agent.EgressPolicy, RegistryHosts: agent.RegistryHosts,
 		})
 		err = submitErr
 		if err == nil && created {
@@ -1579,13 +1841,22 @@ func (s *Server) resumeRun(ctx context.Context, runID string) error {
 	if err := validateNVIDIAAgent(agent); err != nil {
 		return err
 	}
-	systemPrompt := prompts.ForRun(agent.SystemPrompt, projects.LoadContext(project.Path))
+	if err := projects.EnsureStylePacks(project.Path); err != nil {
+		return err
+	}
+	systemPrompt := prompts.ForRun(agent.SystemPrompt, projects.LoadContext(project.Path, project.Style))
 	subagents := subagentsFor(*agent, enabled)
 	stuckSettings := scheduler.StuckSettings{Enabled: true, IdleSeconds: 600, RepetitionCap: 6}
 	if s.stuckSettings != nil {
 		stuckSettings = s.stuckSettings()
 	}
+	if err := s.ensureNoPendingReview(ctx, project.ID); err != nil {
+		return err
+	}
 	checkpointHash, checkpointBranch := s.checkpointBeforeRun(project, agent.Provider, "")
+	if err := s.reviewGateReady(*agent, "", checkpointHash); err != nil {
+		return err
+	}
 	newRun, created, err := s.scheduler.Submit(ctx, scheduler.Job{
 		ProjectID: project.ID, AgentID: agent.ID, TaskID: run.TaskID,
 		Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort,
@@ -1594,7 +1865,9 @@ func (s *Server) resumeRun(ctx context.Context, runID string) error {
 		SystemPrompt: systemPrompt, ThreadID: run.ThreadID, ResumeSessionID: run.ProviderSession,
 		MaxBudget: agent.Budget, AllowUnverifiedModel: agent.AllowUnverifiedModel, Resources: []string{"project:" + project.ID + ":write"},
 		Subagents: subagents, ValidateAfterRun: agent.ValidateAfterRun, MaxCorrectionRuns: agent.MaxCorrectionRuns,
+		BaseCommit: checkpointHash, ReviewBeforeApply: agent.ReviewBeforeApply, ReviewTimeoutSeconds: 300,
 		StuckDetectionEnabled: stuckSettings.Enabled && !agent.StuckDetectionDisabled, StuckIdleSeconds: stuckSettings.IdleSeconds, StuckRepetitionCap: stuckSettings.RepetitionCap,
+		EgressPolicy: agent.EgressPolicy, RegistryHosts: agent.RegistryHosts,
 	})
 	if err != nil {
 		return err
@@ -1614,6 +1887,14 @@ func (s *Server) resumeRun(ctx context.Context, runID string) error {
 // stored.
 type StudioSessionsRefresher func(context.Context) (bool, error)
 
+// StudioSessionsState tells the UI whether a live listing is enabled and why
+// it may currently be quiet. LastRefreshed is omitted until a pass completes.
+type StudioSessionsState struct {
+	Enabled       bool       `json:"enabled"`
+	Suspended     bool       `json:"suspended"`
+	LastRefreshed *time.Time `json:"lastRefreshed,omitempty"`
+}
+
 // refreshStudioSessionsHandler never fails the request over a failed
 // discovery pass — the operator still needs to see whatever is already
 // stored, the same fail-open posture Studio access itself takes.
@@ -1628,11 +1909,249 @@ func (s *Server) refreshStudioSessionsHandler(w http.ResponseWriter, r *http.Req
 		writeError(w, r, 500, "studio_sessions_list_failed", err.Error(), nil)
 		return
 	}
-	body := map[string]any{"detected": detected, "studios": sessions}
+	state := StudioSessionsState{}
+	if s.studioSessionsState != nil {
+		state = s.studioSessionsState()
+	}
+	body := map[string]any{"detected": detected, "studios": sessions, "studioRefresh": state}
 	if refreshErr != nil {
 		body["error"] = refreshErr.Error()
 	}
 	writeJSON(w, 200, body)
+}
+
+type reviewDecisionBody struct {
+	Approve       bool                       `json:"approve"`
+	Action        string                     `json:"action"`
+	SelectedFiles []string                   `json:"selectedFiles"`
+	Paths         []string                   `json:"paths"`
+	Hunks         []reviewgate.HunkSelection `json:"hunks"`
+	SelectedHunks []reviewgate.HunkSelection `json:"selectedHunks"`
+}
+
+// proposeReview creates the durable decision after a successful provider
+// turn. The working tree intentionally remains applied while the run is
+// waiting, so subsequent inspection sees exactly what the agent produced;
+// rejection restores tracked files to the pre-run checkpoint.
+func (s *Server) proposeReview(ctx context.Context, req scheduler.ReviewRequest) (scheduler.ReviewProposal, error) {
+	if req.Job == nil || req.BaseCommit == "" || s.git == nil {
+		return scheduler.ReviewProposal{}, errors.New("review gate requires a Git checkpoint")
+	}
+	project, err := s.store.Project(ctx, req.Job.ProjectID)
+	if err != nil {
+		return scheduler.ReviewProposal{}, err
+	}
+	snapshot, err := reviewgate.New().Diff(ctx, project.Path, req.BaseCommit)
+	if err != nil {
+		return scheduler.ReviewProposal{}, err
+	}
+	if strings.TrimSpace(snapshot.Diff) == "" {
+		return scheduler.ReviewProposal{}, errors.New("review gate found no Git file changes")
+	}
+	structuredFiles, err := reviewgate.New().Files(ctx, project.Path, req.BaseCommit, snapshot.Tree)
+	if err != nil {
+		return scheduler.ReviewProposal{}, fmt.Errorf("review gate could not build its selection model: %w", err)
+	}
+	// Keep a bounded durable payload; the live diff endpoint remains the
+	// authoritative full view and will re-read the working tree on demand.
+	if len(snapshot.Diff) > 2*1024*1024 {
+		snapshot.Diff = snapshot.Diff[:2*1024*1024]
+	}
+	expires := time.Now().UTC().Add(req.Timeout)
+	payload, err := json.Marshal(map[string]any{
+		"diff": snapshot.Diff, "checkpoint": req.BaseCommit, "newFiles": snapshot.NewFiles,
+		"tree": snapshot.Tree, "head": snapshot.Head, "index": snapshot.Index,
+		"files": func() []string {
+			paths := make([]string, 0, len(structuredFiles))
+			for _, file := range structuredFiles {
+				paths = append(paths, file.Path)
+			}
+			return paths
+		}(), "reviewFiles": structuredFiles,
+	})
+	if err != nil {
+		return scheduler.ReviewProposal{}, err
+	}
+	decision, err := s.store.CreateDecision(ctx, models.Decision{
+		ProjectID: req.Job.ProjectID,
+		RunID:     req.Job.RunID,
+		Kind:      "review_before_apply",
+		Summary:   "Review the agent changes before applying them",
+		Detail:    "Changes are currently present in the working tree. Choose Apply, Reject, or Apply selected. If no choice is made before the deadline, StudioForge rejects the changes automatically.",
+		Payload:   string(payload),
+		ExpiresAt: &expires,
+	})
+	if err != nil {
+		return scheduler.ReviewProposal{}, err
+	}
+	s.scheduleReviewExpiry(decision.ID, req.Timeout)
+	return scheduler.ReviewProposal{Pending: true, DecisionID: decision.ID}, nil
+}
+
+func (s *Server) reviewOperations() reviewGitOps {
+	if ops, ok := s.git.(reviewGitOps); ok {
+		return ops
+	}
+	return reviewgate.New()
+}
+
+func (s *Server) scheduleReviewExpiry(id string, wait time.Duration) {
+	if wait < 0 {
+		wait = 0
+	}
+	time.AfterFunc(wait, func() { s.expireReviewDecision(id) })
+}
+
+func (s *Server) schedulePendingReviewExpiries() {
+	if s.store == nil {
+		return
+	}
+	decisions, err := s.store.ListDecisions(context.Background(), "pending")
+	if err != nil {
+		return
+	}
+	for _, decision := range decisions {
+		if decision.Kind != "review_before_apply" || decision.ExpiresAt == nil {
+			continue
+		}
+		wait := time.Until(*decision.ExpiresAt)
+		if wait < 0 {
+			wait = 0
+		}
+		s.scheduleReviewExpiry(decision.ID, wait)
+	}
+}
+
+func (s *Server) findPendingReview(ctx context.Context, runID string) (models.Decision, error) {
+	decisions, err := s.store.ListDecisions(ctx, "pending")
+	if err != nil {
+		return models.Decision{}, err
+	}
+	for _, decision := range decisions {
+		if decision.Kind == "review_before_apply" && decision.RunID == runID {
+			return decision, nil
+		}
+	}
+	return models.Decision{}, errors.New("pending review decision not found")
+}
+
+func (s *Server) expireReviewRequest(ctx context.Context, req scheduler.ReviewRequest) error {
+	if req.Job == nil {
+		return errors.New("review request is missing its job")
+	}
+	decision, err := s.findPendingReview(ctx, req.Job.RunID)
+	if err != nil {
+		return err
+	}
+	return s.resolveReviewDecision(ctx, decision, "reject", nil, nil, true)
+}
+
+func (s *Server) resolveReviewDecision(ctx context.Context, decision models.Decision, action string, selected []string, hunks []reviewgate.HunkSelection, expired bool) error {
+	s.reviewMu.Lock()
+	defer s.reviewMu.Unlock()
+	// The caller may have read the decision before waiting for this mutex. An
+	// expiry callback and an operator request can therefore race; reload while
+	// holding the mutex so the status and payload used for filesystem mutation
+	// are the same durable version we are about to resolve.
+	fresh, err := s.store.Decision(ctx, decision.ID)
+	if err != nil {
+		return err
+	}
+	decision = fresh
+	if decision.Status != "pending" {
+		return fmt.Errorf("decision has already been resolved")
+	}
+	if !expired && decision.ExpiresAt != nil && !decision.ExpiresAt.After(time.Now().UTC()) {
+		expired = true
+		action = "reject"
+	}
+	project, err := s.store.Project(ctx, decision.ProjectID)
+	if err != nil {
+		return err
+	}
+	var payload struct {
+		Checkpoint string   `json:"checkpoint"`
+		NewFiles   []string `json:"newFiles"`
+		Diff       string   `json:"diff"`
+		Tree       string   `json:"tree"`
+		Head       string   `json:"head"`
+		Index      string   `json:"index"`
+	}
+	if err := json.Unmarshal([]byte(decision.Payload), &payload); err != nil || strings.TrimSpace(payload.Checkpoint) == "" {
+		return errors.New("review checkpoint is missing")
+	}
+	ops := s.reviewOperations()
+	expected := reviewgate.Snapshot{Diff: payload.Diff, NewFiles: payload.NewFiles, Tree: payload.Tree, Head: payload.Head, Index: payload.Index}
+	resolvedAction := ""
+	switch action {
+	case "apply", "approve":
+		resolvedAction = "apply"
+	case "apply_selected", "selected":
+		if len(selected) == 0 && len(hunks) == 0 {
+			return errors.New("apply_selected requires at least one selected file or hunk")
+		}
+		resolvedAction = "apply_selected"
+	case "reject", "deny":
+		resolvedAction = "reject"
+	default:
+		return errors.New("review action must be apply, reject, or apply_selected")
+	}
+	if err := ops.Resolve(ctx, project.Path, payload.Checkpoint, expected, resolvedAction, selected, hunks); err != nil {
+		// Resolve verifies the exact reviewed tree before touching disk. If an
+		// operator edited the project or HEAD moved while the card was open,
+		// preserve those edits, close the durable decision, and make the run's
+		// outcome explicit so it cannot leave the project blocked forever.
+		if expired || strings.HasPrefix(err.Error(), "review_tree_changed:") || strings.HasPrefix(err.Error(), "review_snapshot_missing:") {
+			message := "review could not be applied; current file changes were preserved and require manual review"
+			if expired && !strings.Contains(err.Error(), "review_tree_changed:") {
+				message = "review expired; automatic rejection failed and current file changes were preserved for manual review"
+			}
+			if expireErr := s.store.ExpireDecision(ctx, decision.ID); expireErr != nil {
+				return fmt.Errorf("%v (also could not close decision: %w)", err, expireErr)
+			}
+			if s.scheduler != nil {
+				if wakeErr := s.scheduler.ResolveReview(decision.RunID, false, message); wakeErr == nil {
+					return err
+				}
+			}
+			_ = s.store.UpdateRun(ctx, decision.RunID, "failed", "failed", "", message)
+		}
+		return err
+	}
+	status := "approved"
+	runStatus, phase, message := "completed", "applied", "review approved"
+	if action == "reject" || action == "deny" || expired {
+		status = "denied"
+		runStatus, phase, message = "failed", "failed", "review rejected; file changes were restored to the checkpoint"
+		if expired {
+			message = "review expired; file changes were rejected automatically"
+		}
+	}
+	if expired {
+		if err := s.store.ExpireDecision(ctx, decision.ID); err != nil {
+			return err
+		}
+	} else if err := s.store.ResolveDecision(ctx, decision.ID, status); err != nil {
+		return err
+	}
+	if s.scheduler != nil {
+		if err := s.scheduler.ResolveReview(decision.RunID, status == "approved", message); err == nil {
+			return nil
+		}
+	}
+	return s.store.UpdateRun(ctx, decision.RunID, runStatus, phase, "", message)
+}
+
+func (s *Server) expireReviewDecision(id string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	decision, err := s.store.Decision(ctx, id)
+	if err != nil || decision.Kind != "review_before_apply" || decision.Status != "pending" {
+		return
+	}
+	if err := s.resolveReviewDecision(ctx, decision, "reject", nil, nil, true); err != nil {
+		s.logger.Warn("review expiry failed", "decision_id", id, "error", err)
+	}
 }
 
 // resolveDecision records an operator's approve/deny choice on a pending
@@ -1642,9 +2161,7 @@ func (s *Server) refreshStudioSessionsHandler(w http.ResponseWriter, r *http.Req
 // Denying schedules nothing; the run this decision was about was already
 // marked correction_failed when the decision was first proposed.
 func (s *Server) resolveDecision(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Approve bool `json:"approve"`
-	}
+	var body reviewDecisionBody
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(w, r, 400, "invalid_json", err.Error(), nil)
 		return
@@ -1657,6 +2174,30 @@ func (s *Server) resolveDecision(w http.ResponseWriter, r *http.Request) {
 	}
 	if decision.Status != "pending" {
 		writeError(w, r, 409, "already_resolved", "Decision has already been resolved", nil)
+		return
+	}
+	if decision.Kind == "review_before_apply" {
+		action := strings.TrimSpace(strings.ToLower(body.Action))
+		if action == "" {
+			if body.Approve {
+				action = "apply"
+			} else {
+				action = "reject"
+			}
+		}
+		selected := body.SelectedFiles
+		if len(selected) == 0 {
+			selected = body.Paths
+		}
+		hunks := body.Hunks
+		if len(hunks) == 0 {
+			hunks = body.SelectedHunks
+		}
+		if err := s.resolveReviewDecision(r.Context(), decision, action, selected, hunks, false); err != nil {
+			writeError(w, r, 409, "review_resolve_failed", err.Error(), nil)
+			return
+		}
+		writeJSON(w, 200, map[string]bool{"ok": true})
 		return
 	}
 	status := "denied"
