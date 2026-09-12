@@ -39,6 +39,7 @@ test('fresh real database loads setup and empty projects without runtime errors'
     expect(settings.ok()).toBeTruthy();
     await page.reload();
     await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
+    await expect(page.getByText('Online', { exact: true })).toBeVisible();
     await expect(
       page.getByRole('button', { name: 'New project', exact: true }).first(),
     ).toBeVisible();

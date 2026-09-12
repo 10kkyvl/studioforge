@@ -1786,6 +1786,14 @@ func (s *Server) sse(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+	// An empty history has not written headers yet. Establish the stream now
+	// instead of making a fresh install appear disconnected until a heartbeat.
+	if !streaming {
+		if _, err := fmt.Fprint(w, ": connected\n\n"); err != nil {
+			return
+		}
+		flusher.Flush()
+	}
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
 	for {

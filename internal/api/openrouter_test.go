@@ -158,7 +158,19 @@ func TestOpenRouterKeyTestUnexpectedUpstreamReturns502(t *testing.T) {
 	if recorder.Code != 502 {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if strings.Contains(recorder.Body.String(), "500") {
+	var response struct {
+		Error map[string]any `json:"error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	// A random request UUID can contain "500" without exposing upstream data.
+	delete(response.Error, "requestId")
+	publicError, err := json.Marshal(response.Error)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(publicError), "500") {
 		t.Fatalf("response exposed upstream status: %s", recorder.Body.String())
 	}
 }
