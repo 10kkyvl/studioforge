@@ -6,6 +6,19 @@ import (
 	"net/http"
 )
 
+func (s *Server) runStudioChanges(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.store.Run(r.Context(), r.PathValue("id")); err != nil {
+		writeError(w, r, 404, "not_found", "Run not found", err)
+		return
+	}
+	changes, err := s.store.StudioChanges(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, r, 500, "internal_error", "Unable to load Studio changes", err)
+		return
+	}
+	writeJSON(w, 200, changes)
+}
+
 func (s *Server) runDiff(w http.ResponseWriter, r *http.Request) {
 	run, err := s.store.Run(r.Context(), r.PathValue("id"))
 	if err != nil {
@@ -17,8 +30,15 @@ func (s *Server) runDiff(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, 404, "not_found", "Project not found", err)
 		return
 	}
+	changes, err := s.store.StudioChanges(r.Context(), run.ID)
+	if err != nil {
+		writeError(w, r, 500, "internal_error", "Unable to load Studio changes", err)
+		return
+	}
+	response := map[string]any{"diff": "", "studioChanges": changes}
 	if s.git == nil {
-		writeJSON(w, 200, map[string]string{"diff": "", "note": "Diffing is not available"})
+		response["note"] = "Diffing is not available"
+		writeJSON(w, 200, response)
 		return
 	}
 	checkpoint, checkpointErr := s.store.CheckpointForRun(r.Context(), run.ID)
@@ -33,10 +53,11 @@ func (s *Server) runDiff(w http.ResponseWriter, r *http.Request) {
 		diff, err = s.git.DiffHead(r.Context(), project.Path)
 	}
 	if err != nil {
-		writeJSON(w, 200, map[string]string{"diff": "", "note": "Unable to compute diff: " + err.Error()})
+		response["note"] = "Unable to compute diff: " + err.Error()
+		writeJSON(w, 200, response)
 		return
 	}
-	response := map[string]any{"diff": diff}
+	response["diff"] = diff
 	if hasCheckpoint {
 		response["checkpoint"] = map[string]any{
 			"commitHash": checkpoint.CommitHash,

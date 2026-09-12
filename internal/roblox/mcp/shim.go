@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/10kkyvl/studioforge/internal/studiochanges"
 )
 
 // The shim is an MCP server that StudioForge puts between an agent and the
@@ -37,6 +39,7 @@ type ShimOptions struct {
 	Launch    LaunchConfig
 	CachePath string
 	Dial      Dialer
+	Recorder  studiochanges.Recorder
 }
 
 type shim struct {
@@ -196,6 +199,9 @@ func (s *shim) connect(ctx context.Context) (Transport, error) {
 	transport, err := dial(ctx, s.opts.Launch)
 	if err != nil {
 		return nil, fmt.Errorf("open Studio MCP launcher: %w", err)
+	}
+	if s.opts.Recorder != nil {
+		transport = &journalTransport{Transport: transport, recorder: s.opts.Recorder}
 	}
 	s.transport = transport
 	return transport, nil

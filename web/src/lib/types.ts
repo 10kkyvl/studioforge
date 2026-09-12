@@ -58,6 +58,20 @@ export type Project = TokenUsage & {
   sync: SyncStatus;
   updatedAt: string;
 };
+export type MemoryEntry = {
+  id: string;
+  projectId: string;
+  runId?: string;
+  scope: string;
+  content: string;
+  summary: string;
+  source: string;
+  confidence: number;
+  importance: number;
+  createdAt: string;
+  pinned: boolean;
+  injected: boolean;
+};
 export type Agent = {
   id: string;
   projectId: string;
@@ -112,7 +126,19 @@ export type Run = TokenUsage & {
   parentRunId?: string;
   correctionDepth: number;
 };
+export type StudioChange = {
+  id: string;
+  callId: string;
+  runId: string;
+  createdAt: string;
+  tool: string;
+  target: string;
+  operation: string;
+  properties: string[];
+  status: string;
+};
 export type RunDiff = {
+  studioChanges?: StudioChange[];
   diff: string;
   status?: string;
   note?: string;

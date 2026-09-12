@@ -17,6 +17,7 @@ import (
 	"github.com/10kkyvl/studioforge/internal/database"
 	"github.com/10kkyvl/studioforge/internal/diagnostics"
 	"github.com/10kkyvl/studioforge/internal/events"
+	"github.com/10kkyvl/studioforge/internal/memory"
 	"github.com/10kkyvl/studioforge/internal/models"
 	"github.com/10kkyvl/studioforge/internal/projects"
 	"github.com/10kkyvl/studioforge/internal/providers"
@@ -54,6 +55,7 @@ func newTestAPI(t *testing.T) *testAPI {
 	provider := mock.New()
 	provider.StepDelay = 10 * time.Millisecond
 	sched := scheduler.New(ctx, store, hub, leases, map[string]providers.Provider{"mock": provider})
+	sched.SetMemory(memory.New(db))
 	sessions, err := NewSessionManager(time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +64,7 @@ func newTestAPI(t *testing.T) *testAPI {
 	for _, project := range mustProjects(t, store) {
 		_, _ = guard.Register(project.ID, project.Path)
 	}
-	server, err := New(Dependencies{Store: store, DB: db, Scheduler: sched, Hub: hub, Doctor: &diagnostics.Doctor{DB: db, DataDir: data, MockMode: true}, Sessions: sessions, Guard: guard, AllowedHost: "127.0.0.1:1234", DataDir: data, Leases: leases})
+	server, err := New(Dependencies{Store: store, DB: db, Scheduler: sched, Hub: hub, Doctor: &diagnostics.Doctor{DB: db, DataDir: data, MockMode: true}, Sessions: sessions, Guard: guard, AllowedHost: "127.0.0.1:1234", DataDir: data, Leases: leases, Memory: memory.New(db)})
 	if err != nil {
 		t.Fatal(err)
 	}

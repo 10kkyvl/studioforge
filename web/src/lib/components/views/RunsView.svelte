@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RunStudioChanges from '$lib/components/RunStudioChanges.svelte';
   import { formatDate, locale, translate } from '$lib/i18n';
   import type { Decision, Run, RunEvent } from '$lib/types';
 
@@ -116,6 +117,7 @@
       {#if selectedRun}<code>{selectedRun.id}</code>{/if}
     </header>
     {#if selectedRun}
+      <RunStudioChanges runId={selectedRun.id} updatedAt={selectedRun.updatedAt} />
       {@const decision = decisionFor(selectedRun.id)}
       {#if decision}
         <div class="decision-banner">

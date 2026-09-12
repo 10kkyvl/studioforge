@@ -4,12 +4,16 @@ import {
   attachmentUrl,
   connectEvents,
   getLead,
+  getMemory,
   getPace,
   getStudioStatus,
   request,
   setLead,
   startSync,
   stopSync,
+  updateMemory,
+  deleteMemory,
+  clearMemory,
   uploadAttachment,
 } from './api';
 
@@ -168,6 +172,49 @@ describe('pace endpoint', () => {
         ),
     );
     await expect(getPace('proj-1')).resolves.toEqual({ typicalSeconds: 0, samples: 0 });
+  });
+});
+
+describe('project memory endpoints', () => {
+  it('lists entries and sends pin/content patches', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ entries: [{ id: 'm1', pinned: false, injected: true }] }), {
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: 'm1', pinned: true, content: 'updated' }), {
+          status: 200,
+        }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(getMemory('proj-1')).resolves.toEqual([
+      { id: 'm1', pinned: false, injected: true },
+    ]);
+    await expect(updateMemory('m1', { pinned: true, content: 'updated' })).resolves.toMatchObject({
+      pinned: true,
+    });
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/memory/m1');
+    expect(fetchMock.mock.calls[1][1]).toEqual(
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ pinned: true, content: 'updated' }),
+      }),
+    );
+  });
+
+  it('deletes one entry and clears a project', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ deleted: 3 }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(deleteMemory('m1')).resolves.toBeUndefined();
+    await expect(clearMemory('proj-1')).resolves.toEqual({ deleted: 3 });
+    expect(fetchMock.mock.calls[0][1]).toEqual(expect.objectContaining({ method: 'DELETE' }));
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/projects/proj-1/memory');
   });
 });
 

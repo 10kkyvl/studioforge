@@ -260,3 +260,9 @@ adapters; add project-isolation and failure-path tests for any new stateful feat
 `./scripts/test.ps1` (or `.sh`) before opening a pull request; update English and Russian strings
 together; and do not add bypass-permission defaults, secret logging, destructive rollback behavior, or
 implicit Studio instance selection.
+
+## macOS desktop launch
+
+StudioForge adds existing conventional tool directories (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, and Cargo/Aftman/Foreman bin directories) to the inherited PATH on macOS. This lets Finder-launched apps discover Claude Code, Rojo and build tools without sourcing shell startup files. Existing PATH entries keep their priority; explicit executable settings still take precedence.
+
+Child processes also retain `USER`, which Claude Code needs to locate its saved macOS Keychain login. Diagnostics and agent launches use the same filtered environment; provider credentials are not added to that environment.

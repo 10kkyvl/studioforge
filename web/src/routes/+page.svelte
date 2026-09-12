@@ -720,6 +720,10 @@
                 onRun={() => {
                   view = 'chat';
                 }}
+                onOpenRun={(runId) => {
+                  selectedRunId = runId;
+                  view = 'runs';
+                }}
               />
             {:else if view === 'team'}
               <TeamView

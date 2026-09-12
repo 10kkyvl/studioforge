@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -76,6 +77,10 @@ type GitOps interface {
 
 type Memory interface {
 	Search(ctx context.Context, projectID, query string, limit int) ([]memory.Entry, error)
+	List(ctx context.Context, projectID string) ([]memory.Entry, error)
+	Update(ctx context.Context, id string, content *string, pinned *bool) (memory.Entry, error)
+	Delete(ctx context.Context, id string) error
+	Clear(ctx context.Context, projectID string) (int, error)
 }
 
 type Server struct {
@@ -182,12 +187,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/projects/{id}/cloud-place", s.getCloudPlace)
 	mux.HandleFunc("POST /api/v1/projects/{id}/cloud-place", s.setCloudPlace)
 	mux.HandleFunc("GET /api/v1/projects/{id}/pace", s.pace)
+	mux.HandleFunc("GET /api/v1/projects/{id}/memory", s.listMemory)
+	mux.HandleFunc("DELETE /api/v1/projects/{id}/memory", s.clearMemory)
+	mux.HandleFunc("PATCH /api/v1/memory/{entryId}", s.updateMemory)
+	mux.HandleFunc("DELETE /api/v1/memory/{entryId}", s.deleteMemory)
 	mux.HandleFunc("POST /api/v1/projects/{id}/attachments", s.uploadAttachment)
 	mux.HandleFunc("GET /api/v1/projects/{id}/attachments/{name}", s.getAttachment)
 	mux.HandleFunc("GET /api/v1/threads/{threadId}/messages", s.threadMessages)
 	mux.HandleFunc("POST /api/v1/runs", s.createRun)
 	mux.HandleFunc("POST /api/v1/runs/{id}/{action}", s.runAction)
 	mux.HandleFunc("GET /api/v1/runs/{id}/diff", s.runDiff)
+	mux.HandleFunc("GET /api/v1/runs/{id}/studio-changes", s.runStudioChanges)
 	mux.HandleFunc("POST /api/v1/runs/{id}/rollback", s.rollbackRun)
 	mux.HandleFunc("GET /api/v1/projects/{id}/git/status", s.gitStatus)
 	mux.HandleFunc("POST /api/v1/projects/{id}/git/tag", s.gitTag)
@@ -853,6 +863,111 @@ func (s *Server) pace(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"typicalSeconds": typicalSeconds, "samples": samples})
 }
 
+type memoryEntryJSON struct {
+	ID         string    `json:"id"`
+	ProjectID  string    `json:"projectId"`
+	RunID      string    `json:"runId,omitempty"`
+	Scope      string    `json:"scope"`
+	Content    string    `json:"content"`
+	Summary    string    `json:"summary"`
+	Source     string    `json:"source"`
+	Confidence float64   `json:"confidence"`
+	Importance float64   `json:"importance"`
+	CreatedAt  time.Time `json:"createdAt"`
+	Pinned     bool      `json:"pinned"`
+	Injected   bool      `json:"injected"`
+}
+
+func memoryJSON(e memory.Entry) memoryEntryJSON {
+	return memoryEntryJSON{ID: e.ID, ProjectID: e.ProjectID, RunID: e.RunID, Scope: e.Scope, Content: e.Content, Summary: e.Summary, Source: e.Source, Confidence: e.Confidence, Importance: e.Importance, CreatedAt: e.CreatedAt, Pinned: e.Pinned, Injected: e.Injected}
+}
+
+func (s *Server) listMemory(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+	if _, err := s.store.Project(r.Context(), projectID); err != nil {
+		writeError(w, r, http.StatusNotFound, "project_not_found", "Project not found", err)
+		return
+	}
+	if s.memory == nil {
+		writeJSON(w, 200, map[string]any{"entries": []memoryEntryJSON{}})
+		return
+	}
+	entries, err := s.memory.List(r.Context(), projectID)
+	if err != nil {
+		writeError(w, r, 500, "database_error", "Unable to list project memory", err)
+		return
+	}
+	out := make([]memoryEntryJSON, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, memoryJSON(e))
+	}
+	writeJSON(w, 200, map[string]any{"entries": out})
+}
+
+func (s *Server) updateMemory(w http.ResponseWriter, r *http.Request) {
+	if s.memory == nil {
+		writeError(w, r, 404, "memory_unavailable", "Project memory is unavailable", nil)
+		return
+	}
+	var body struct {
+		Content *string `json:"content"`
+		Pinned  *bool   `json:"pinned"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, r, 400, "invalid_json", err.Error(), nil)
+		return
+	}
+	if body.Content == nil && body.Pinned == nil {
+		writeError(w, r, 400, "empty_update", "Provide content or pinned", nil)
+		return
+	}
+	e, err := s.memory.Update(r.Context(), r.PathValue("entryId"), body.Content, body.Pinned)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, r, 404, "memory_not_found", "Memory entry not found", err)
+		return
+	}
+	if err != nil {
+		writeError(w, r, 400, "memory_update_failed", err.Error(), nil)
+		return
+	}
+	writeJSON(w, 200, memoryJSON(e))
+}
+
+func (s *Server) deleteMemory(w http.ResponseWriter, r *http.Request) {
+	if s.memory == nil {
+		writeError(w, r, 404, "memory_unavailable", "Project memory is unavailable", nil)
+		return
+	}
+	err := s.memory.Delete(r.Context(), r.PathValue("entryId"))
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, r, 404, "memory_not_found", "Memory entry not found", err)
+		return
+	}
+	if err != nil {
+		writeError(w, r, 500, "database_error", "Unable to delete memory entry", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) clearMemory(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+	if _, err := s.store.Project(r.Context(), projectID); err != nil {
+		writeError(w, r, http.StatusNotFound, "project_not_found", "Project not found", err)
+		return
+	}
+	if s.memory == nil {
+		writeJSON(w, 200, map[string]int{"deleted": 0})
+		return
+	}
+	n, err := s.memory.Clear(r.Context(), projectID)
+	if err != nil {
+		writeError(w, r, 500, "database_error", "Unable to clear project memory", err)
+		return
+	}
+	writeJSON(w, 200, map[string]int{"deleted": n})
+}
+
 func (s *Server) threadMessages(w http.ResponseWriter, r *http.Request) {
 	messages, err := s.store.ThreadMessages(r.Context(), r.PathValue("threadId"))
 	if err != nil {
@@ -1187,10 +1302,16 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		stuckSettings = s.stuckSettings()
 	}
 	projectContext := projects.LoadContext(project.Path)
+	var selectedMemoryIDs []string
 	if s.memory != nil {
 		if entries, err := s.memory.Search(r.Context(), project.ID, body.Prompt, 5); err != nil {
 			s.logger.Warn("memory search failed", "project_id", project.ID, "error", err)
 		} else if block := memoryBlock(entries); block != "" {
+			for _, entry := range entries {
+				if strings.TrimSpace(entry.Summary) != "" {
+					selectedMemoryIDs = append(selectedMemoryIDs, entry.ID)
+				}
+			}
 			projectContext = strings.TrimSpace(projectContext + "\n\n" + block)
 		}
 	}
@@ -1217,7 +1338,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 	}
 	key := r.Header.Get("Idempotency-Key")
 	stuckDetectionEnabled := stuckSettings.Enabled && !agent.StuckDetectionDisabled && !stuckContinueSuppresses(prevStuckEscalated, rawPrompt)
-	run, created, err := s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: project.ID, AgentID: agent.ID, TaskID: taskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, WorkingDirectory: project.Path, Prompt: body.Prompt, SystemPrompt: systemPrompt, Mode: body.Mode, ThreadID: thread.ID, ResumeThread: true, Scenario: body.Scenario, MaxBudget: maxBudget, AllowUnverifiedModel: agent.AllowUnverifiedModel, Resources: []string{"project:" + project.ID + ":write"}, IdempotencyKey: key, Subagents: subagents, ValidateAfterRun: agent.ValidateAfterRun, MaxCorrectionRuns: agent.MaxCorrectionRuns, StuckDetectionEnabled: stuckDetectionEnabled, StuckIdleSeconds: stuckSettings.IdleSeconds, StuckRepetitionCap: stuckSettings.RepetitionCap, Attachments: body.Attachments})
+	run, created, err := s.scheduler.Submit(r.Context(), scheduler.Job{ProjectID: project.ID, AgentID: agent.ID, TaskID: taskID, Provider: agent.Provider, Model: agent.ModelAlias, Effort: agent.Effort, PermissionProfile: agent.Permission, WorkingDirectory: project.Path, Prompt: body.Prompt, SystemPrompt: systemPrompt, Mode: body.Mode, ThreadID: thread.ID, ResumeThread: true, Scenario: body.Scenario, MaxBudget: maxBudget, AllowUnverifiedModel: agent.AllowUnverifiedModel, Resources: []string{"project:" + project.ID + ":write"}, IdempotencyKey: key, Subagents: subagents, ValidateAfterRun: agent.ValidateAfterRun, MaxCorrectionRuns: agent.MaxCorrectionRuns, MemoryEntryIDs: selectedMemoryIDs, StuckDetectionEnabled: stuckDetectionEnabled, StuckIdleSeconds: stuckSettings.IdleSeconds, StuckRepetitionCap: stuckSettings.RepetitionCap, Attachments: body.Attachments})
 	if err != nil {
 		writeError(w, r, 400, "run_error", err.Error(), nil)
 		return

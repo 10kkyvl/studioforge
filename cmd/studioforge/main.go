@@ -19,12 +19,14 @@ import (
 	"github.com/10kkyvl/studioforge/internal/database"
 	"github.com/10kkyvl/studioforge/internal/diagnostics"
 	"github.com/10kkyvl/studioforge/internal/platform"
+	"github.com/10kkyvl/studioforge/internal/platform/toolpath"
 	"github.com/10kkyvl/studioforge/internal/portable"
 	"github.com/10kkyvl/studioforge/internal/processes"
 	"github.com/10kkyvl/studioforge/internal/providers/claudecode"
 	"github.com/10kkyvl/studioforge/internal/roblox/mcp"
 	"github.com/10kkyvl/studioforge/internal/rojo"
 	"github.com/10kkyvl/studioforge/internal/security"
+	"github.com/10kkyvl/studioforge/internal/studiochanges"
 )
 
 func main() {
@@ -34,6 +36,9 @@ func main() {
 	}
 }
 func run(args []string) error {
+	if err := toolpath.PrepareGUIEnvironment(); err != nil {
+		return fmt.Errorf("prepare desktop tool paths: %w", err)
+	}
 	if len(args) > 0 {
 		switch args[0] {
 		case "doctor":
@@ -252,6 +257,8 @@ func mcpShimCommand(args []string) error {
 	fs := flag.NewFlagSet("mcp-shim", flag.ContinueOnError)
 	launcher := fs.String("launcher", "", "Studio MCP launcher command")
 	cache := fs.String("tool-cache", "", "path remembering the tool list Studio last published")
+	journalDB := fs.String("journal-db", "", "existing StudioForge database for the run change journal")
+	runID := fs.String("run-id", "", "run owning Studio changes")
 	var launcherArgs stringList
 	fs.Var(&launcherArgs, "launcher-arg", "argument for the launcher command (repeatable)")
 	if err := fs.Parse(args); err != nil {
@@ -262,9 +269,19 @@ func mcpShimCommand(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	var recorder studiochanges.Recorder
+	if *journalDB != "" || *runID != "" {
+		journal, closeJournal, err := database.OpenStudioJournal(ctx, *journalDB, *runID)
+		if err != nil {
+			return err
+		}
+		defer closeJournal()
+		recorder = journal
+	}
 	return mcp.Serve(ctx, os.Stdin, os.Stdout, mcp.ShimOptions{
 		Launch:    mcp.LaunchConfig{Command: *launcher, Args: launcherArgs},
 		CachePath: *cache,
+		Recorder:  recorder,
 	})
 }
 

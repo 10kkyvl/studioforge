@@ -3,6 +3,7 @@ import type {
   ChatMessage,
   ChatThread,
   DetectedPaths,
+  MemoryEntry,
   RunDiff,
   RunEvent,
   Snapshot,
@@ -153,6 +154,17 @@ export const setCloudPlace = (projectId: string, cloudPlace: string): Promise<vo
   );
 export const getPace = (projectId: string) =>
   request<{ typicalSeconds: number; samples: number }>(`/projects/${projectId}/pace`);
+export const getMemory = (projectId: string) =>
+  request<{ entries: MemoryEntry[] }>(`/projects/${projectId}/memory`).then((body) => body.entries);
+export const updateMemory = (entryId: string, patch: { content?: string; pinned?: boolean }) =>
+  request<MemoryEntry>(`/memory/${entryId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+export const deleteMemory = (entryId: string): Promise<void> =>
+  request(`/memory/${entryId}`, { method: 'DELETE' }).then(() => undefined);
+export const clearMemory = (projectId: string) =>
+  request<{ deleted: number }>(`/projects/${projectId}/memory`, { method: 'DELETE' });
 export const getRunDiff = (runId: string) => request<RunDiff>(`/runs/${runId}/diff`);
 export const rollbackRun = (runId: string) =>
   post<{ branch: string; commitHash: string }>(`/runs/${runId}/rollback`, {});
@@ -284,3 +296,6 @@ export function connectEvents(
     }
   };
 }
+
+export const getStudioChanges = (runId: string) =>
+  request<import('$lib/types').StudioChange[]>(`/runs/${runId}/studio-changes`);
