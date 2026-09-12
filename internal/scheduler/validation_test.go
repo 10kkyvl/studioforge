@@ -204,7 +204,9 @@ func TestValidationFailureSchedulesACorrectionRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForRunValidation(t, store, ctx, run.ID, "failed")
+	// The correction can finish between polls, replacing the transient
+	// "failed" outcome with "corrected". Wait for the durable final state.
+	waitForRunValidation(t, store, ctx, run.ID, "corrected")
 
 	deadline := time.Now().Add(5 * time.Second)
 	var corrections []models.Run

@@ -124,20 +124,28 @@ func (s *Supervisor) Start(parent context.Context, spec Spec) (*Process, error) 
 	s.reserving[spec.ID] = struct{}{}
 	s.mu.Unlock()
 
-	stdout, err := cmd.StdoutPipe()
+	// Own the pipes: Cmd.Wait closes StdoutPipe/StderrPipe before our
+	// collectors necessarily drain a short-lived process.
+	stdout, stdoutWriter, err := os.Pipe()
 	if err != nil {
 		s.unreserve(spec.ID)
 		cancel()
 		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
-	stderr, err := cmd.StderrPipe()
+	defer stdoutWriter.Close()
+	stderr, stderrWriter, err := os.Pipe()
 	if err != nil {
 		s.unreserve(spec.ID)
 		cancel()
+		stdout.Close()
 		return nil, fmt.Errorf("stderr pipe: %w", err)
 	}
+	defer stderrWriter.Close()
+	cmd.Stdout, cmd.Stderr = stdoutWriter, stderrWriter
 	cleanup, err := startContainedCommand(cmd, spec.Containment)
 	if err != nil {
+		stdout.Close()
+		stderr.Close()
 		// startContainedCommand already removes platform preparation on a
 		// failed start; release the temp directory here before disarming the
 		// pre-start guard.
@@ -147,6 +155,9 @@ func (s *Supervisor) Start(parent context.Context, spec Spec) (*Process, error) 
 		cancel()
 		return nil, fmt.Errorf("start %s: %w", spec.Kind, err)
 	}
+	// Only the child keeps write ends, so its exit delivers EOF.
+	stdoutWriter.Close()
+	stderrWriter.Close()
 	p.result.StartedAt = time.Now().UTC()
 	p.cleanup = func() {
 		if cleanup != nil {
@@ -170,7 +181,16 @@ func (s *Supervisor) Start(parent context.Context, spec Spec) (*Process, error) 
 	go p.collect(stderr, "stderr")
 	go func() {
 		err := cmd.Wait()
+		// A descendant may retain an inherited writer. Bound that wait without
+		// discarding buffered output from the process that just exited.
+		drainDeadline := time.AfterFunc(5*time.Second, func() {
+			stdout.Close()
+			stderr.Close()
+		})
 		p.collectors.Wait()
+		drainDeadline.Stop()
+		stdout.Close()
+		stderr.Close()
 		p.mu.Lock()
 		p.result.Err = err
 		p.result.ExitedAt = time.Now().UTC()
