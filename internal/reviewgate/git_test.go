@@ -27,6 +27,7 @@ func reviewRepo(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	gitRun(t, root, "init", "-q")
+	gitRun(t, root, "config", "core.autocrlf", "false")
 	gitRun(t, root, "config", "user.name", "Review Test")
 	gitRun(t, root, "config", "user.email", "review@example.invalid")
 	if err := osWrite(filepath.Join(root, "tracked.txt"), "base\n"); err != nil {
@@ -248,5 +249,29 @@ func TestResolveBinaryDeletionAndNewFiles(t *testing.T) {
 	}
 	if string(mustRead(t, filepath.Join(root, "new space.txt"))) != "keep\n" {
 		t.Fatal("new file not preserved")
+	}
+}
+
+func TestRejectHonorsRepositoryCRLFConversion(t *testing.T) {
+	root := reviewRepo(t)
+	gitRun(t, root, "config", "core.autocrlf", "true")
+	path := filepath.Join(root, "tracked.txt")
+	if err := osWrite(path, "agent edit\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	client := New()
+	snapshot, err := client.Diff(context.Background(), root, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Resolve(context.Background(), root, "HEAD", snapshot, "reject", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil || string(content) != "base\r\n" {
+		t.Fatalf("content=%q err=%v", content, err)
+	}
+	if got := strings.TrimSpace(gitRun(t, root, "status", "--porcelain")); got != "" {
+		t.Fatalf("restored tree is dirty: %s", got)
 	}
 }

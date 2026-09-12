@@ -39,6 +39,7 @@ func reviewFixture(t *testing.T) (*testAPI, string, models.Run, string) {
 	a := newEmptyTestAPI(t)
 	root := t.TempDir()
 	reviewGitRun(t, root, "init", "-q")
+	reviewGitRun(t, root, "config", "core.autocrlf", "false")
 	reviewGitRun(t, root, "config", "user.name", "StudioForge Review Test")
 	reviewGitRun(t, root, "config", "user.email", "review@example.invalid")
 	if err := os.WriteFile(filepath.Join(root, "tracked.txt"), []byte("base\none\n"), 0o600); err != nil {
