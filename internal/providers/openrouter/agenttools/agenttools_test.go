@@ -307,6 +307,24 @@ func TestListDirSearchFilesGrep(t *testing.T) {
 	}
 }
 
+func TestGrepSkipsSymlinkedFilesOutsideWorkspace(t *testing.T) {
+	set, root := newTestToolSet(t, ProfileReadOnly)
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("needle outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(root, "linked.txt")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	res := set.Execute(context.Background(), "grep", mustJSON(t, map[string]string{"pattern": "needle"}))
+	if res.IsError {
+		t.Fatalf("grep failed: %+v", res)
+	}
+	if strings.Contains(res.Content, "linked.txt") || strings.Contains(res.Content, "needle outside") {
+		t.Fatalf("grep followed a symlink outside workspace: %q", res.Content)
+	}
+}
+
 func TestProfilesGateTools(t *testing.T) {
 	readOnly, _ := newTestToolSet(t, ProfileReadOnly)
 	if readOnly.Has("create_file") || readOnly.Has("run_command") || readOnly.Has("apply_patch") {

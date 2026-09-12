@@ -86,8 +86,18 @@ func (s *Supervisor) Start(parent context.Context, spec Spec) (*Process, error) 
 		cancel()
 		return nil, fmt.Errorf("process confinement temp: %w", err)
 	}
+	// prepareContainment may start platform helpers (the macOS registry proxy)
+	// before a later pre-start operation fails. Keep all pre-start resources
+	// owned by this function until the process has been successfully handed to
+	// its reaper goroutine.
+	prepared := true
+	defer func() {
+		if prepared {
+			cleanupPlatformPreparation(cmd)
+			tempCleanup()
+		}
+	}()
 	if err := prepareContainment(cmd, spec.Containment); err != nil {
-		tempCleanup()
 		cancel()
 		return nil, fmt.Errorf("process confinement: %w", err)
 	}
@@ -128,7 +138,11 @@ func (s *Supervisor) Start(parent context.Context, spec Spec) (*Process, error) 
 	}
 	cleanup, err := startContainedCommand(cmd, spec.Containment)
 	if err != nil {
+		// startContainedCommand already removes platform preparation on a
+		// failed start; release the temp directory here before disarming the
+		// pre-start guard.
 		tempCleanup()
+		prepared = false
 		s.unreserve(spec.ID)
 		cancel()
 		return nil, fmt.Errorf("start %s: %w", spec.Kind, err)
@@ -140,6 +154,7 @@ func (s *Supervisor) Start(parent context.Context, spec Spec) (*Process, error) 
 		}
 		tempCleanup()
 	}
+	prepared = false
 	p.networkLogs = networkObservationReader(cmd)
 
 	s.mu.Lock()

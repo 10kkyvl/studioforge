@@ -85,3 +85,17 @@ func TestConcurrentDifferentResources(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestConcurrentCloseIsIdempotent(t *testing.T) {
+	m := NewManager(time.Millisecond)
+	const callers = 20
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			defer wg.Done()
+			m.Close()
+		}()
+	}
+	wg.Wait()
+}

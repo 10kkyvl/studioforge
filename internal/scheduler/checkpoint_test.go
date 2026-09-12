@@ -12,6 +12,7 @@ import (
 
 	"github.com/10kkyvl/studioforge/internal/database"
 	"github.com/10kkyvl/studioforge/internal/events"
+	"github.com/10kkyvl/studioforge/internal/gitcheckpoint"
 	"github.com/10kkyvl/studioforge/internal/models"
 	"github.com/10kkyvl/studioforge/internal/providers"
 	"github.com/10kkyvl/studioforge/internal/providers/mock"
@@ -252,5 +253,40 @@ func TestSuccessfulCorrectionRecordsOneCheckpointLinkedToItsRun(t *testing.T) {
 	}
 	if got := store.createCount(); got != 1 {
 		t.Errorf("createCount=%d, want 1", got)
+	}
+}
+
+func TestCleanCorrectionReachesReviewWithDurableBaseCommit(t *testing.T) {
+	manager, store, ctx := newCheckpointHarness(t)
+	dir := gitRepoWithChanges(t)
+	base, _, err := gitcheckpoint.Checkpoint(dir, "initial")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, job := newCorrectionParent(t, ctx, store, dir)
+	job.Provider = "claude"
+	job.ReviewBeforeApply = true
+	reviewed := make(chan string, 1)
+	manager.SetReviewProposer(func(_ context.Context, req ReviewRequest) (ReviewProposal, error) {
+		reviewed <- req.BaseCommit
+		return ReviewProposal{}, nil
+	})
+	manager.scheduleCorrection(ctx, job, "sess-clean", failedValidation())
+	corrections := correctionRunsFor(t, ctx, store, parent.ID)
+	if len(corrections) != 1 {
+		t.Fatalf("corrections=%d, want 1", len(corrections))
+	}
+	select {
+	case got := <-reviewed:
+		if got != base {
+			t.Fatalf("review base=%q, want %q", got, base)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("clean correction never reached review")
+	}
+	run := waitForRunStatus(t, ctx, store, corrections[0].ID, "completed")
+	checkpoint, err := store.CheckpointForRun(ctx, run.ID)
+	if err != nil || checkpoint.CommitHash != base || run.BaseCommit != base {
+		t.Fatalf("checkpoint=%+v run base=%q want=%q err=%v", checkpoint, run.BaseCommit, base, err)
 	}
 }

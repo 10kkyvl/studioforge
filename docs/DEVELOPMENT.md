@@ -163,8 +163,8 @@ internal/
   events/                   Hub: persisted-then-published run event fan-out
   gitcheckpoint/            auto-commit before non-plan Claude runs (wired)
   gitops/                   status/diff/rollback/tag (wired: GET .../diff, POST .../rollback, POST .../git/tag)
-  memory/                   FTS5-backed store (wired: auto-saved after each completed run, injected into
-                             the next run's context)
+  memory/                   FTS5-backed bounded outcome memory (dedup, curated edits, keyword retrieval;
+                             capped context injection without additional model requests)
   migrations/               embedded ordered .sql migration files
   models/                   shared DTOs
   platform/                 data dir, single-instance lock, browser launch, secret store, toolpath

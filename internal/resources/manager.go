@@ -16,12 +16,13 @@ type lease struct {
 	expires   time.Time
 }
 type Manager struct {
-	mu      sync.Mutex
-	leases  map[string]lease
-	changed chan struct{}
-	ttl     time.Duration
-	stop    chan struct{}
-	done    chan struct{}
+	mu        sync.Mutex
+	leases    map[string]lease
+	changed   chan struct{}
+	ttl       time.Duration
+	stop      chan struct{}
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 // TTL reports the lease lifetime this manager was configured with, so a
@@ -156,11 +157,6 @@ func (m *Manager) reap() {
 	}
 }
 func (m *Manager) Close() {
-	select {
-	case <-m.stop:
-		return
-	default:
-		close(m.stop)
-		<-m.done
-	}
+	m.closeOnce.Do(func() { close(m.stop) })
+	<-m.done
 }

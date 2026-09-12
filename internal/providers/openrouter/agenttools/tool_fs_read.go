@@ -245,6 +245,12 @@ func searchFilesTool(opts Options) Tool {
 				if err != nil {
 					return nil
 				}
+				// Resolve protects explicit reads, but search results should not
+				// expose symlink entries that point outside the workspace. WalkDir
+				// does not follow symlinked directories, so skip all symlinks here.
+				if d.Type()&os.ModeSymlink != 0 {
+					return nil
+				}
 				if d.IsDir() {
 					return nil
 				}
@@ -322,6 +328,11 @@ func grepTool(opts Options) Tool {
 			count := 0
 			walkErr := filepath.WalkDir(resolvedBase, func(p string, d fs.DirEntry, err error) error {
 				if err != nil {
+					return nil
+				}
+				// WalkDir does not follow symlinked directories, but opening a
+				// symlinked file below would still follow it outside the workspace.
+				if d.Type()&os.ModeSymlink != 0 {
 					return nil
 				}
 				if d.IsDir() {

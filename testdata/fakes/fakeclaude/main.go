@@ -23,6 +23,18 @@ func main() {
 		return
 	}
 	scenario := os.Getenv("FAKE_CLAUDE_SCENARIO")
+	if scenario == "flood" {
+		// Keep writing after the pipe readers have filled the provider's event
+		// buffer. The test cancels while both sides are back-pressured.
+		body, _ := json.Marshal(map[string]any{"type": "system", "subtype": "flood"})
+		for i := 0; i < 1024; i++ {
+			fmt.Println(string(body))
+			fmt.Fprintln(os.Stderr, "flood")
+		}
+		for {
+			time.Sleep(time.Second)
+		}
+	}
 	if scenario == "hang" {
 		for {
 			time.Sleep(time.Second)

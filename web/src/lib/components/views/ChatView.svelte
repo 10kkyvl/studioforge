@@ -24,7 +24,7 @@
   import { isTaskBlocked, taskReadiness } from '$lib/tasksReadiness';
   import { getOpenRouterCapabilities } from '$lib/openrouter';
   import { getNVIDIACapabilities } from '$lib/nvidia';
-  import { aggregateOpenRouterMessages } from '$lib/openrouterStream';
+  import { aggregateOpenRouterMessages, isResetMessage } from '$lib/openrouterStream';
   import { parseAttachments } from '$lib/attachments';
   import Markdown from '$lib/components/Markdown.svelte';
   import DiffViewer from '$lib/components/DiffViewer.svelte';
@@ -106,6 +106,10 @@
   let sentRunId: string | null = null;
   let runDiff: RunDiff | null = null;
   let runDiffProjectId = '';
+  // The diff panel can outlive its run's foreground progress strip when a
+  // queued follow-up becomes active. Keep rollback tied to the run whose diff
+  // is displayed rather than to the mutable `sentRunId`.
+  let runDiffRunId = '';
   let diffGeneration = 0;
   let loadingDiff = false;
   let confirmingRollback = false;
@@ -135,6 +139,7 @@
   const STUDIO_POLL_MS = 10_000;
 
   let studioStatus: StudioStatus = STUDIO_OFFLINE;
+  let studioStatusRequest = 0;
   let openingStudio = false;
   let syncBusy = false;
   let stopping = false;
@@ -222,9 +227,25 @@
   });
 
   async function loadStudioStatus() {
+    const requestId = ++studioStatusRequest;
+    const generation = projectGeneration;
+    const requestedProjectId = projectId;
     try {
-      studioStatus = await getStudioStatus(projectId);
+      const status = await getStudioStatus(requestedProjectId);
+      if (
+        requestId !== studioStatusRequest ||
+        generation !== projectGeneration ||
+        requestedProjectId !== projectId
+      )
+        return;
+      studioStatus = status;
     } catch {
+      if (
+        requestId !== studioStatusRequest ||
+        generation !== projectGeneration ||
+        requestedProjectId !== projectId
+      )
+        return;
       studioStatus = STUDIO_OFFLINE;
     }
   }
@@ -665,11 +686,12 @@
   $: activeLiveEvents = aggregateOpenRouterMessages(
     activeRunEvents.filter(
       (event) =>
-        (event.type === 'message' && messageText(event.payload).trim() !== '') ||
+        (event.type === 'message' &&
+          (messageText(event.payload).trim() !== '' || isResetMessage(event))) ||
         (event.type === 'question' && normalizeQuestionPayload(event.payload) !== null) ||
         mcpWithheldMessage(event) !== null,
     ),
-  );
+  ).filter((event) => event.type !== 'message' || messageText(event.payload).trim() !== '');
 
   // A card only offers live buttons while it is the very last thing in the
   // transcript — once anything newer exists (a later message, or a later live
@@ -835,6 +857,7 @@
     rollingBack = false;
     rollbackError = '';
     rollbackResult = null;
+    runDiffRunId = '';
   }
 
   async function loadRunDiff(runId: string) {
@@ -854,6 +877,7 @@
       if (!current()) return;
       runDiffProjectId = runProjectId;
       runDiff = result;
+      runDiffRunId = runId;
     } catch (cause) {
       if (current() && cause instanceof APIError) runDiff = null;
     } finally {
@@ -862,15 +886,23 @@
   }
 
   async function doRollback() {
-    if (!sentRunId || rollingBack) return;
+    if (!runDiffRunId || !runDiff?.checkpoint || rollingBack) return;
+    const targetRunId = runDiffRunId;
+    const requestGeneration = diffGeneration;
+    const generation = projectGeneration;
+    const current = () =>
+      requestGeneration === diffGeneration &&
+      generation === projectGeneration &&
+      runDiffRunId === targetRunId;
     rollingBack = true;
     rollbackError = '';
     try {
-      rollbackResult = await rollbackRun(sentRunId);
+      const result = await rollbackRun(targetRunId);
+      if (current()) rollbackResult = result;
     } catch (cause) {
-      rollbackError = cause instanceof Error ? cause.message : String(cause);
+      if (current()) rollbackError = cause instanceof Error ? cause.message : String(cause);
     } finally {
-      rollingBack = false;
+      if (current()) rollingBack = false;
     }
   }
 

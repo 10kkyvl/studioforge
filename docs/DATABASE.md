@@ -20,6 +20,10 @@ Doctor executes `PRAGMA integrity_check` and `foreign_key_check`. Graceful shutd
 
 `015_memory_management.sql` adds pinned memory and the run-to-entry injection ledger. Deleting memory removes only its injection links, not source runs. `016_studio_changes.sql` adds an independent per-run Studio operation journal with call IDs, target paths, property names and pending/succeeded/error/unknown outcomes. Neither table is pruned by run-event retention. The shim opens the existing database without applying migrations.
 
+Project memory is collected from bounded final-answer excerpts after completed non-plan runs. Failed or inconclusive validation, interrupted output, and budget stops are excluded. Outcomes are attributed reports, not independently verified facts. Automatic writes deduplicate exact trimmed content and retain the newest 100 unpinned automatic entries per project; edited and pinned notes are preserved. Editing persists both content and summary and marks the entry as curated (`source=edited`).
+
+Retrieval uses up to 16 safely quoted keywords with OR matching and a token-based LIKE fallback. Five entries are selected, reserving up to two slots for matching unpinned notes. The injected block is limited to 3,200 UTF-8 bytes, including attribution and dates. No additional model call is made. Contradictory facts should be explicitly edited or deleted; current user requirements and current files take precedence over historical reports. OpenRouter compaction retains an extractive digest of earlier conversation capped at 2,048 bytes (and 20% of available history budget), without a summarization request; it does not replace the stored full transcript.
+
 ---
 
 # Схема и эксплуатация базы данных (Русский)
@@ -39,6 +43,10 @@ CGO-free драйвер `modernc.org/sqlite` используется через
 Doctor запускает `PRAGMA integrity_check` и `foreign_key_check`. Корректное завершение выполняет `wal_checkpoint(TRUNCATE)`. Backup использует `VACUUM INTO`, поэтому база и WAL остаются согласованным источником во время работы daemon. Тесты миграций также обновляют базу, созданную на первой миграции, и сравнивают её канонические таблицы, колонки, типы и индексы со свежей установкой.
 
 Миграция `015_memory_management.sql` добавляет закрепление памяти и связь записей с запусками, в которые они подставлены. Удаление памяти удаляет только эти связи, сохраняя исходные запуски. `016_studio_changes.sql` добавляет отдельный журнал операций Studio: ID вызова, объект, имена свойств и исход. Обе таблицы не затрагиваются очисткой событий запусков. Shim открывает готовую БД без запуска миграций.
+
+Автопамять сохраняет ограниченные выдержки итогового ответа после завершённых запусков вне режима планирования. Неуспешная или неопределённая валидация, прерванный ответ и остановка по бюджету исключены. Это отчёты агента, а не независимо подтверждённые факты. Точные дубли объединяются; остаются 100 последних автоматических незакреплённых записей проекта. Закреплённые и отредактированные записи очистка сохраняет. При редактировании обновляются текст и сводка, источник становится `edited`.
+
+В контекст попадает до пяти записей общим размером до 3200 байт UTF-8; до двух мест резервируются для релевантных незакреплённых записей. Поиск использует до 16 ключевых слов. Дополнительных запросов к модели нет. Противоречивые сведения исправляются явно через редактирование или удаление; текущие требования и файлы приоритетнее истории. При сжатии истории OpenRouter сохраняет выдержки старых сообщений размером до 2048 байт и не более 20% доступного бюджета истории без отдельного LLM-запроса; полный сохранённый диалог остаётся в базе.
 
 ## Project usage reporting
 

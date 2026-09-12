@@ -84,6 +84,7 @@
   let fileOpenProjectId = '';
   let events: RunEvent[] = [];
   let streamOnline = false;
+  let streamAuthExpired = false;
   let theme = 'system';
   let fontSize = 'comfortable';
   let notice = '';
@@ -108,6 +109,8 @@
   // flag is what lets it skip re-subscribing when the tab is already
   // connected.
   let streaming = false;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let streamProbeGeneration = 0;
   let statusRefreshTimer: ReturnType<typeof setTimeout> | undefined;
   // Coalesces concurrent refresh() callers (the header button, the debounced
   // status-event refresh, and every action() handler all call it) onto one
@@ -227,6 +230,11 @@
     // along the way.
     const visibilityHandler = () => {
       if (document.hidden) {
+        streamProbeGeneration += 1;
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = undefined;
+        }
         disconnect();
         disconnect = () => {};
         streaming = false;
@@ -234,12 +242,15 @@
         // callback never runs on a deliberate close and the presence dot would
         // keep claiming a live stream that is gone. Say so explicitly.
         streamOnline = false;
+        streamAuthExpired = false;
       } else {
         connectStream();
       }
     };
     document.addEventListener('visibilitychange', visibilityHandler);
     return () => {
+      streamProbeGeneration += 1;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       disconnect();
       if (statusRefreshTimer) clearTimeout(statusRefreshTimer);
       document.removeEventListener('visibilitychange', visibilityHandler);
@@ -275,17 +286,68 @@
   // design in api.ts was meant to avoid.
   function connectStream() {
     if (streaming) return;
+    streamProbeGeneration += 1;
     streamOnline = false;
+    streamAuthExpired = false;
     streaming = true;
-    disconnect = connectEvents(
+    let unsubscribe: () => void = () => {};
+    unsubscribe = connectEvents(
       (event) => {
         if (event.id > 0) lastEventId = event.id;
         events = [...events.slice(-999), event];
         if (event.type === 'status') scheduleStatusRefresh();
       },
-      (online) => (streamOnline = online),
+      (online) => {
+        streamOnline = online;
+        if (online) {
+          streamAuthExpired = false;
+          streaming = true;
+          if (reconnectTimer) {
+            clearTimeout(reconnectTimer);
+            reconnectTimer = undefined;
+          }
+          return;
+        }
+        // EventSource retries transient failures itself, but a CLOSED source
+        // (notably after a 401 or daemon restart) never retries. Drop the
+        // local subscription flag and try again with the last received id so
+        // the stream can recover without a full page reload.
+        unsubscribe();
+        if (disconnect === unsubscribe) disconnect = () => {};
+        streaming = false;
+        const probeGeneration = ++streamProbeGeneration;
+        void (async () => {
+          try {
+            // EventSource intentionally hides HTTP status codes. Probe the
+            // authenticated API before retrying so a daemon restart (which
+            // invalidates its in-memory session) becomes an actionable
+            // session-expired message instead of an endless reconnect loop.
+            await getSnapshot();
+          } catch (cause) {
+            if (probeGeneration !== streamProbeGeneration || document.hidden) return;
+            if (cause instanceof APIError && (cause.status === 401 || cause.status === 403)) {
+              streamAuthExpired = true;
+              error = friendlyError(cause, $translate);
+              errorRetry = null;
+              return;
+            }
+          }
+          if (
+            probeGeneration !== streamProbeGeneration ||
+            reconnectTimer ||
+            document.hidden ||
+            !snapshot
+          )
+            return;
+          reconnectTimer = setTimeout(() => {
+            reconnectTimer = undefined;
+            if (!document.hidden && snapshot) connectStream();
+          }, 500);
+        })();
+      },
       lastEventId,
     );
+    disconnect = unsubscribe;
   }
 
   // Debounced: an agent emits a burst of status events in quick succession
@@ -640,11 +702,22 @@
       </nav>
       <div class="sidebar-footer">
         <div class="sidebar-footer-line">
-          <span class="presence" class:online={streamOnline} class:reconnecting={!streamOnline}
+          <span
+            class="presence"
+            class:online={streamOnline}
+            class:reconnecting={!streamOnline && !streamAuthExpired}
           ></span><span
             class="sidebar-footer-status"
-            title={streamOnline ? $translate('footer.online') : $translate('footer.reconnecting')}
-            >{streamOnline ? $translate('footer.online') : $translate('footer.reconnecting')}</span
+            title={streamOnline
+              ? $translate('footer.online')
+              : streamAuthExpired
+                ? $translate('error.session')
+                : $translate('footer.reconnecting')}
+            >{streamOnline
+              ? $translate('footer.online')
+              : streamAuthExpired
+                ? $translate('error.session')
+                : $translate('footer.reconnecting')}</span
           >
         </div>
         <div class="sidebar-footer-line">
@@ -823,7 +896,7 @@
                 decisions={snapshot.decisions}
                 onResolveDecision={resolveDecision}
                 onResolveReviewDecision={resolveDecision}
-                busy={busy.startsWith('run-')}
+                busy={busy.startsWith('decision-')}
               />
             {:else if view === 'studios'}
               <StudiosView

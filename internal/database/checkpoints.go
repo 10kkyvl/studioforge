@@ -14,9 +14,24 @@ func (s *Store) CreateCheckpoint(ctx context.Context, checkpoint models.Checkpoi
 	if checkpoint.CreatedAt.IsZero() {
 		checkpoint.CreatedAt = time.Now().UTC()
 	}
-	_, err := s.db.SQL.ExecContext(ctx, `INSERT INTO checkpoints(id,project_id,run_id,commit_hash,branch,label,created_at)
+	tx, err := s.db.SQL.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `INSERT INTO checkpoints(id,project_id,run_id,commit_hash,branch,label,created_at)
 VALUES(?,?,?,?,?,?,?)`, checkpoint.ID, checkpoint.ProjectID, checkpoint.RunID, checkpoint.CommitHash, checkpoint.Branch, checkpoint.Label, formatTime(checkpoint.CreatedAt))
-	return err
+	if err != nil {
+		return err
+	}
+	// Correction runs are created before their checkpoint is taken. Persist
+	// their base as well as the checkpoint row, just as API-submitted runs do.
+	if checkpoint.RunID != "" && checkpoint.CommitHash != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE runs SET base_commit=? WHERE id=? AND base_commit=''`, checkpoint.CommitHash, checkpoint.RunID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) CheckpointForRun(ctx context.Context, runID string) (models.Checkpoint, error) {

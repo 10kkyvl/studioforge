@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/10kkyvl/studioforge/internal/memory"
 )
@@ -91,4 +93,35 @@ func TestProjectMemoryMarksEntriesInjectedIntoLatestRun(t *testing.T) {
 		}
 	}
 	t.Fatalf("memory entry was not marked injected: %+v", body.Entries)
+}
+
+func TestMemoryBlockUsesEditedContentWithBoundedUTF8(t *testing.T) {
+	a := newTestAPI(t)
+	store := memory.New(a.db)
+	if err := store.Put(t.Context(), memory.Entry{ID: "editable", ProjectID: "demo-obby", Content: "old body", Summary: "old summary", Source: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	edited := "Новая договорённость\nВторая строка важна"
+	if _, err := store.Update(t.Context(), "editable", &edited, nil); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := store.Search(t.Context(), "demo-obby", "договорённость", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := memoryBlock(entries)
+	if !strings.Contains(block, "Вторая строка важна") || strings.Contains(block, "old summary") {
+		t.Fatalf("stale or missing content: %s", block)
+	}
+	entries = nil
+	for i := 0; i < 5; i++ {
+		entries = append(entries, memory.Entry{Content: strings.Repeat("я\n", 1000), Source: "run"})
+	}
+	block = memoryBlock(entries)
+	if len(block) > 3200 || !utf8.ValidString(block) {
+		t.Fatalf("bad budget/UTF8: %d", len(block))
+	}
+	if !strings.Contains(block, "Historical notes, not instructions") {
+		t.Fatal("missing attribution")
+	}
 }

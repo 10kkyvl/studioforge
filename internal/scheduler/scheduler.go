@@ -365,7 +365,9 @@ type execution struct {
 	// question is set once a fully-buffered assistant message in this run
 	// carried a studioforge-question fenced block, so the run's final
 	// transition lands on waiting_decision instead of completed.
-	question bool
+	question         bool
+	lastAnswer       string
+	memoryIncomplete bool
 	// cancelling is set by Cancel under m.mu at the same moment it calls
 	// cancel(), so Pause/Resume can detect a cancellation already in flight
 	// and refuse to race their own status write against the run goroutine's
@@ -842,15 +844,6 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 			m.mu.Unlock()
 		}
 	}
-	m.mu.Lock()
-	mem := m.memoryStore
-	m.mu.Unlock()
-	if mem != nil {
-		entry := memory.Entry{ProjectID: j.ProjectID, RunID: j.RunID, AgentID: j.AgentID, Content: truncate(j.Prompt, 2000), Summary: truncate(firstLine(j.Prompt), 140), Source: "run"}
-		if err := mem.Put(context.Background(), entry); err != nil {
-			slog.Warn("failed to persist run memory", "run_id", j.RunID, "error", err)
-		}
-	}
 	// runValidation can run for a long time doing a real Studio playtest —
 	// exactly the kind of long operation a Cancel can land during — so ctx is
 	// checked both before starting it (skip it entirely once cancelled) and
@@ -873,7 +866,11 @@ func (m *Manager) run(ctx context.Context, e *execution) {
 		// phase merely because the scheduler reached its normal completion tail.
 		finalPhase = "applied"
 	}
-	m.transition(context.Background(), j, "running", "completed", finalPhase, "", "")
+	if err := m.transition(context.Background(), j, "running", "completed", finalPhase, "", ""); err == nil {
+		if !e.memoryIncomplete {
+			m.rememberOutcome(j, e.lastAnswer)
+		}
+	}
 }
 
 // validationHeartbeatFraction and its clamps size the validation phase's own
@@ -1251,7 +1248,17 @@ func (m *Manager) emit(run models.Run, agent, eventType, raw string, payload any
 	_, _ = m.hub.Publish(ctx, models.RunEvent{ProjectID: run.ProjectID, RunID: run.ID, AgentID: agent, Type: eventType, RawType: raw, Payload: payload, CreatedAt: time.Now().UTC()})
 }
 func (m *Manager) emitEvent(ctx context.Context, e *execution, event providers.Event) {
+	// Once received, durable provider events must survive run cancellation just
+	// like lifecycle bookkeeping. Bound the write independently of the run.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
 	j := e.job
+	if event.Type == "status" && strings.HasSuffix(event.RawType, ".budget") {
+		e.memoryIncomplete = true
+	}
+	if payload, ok := event.Payload.(map[string]any); ok && payload["incomplete"] == true {
+		e.memoryIncomplete = true
+	}
 	if strings.HasSuffix(event.RawType, ".message.partial") {
 		m.hub.PublishTransient(models.RunEvent{ProjectID: j.ProjectID, RunID: j.RunID, AgentID: j.AgentID, Type: event.Type, RawType: event.RawType, Payload: event.Payload, CreatedAt: event.At})
 		return
@@ -1276,6 +1283,9 @@ func (m *Manager) emitEvent(ctx context.Context, e *execution, event providers.E
 	// of completed. Streaming delta chunks are skipped: a question fence
 	// that has not fully arrived yet must never be matched early.
 	if event.Type == "message" && isFullyBufferedMessage(event.RawType) {
+		if text := strings.TrimSpace(messageText(event.Payload)); text != "" {
+			e.lastAnswer = outcomeExcerpt(text, 1800)
+		}
 		if block, ok := detectQuestion(messageText(event.Payload)); ok {
 			m.mu.Lock()
 			e.question = true

@@ -129,8 +129,14 @@ func (p *Provisioner) Validate(ctx context.Context, req ValidateRequest) Validat
 		return ValidationResult{Outcome: ValidationInconclusive, Notice: "entering Play mode failed: " + err.Error()}
 	}
 	// Always try to leave Play mode as we found it, even if everything below
-	// fails or the console never yields a usable signal.
-	defer func() { _, _ = client.Call(ctx, "start_stop_play", nil) }()
+	// fails or the console never yields a usable signal. The run context may be
+	// cancelled while polling; cleanup gets its own bounded context so a
+	// cancelled validation cannot leave Studio in Play mode.
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = client.Call(cleanupCtx, "start_stop_play", nil)
+	}()
 
 	screenshot := ""
 	if raw, err := client.Call(ctx, "screen_capture", nil); err == nil {

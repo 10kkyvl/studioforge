@@ -69,6 +69,7 @@ type playtestTransport struct {
 	consoleErr       error
 	malformedConsole bool
 	screenshotText   string
+	cancelOnConsole  func()
 	closeAfterCalls  int // once total Calls exceeds this, every call errors; 0 = never
 
 	totalCalls      int
@@ -88,6 +89,10 @@ func (p *playtestTransport) Call(ctx context.Context, name string, args map[stri
 		return json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`), nil
 	case "get_console_output":
 		p.consoleCalls++
+		if p.cancelOnConsole != nil {
+			p.cancelOnConsole()
+			p.cancelOnConsole = nil
+		}
 		if p.consoleErr != nil {
 			return nil, p.consoleErr
 		}
@@ -208,6 +213,22 @@ func TestValidateToleratesMalformedConsoleResponses(t *testing.T) {
 	}
 	if transport.playCalls != 2 {
 		t.Errorf("playCalls=%d, want 2 (Play mode must still be exited)", transport.playCalls)
+	}
+}
+
+func TestValidateExitsPlayModeAfterCallerCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	transport := &playtestTransport{
+		studioTransport: studioTransport{instances: []Instance{{ID: "one", Name: "Place.rbxl"}}},
+		cancelOnConsole: func() { cancel() },
+	}
+	p := newProvisioner(t, transport)
+	result := p.Validate(ctx, fastValidateRequest())
+	if result.Outcome != ValidationInconclusive {
+		t.Fatalf("outcome=%q, want inconclusive after cancellation", result.Outcome)
+	}
+	if transport.playCalls != 2 {
+		t.Fatalf("playCalls=%d, want 2 (cleanup must use a live context)", transport.playCalls)
 	}
 }
 

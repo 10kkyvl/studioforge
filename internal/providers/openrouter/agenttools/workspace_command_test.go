@@ -41,6 +41,14 @@ func TestWorkspaceCommandRefusesNpx(t *testing.T) {
 	}
 }
 
+func TestWorkspaceCommandRefusesAllowlistedExecutablePaths(t *testing.T) {
+	for _, exe := range []string{"tools/git", "./git", "/tmp/git", `tools\\git.exe`} {
+		if refusal := checkWorkspaceCommand(exe, []string{"status"}); refusal == "" {
+			t.Fatalf("%q should be refused even though its basename is allowlisted", exe)
+		}
+	}
+}
+
 func TestWorkspaceCommandAllowsOrdinaryDevelopmentCommands(t *testing.T) {
 	cases := [][]string{
 		{"git", "status"},

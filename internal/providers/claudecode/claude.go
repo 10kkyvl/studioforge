@@ -153,8 +153,14 @@ func (p *Provider) start(ctx context.Context, req providers.RunRequest, resume s
 		tempCleanup()
 		return nil, err
 	}
-	h := &handle{cmd: cmd, events: make(chan providers.Event, 128), done: make(chan struct{})}
-	h.cancel = func() { _ = processes.TerminateTree(cmd, h.done, cancelGrace) }
+	h := &handle{cmd: cmd, events: make(chan providers.Event, 128), done: make(chan struct{}), cancelled: make(chan struct{})}
+	h.cancel = func() {
+		// Readers may be blocked trying to report an event after the scheduler
+		// stops consuming the stream. Signal them before waiting for the process
+		// tree so cancellation cannot deadlock behind a full events buffer.
+		close(h.cancelled)
+		_ = processes.TerminateTree(cmd, h.done, cancelGrace)
+	}
 	cmd.Cancel = func() error { return h.Cancel() }
 	jobCleanup, err := processes.StartCommand(cmd, cmdSpec)
 	if err != nil {
@@ -302,6 +308,7 @@ type handle struct {
 	cmd         *exec.Cmd
 	events      chan providers.Event
 	done        chan struct{}
+	cancelled   chan struct{}
 	cancel      func()
 	once        sync.Once
 	mu          sync.RWMutex
@@ -322,6 +329,7 @@ func (h *handle) consume(stdout, stderr io.Reader, cleanup func()) {
 	h.mu.RLock()
 	result.SessionID = h.result.SessionID
 	result.Cost = h.result.Cost
+	result.Usage = h.result.Usage
 	streamError := h.streamError
 	stderrText := h.stderr.String()
 	h.mu.RUnlock()
@@ -386,7 +394,9 @@ func (h *handle) readJSON(reader io.Reader) error {
 				h.streamError = event.Error
 				h.mu.Unlock()
 			}
-			h.events <- event
+			if !h.sendEvent(event) {
+				return nil
+			}
 		}
 		if err != nil {
 			return err
@@ -401,11 +411,27 @@ func (h *handle) readStderr(reader io.Reader) error {
 			h.mu.Lock()
 			_, _ = h.stderr.WriteString(strings.TrimSpace(line) + "\n")
 			h.mu.Unlock()
-			h.events <- providers.Event{Type: "stderr", RawType: "claude.stderr", Payload: map[string]any{"message": strings.TrimSpace(line)}, At: time.Now().UTC()}
+			if !h.sendEvent(providers.Event{Type: "stderr", RawType: "claude.stderr", Payload: map[string]any{"message": strings.TrimSpace(line)}, At: time.Now().UTC()}) {
+				return nil
+			}
 		}
 		if err != nil {
 			return err
 		}
+	}
+}
+
+// sendEvent must be cancellation-aware. The scheduler intentionally stops
+// draining Events before it waits for a cancelled provider, so an unbounded
+// send here can keep the reader goroutine alive forever and prevent cmd.Wait.
+func (h *handle) sendEvent(event providers.Event) bool {
+	select {
+	case h.events <- event:
+		return true
+	case <-h.cancelled:
+		return false
+	case <-h.done:
+		return false
 	}
 }
 func normalize(raw []byte) (providers.Event, error) {

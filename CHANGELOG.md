@@ -8,7 +8,14 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-13
+
 ### Added
+
+- Project controls, review gates, per-file and per-hunk rollback, and checkpoint range diffs.
+- Live run changes, Studio screenshots in chat, structured agent questions, and
+  playtest console observations with configurable polling.
+- OS process containment and project-scoped command controls.
 
 - Project memory management in Overview: inspect, edit, pin, delete or clear entries,
   open their source runs, and identify memory included in the latest run (#19).
@@ -17,6 +24,12 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
   survive event retention; opaque operations remain explicitly unknown (#17).
 
 ### Fixed
+
+- Review checkpoint persistence, Claude cancellation under event backpressure,
+  SSE reconnection, and chat loading and streaming state.
+- Automatic memory deduplication and retention, bounded search, and run outcome capture.
+- OpenRouter history compaction, tool-call pairing, context budgets, and model catalog refresh.
+- Resource cleanup, portable data validation, and macOS credential handling.
 
 - Database upgrades verify migration checksums, snapshot existing data before the
   upgrade and refuse unknown newer migrations with recovery information (#30).
