@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Scaffold writes a minimal Rojo project skeleton into root: a
@@ -39,4 +40,26 @@ func Scaffold(root, name string) error {
 		}
 	}
 	return nil
+}
+
+// EnsureReference writes a shipped, read-on-demand reference only when the
+// project does not have it yet. Operator edits therefore survive app updates,
+// just like style pack edits do.
+func EnsureReference(root, relative, body string) error {
+	if filepath.IsAbs(relative) {
+		return fmt.Errorf("reference path must be relative")
+	}
+	clean := filepath.Clean(relative)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("reference path must stay inside the project")
+	}
+	handle, err := os.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer handle.Close()
+	if err := handle.MkdirAll(filepath.Dir(clean), 0o700); err != nil {
+		return fmt.Errorf("create reference directory: %w", err)
+	}
+	return ensureRootFile(handle, clean, []byte(body))
 }

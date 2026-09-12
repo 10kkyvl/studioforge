@@ -39,6 +39,9 @@ type Options struct {
 	MaxReadBytes   int
 	MaxOutputBytes int
 	CommandTimeout time.Duration
+	// Containment overrides the platform default when its Mode is non-empty.
+	// It is copied into every agent-started shell process.
+	Containment processes.ContainmentSpec
 }
 
 type funcTool struct {

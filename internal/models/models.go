@@ -3,9 +3,13 @@ package models
 import "time"
 
 type Project struct {
-	ID            string   `json:"id"`
-	Name          string   `json:"name"`
-	Path          string   `json:"path"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Path string `json:"path"`
+	// Style is the selected per-project UI style pack. The pack itself lives
+	// under the project's .agent/styles directory; only the selection is stored
+	// in StudioForge's database.
+	Style         string   `json:"style"`
 	Fingerprint   string   `json:"fingerprint"`
 	Description   string   `json:"description"`
 	GroupName     string   `json:"groupName,omitempty"`
@@ -71,6 +75,14 @@ type Agent struct {
 	// (on by default globally): set for an agent that is expected by design to
 	// run very long, so a naturally long session never gets flagged.
 	StuckDetectionDisabled bool `json:"stuckDetectionDisabled"`
+	// ReviewBeforeApply pauses a file-changing run after the provider turn and
+	// asks the operator to apply, reject, or apply a selected subset of the
+	// resulting Git diff. It is deliberately opt-in.
+	ReviewBeforeApply bool `json:"reviewBeforeApply"`
+	// EgressPolicy applies only to agent-started child processes. The model
+	// provider's own HTTP traffic and local Studio MCP traffic are separate.
+	EgressPolicy  string   `json:"egressPolicy"`
+	RegistryHosts []string `json:"registryHosts,omitempty"`
 }
 
 type Task struct {
@@ -212,6 +224,20 @@ type Decision struct {
 	Status     string     `json:"status"`
 	CreatedAt  time.Time  `json:"createdAt"`
 	ResolvedAt *time.Time `json:"resolvedAt,omitempty"`
+	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
+	// Diff is populated for review_before_apply decisions. Payload remains
+	// private because it also carries the correction Job for older decisions.
+	Diff  string   `json:"diff,omitempty"`
+	Files []string `json:"files,omitempty"`
+	// ReviewFiles is the structured selection model for review_before_apply:
+	// Git supplies stable paths and the individual textual hunks, while binary,
+	// new, deleted, and mode-only files simply have no hunk entries.
+	ReviewFiles []ReviewFile `json:"reviewFiles,omitempty"`
+}
+
+type ReviewFile struct {
+	Path  string   `json:"path"`
+	Hunks []string `json:"hunks,omitempty"`
 }
 
 type Checkpoint struct {

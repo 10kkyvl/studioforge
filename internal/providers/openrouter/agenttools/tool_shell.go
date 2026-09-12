@@ -130,6 +130,7 @@ func (s *ToolSet) runCommandTool() Tool {
 				WorkingDirectory: opts.Workspace.Root(),
 				Environment:      processes.MinimalEnvironment(nil),
 				MaxRuntime:       opts.CommandTimeout,
+				Containment:      s.shellContainment(opts),
 			})
 			if err != nil {
 				return errResult("start command: %v", err)
@@ -137,6 +138,23 @@ func (s *ToolSet) runCommandTool() Tool {
 			return runAndCollect(ctx, proc, opts.MaxOutputBytes)
 		},
 	}
+}
+
+func (s *ToolSet) shellContainment(opts Options) processes.ContainmentSpec {
+	filesystem := processes.FilesystemProjectOnly
+	if s.profile == ProfileDanger {
+		filesystem = processes.FilesystemFullAccess
+	}
+	if opts.Containment.Mode != "" {
+		spec := opts.Containment
+		if spec.Filesystem == "" {
+			spec.Filesystem = filesystem
+		}
+		return spec
+	}
+	spec := processes.DefaultAgentContainment(opts.Workspace.Root())
+	spec.Filesystem = filesystem
+	return spec
 }
 
 func tokenizeCommand(command string) []string {
@@ -216,6 +234,22 @@ func runAndCollect(ctx context.Context, proc *processes.Process, maxOutputBytes 
 	output := buf.String()
 	isTruncated := truncated
 	mu.Unlock()
+	containment := proc.Containment()
+	if containment.Mode == processes.ContainmentRequired {
+		observations := proc.NetworkObservations()
+		if len(observations) > 0 {
+			output += fmt.Sprintf("\n[child process network policy: %s; proxy decisions are observable]\n", containment.Network)
+		} else {
+			output += fmt.Sprintf("\n[child process network policy: %s; per-request network activity is not observable on %s]\n", containment.Network, runtime.GOOS)
+		}
+		for _, observation := range observations {
+			decision := "denied"
+			if observation.Allowed {
+				decision = "allowed"
+			}
+			output += fmt.Sprintf("[network proxy: %s %s:%s]\n", decision, observation.Host, observation.Port)
+		}
+	}
 
 	if isTruncated {
 		output += "\n... (output truncated)\n"

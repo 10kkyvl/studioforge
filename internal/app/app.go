@@ -238,6 +238,15 @@ func Run(ctx context.Context, opts config.Options) error {
 		},
 		Running: studio.IsRunning,
 	}
+	// Every provider and the validation loop share this coordinator with the
+	// sessions listing. A grant reserves the launcher slot for its whole run;
+	// a refresh is cancelled and drained before a new grant proceeds.
+	studioCoordinator := newStudioProbeCoordinator(5 * time.Second)
+	var studioPollInterval atomic.Int64
+	if seconds, parseErr := strconv.Atoi(setting("studio_sessions_poll_interval_seconds", "60")); parseErr == nil && seconds > 0 {
+		studioPollInterval.Store(int64(seconds))
+	}
+	studioRefreshState := newStudioRefreshState(studioCoordinator, !opts.MockMode && studioPollInterval.Load() > 0)
 	// studioPlace is how every Studio entry point below recognises the open
 	// instance that belongs to a project: the file name its place is built to,
 	// plus — for a project edited on roblox.com rather than as a local build —
@@ -312,11 +321,41 @@ func Run(ctx context.Context, opts config.Options) error {
 		if j.Provider != "claude" {
 			return scheduler.MCPGrant{}
 		}
+		gateRelease, ok := studioCoordinator.beginGrant(ctx)
+		if !ok {
+			return scheduler.MCPGrant{Notice: "Studio MCP withheld: a Studio sessions refresh was cancelled while the run was starting"}
+		}
 		grant := studioProvisioner.Provision(ctx, j.RunID, j.PermissionProfile, studioTarget(ctx, j.ProjectID))
+		if grant.ConfigPath == "" {
+			gateRelease()
+		} else {
+			originalRelease := grant.Release
+			grant.Release = func() {
+				if originalRelease != nil {
+					originalRelease()
+				}
+				gateRelease()
+			}
+		}
 		return scheduler.MCPGrant{ConfigPath: grant.ConfigPath, AllowedTools: grant.AllowedTools, Notice: grant.Notice, Context: grant.Context, Release: grant.Release}
 	})
 	openrouterProvider.SetMCPConnector(func(ctx context.Context, projectID, runID, permissionProfile string) openrouter.MCPGrant {
+		gateRelease, ok := studioCoordinator.beginGrant(ctx)
+		if !ok {
+			return openrouter.MCPGrant{Notice: "Studio MCP withheld: a Studio sessions refresh was cancelled while the run was starting"}
+		}
 		g := studioProvisioner.ProvisionLive(ctx, permissionProfile, studioTarget(ctx, projectID))
+		if g.Client == nil {
+			gateRelease()
+		} else {
+			originalRelease := g.Release
+			g.Release = func() {
+				if originalRelease != nil {
+					originalRelease()
+				}
+				gateRelease()
+			}
+		}
 		if g.Client != nil {
 			g.Client.SetRecorder(store.StudioRecorder(runID))
 		}
@@ -324,7 +363,22 @@ func Run(ctx context.Context, opts config.Options) error {
 	})
 	openrouterProvider.SetConversationStore(&conversationAdapter{store: store})
 	nvidiaProvider.SetMCPConnector(func(ctx context.Context, projectID, runID, permissionProfile string) openrouter.MCPGrant {
+		gateRelease, ok := studioCoordinator.beginGrant(ctx)
+		if !ok {
+			return openrouter.MCPGrant{Notice: "Studio MCP withheld: a Studio sessions refresh was cancelled while the run was starting"}
+		}
 		g := studioProvisioner.ProvisionLive(ctx, permissionProfile, studioTarget(ctx, projectID))
+		if g.Client == nil {
+			gateRelease()
+		} else {
+			originalRelease := g.Release
+			g.Release = func() {
+				if originalRelease != nil {
+					originalRelease()
+				}
+				gateRelease()
+			}
+		}
 		if g.Client != nil {
 			g.Client.SetRecorder(store.StudioRecorder(runID))
 		}
@@ -379,7 +433,9 @@ func Run(ctx context.Context, opts config.Options) error {
 	// Studio from the daemon's side.
 	schedulerManager.SetMCPValidator(func(ctx context.Context, j *scheduler.Job) scheduler.ValidationResult {
 		window := time.Duration(playtestWindowSeconds.Load()) * time.Second
-		result := studioProvisioner.Validate(ctx, mcp.ValidateRequest{Target: studioTarget(ctx, j.ProjectID), Window: window})
+		result := gatedStudioValidation(ctx, studioCoordinator, func(ctx context.Context) mcp.ValidationResult {
+			return studioProvisioner.Validate(ctx, mcp.ValidateRequest{Target: studioTarget(ctx, j.ProjectID), Window: window})
+		})
 		return scheduler.ValidationResult{Outcome: scheduler.ValidationOutcome(result.Outcome), Console: result.Console, Errors: result.Errors, Screenshot: result.Screenshot, Notice: result.Notice}
 	})
 	// A failed validation whose correction budget is exhausted proposes a
@@ -390,7 +446,7 @@ func Run(ctx context.Context, opts config.Options) error {
 	// the demo's own seeded rows are the point of that mode.
 	var refreshStudioSessions api.StudioSessionsRefresher
 	if !opts.MockMode {
-		refreshStudioSessions = studioSessionsRefresher(studioProvisioner, store)
+		refreshStudioSessions = gatedStudioRefresh(studioSessionsRefresher(studioProvisioner, store), studioCoordinator, studioRefreshState)
 	}
 
 	applySetting := func(key, value string) error {
@@ -406,6 +462,13 @@ func Run(ctx context.Context, opts config.Options) error {
 			studioMCPOverride.Store(value)
 		case "studio_auto_open":
 			studioAutoOpen.Store(value != "false")
+		case "studio_sessions_poll_interval_seconds":
+			seconds, err := strconv.Atoi(value)
+			if err != nil || seconds < 0 || seconds > 3600 {
+				return errors.New("studio_sessions_poll_interval_seconds must be 0 or between 1 and 3600")
+			}
+			studioPollInterval.Store(int64(seconds))
+			studioRefreshState.setEnabled(!opts.MockMode && seconds > 0)
 		case "playtest_window_seconds":
 			seconds, err := strconv.Atoi(value)
 			if err != nil || seconds <= 0 {
@@ -456,7 +519,7 @@ func Run(ctx context.Context, opts config.Options) error {
 	}
 	defer listener.Close()
 	baseURL := url.URL{Scheme: "http", Host: listener.Addr().String()}
-	apiServer, err := api.New(api.Dependencies{Store: store, DB: db, Scheduler: schedulerManager, Hub: hub, Doctor: doctor, Sessions: sessions, Guard: guard, SafeMode: opts.SafeMode, AllowedHost: listener.Addr().String(), DataDir: dataDir, Logger: slog.Default(), ApplySetting: applySetting, Studio: studioOpener, StudioOpenCheck: studioOpenCheck, StudioStatus: studioStatus, RefreshStudioSessions: refreshStudioSessions, Sync: syncer, Git: gitOps, Leases: leases, Memory: memoryStore, StuckSettings: stuckSettings, OpenRouterCreds: credManager, OpenRouterCatalog: catalogService, NVIDIACreds: nvidiaCredManager})
+	apiServer, err := api.New(api.Dependencies{Store: store, DB: db, Scheduler: schedulerManager, Hub: hub, Doctor: doctor, Sessions: sessions, Guard: guard, SafeMode: opts.SafeMode, AllowedHost: listener.Addr().String(), DataDir: dataDir, Logger: slog.Default(), ApplySetting: applySetting, Studio: studioOpener, StudioOpenCheck: studioOpenCheck, StudioStatus: studioStatus, RefreshStudioSessions: refreshStudioSessions, StudioSessionsState: studioRefreshState.snapshot, Sync: syncer, Git: gitOps, Leases: leases, Memory: memoryStore, StuckSettings: stuckSettings, OpenRouterCreds: credManager, OpenRouterCatalog: catalogService, NVIDIACreds: nvidiaCredManager})
 	if err != nil {
 		return err
 	}
@@ -465,6 +528,15 @@ func Run(ctx context.Context, opts config.Options) error {
 	slog.Info("StudioForge ready", "url", baseURL.String(), "data_dir", dataDir, "safe_mode", opts.SafeMode, "mock_mode", opts.MockMode)
 	fmt.Printf("STUDIOFORGE_URL=%s\nSTUDIOFORGE_BOOTSTRAP=%s\n", baseURL.String(), sessions.BootstrapToken())
 	go store.RunEventRetentionLoop(ctx, func() int { return int(eventRetentionDays.Load()) })
+	if !opts.MockMode && refreshStudioSessions != nil {
+		startStudioPoller(ctx, func() time.Duration {
+			seconds := studioPollInterval.Load()
+			if seconds <= 0 {
+				return 0
+			}
+			return time.Duration(seconds) * time.Second
+		}, refreshStudioSessions, studioRefreshState)
+	}
 	if !opts.NoOpen {
 		if err := platform.OpenBrowser(launchURL); err != nil {
 			slog.Warn("browser did not open automatically", "error", err, "url", baseURL.String())

@@ -654,6 +654,20 @@
         <p class="path-hint">{$translate('settings.playtestWindowHint')}</p>
       </div>
       <div class="wide path-field">
+        <label
+          >{$translate('settings.studioSessionsPollInterval')}<input
+            type="number"
+            min="0"
+            max="3600"
+            step="1"
+            value={settings.studio_sessions_poll_interval_seconds}
+            onchange={(event) =>
+              (settings.studio_sessions_poll_interval_seconds = event.currentTarget.value)}
+          /></label
+        >
+        <p class="path-hint">{$translate('settings.studioSessionsPollIntervalHint')}</p>
+      </div>
+      <div class="wide path-field">
         <details class="advanced-routing">
           <summary><ChevronDown size={14} />{$translate('openrouter.routing.title')}</summary>
           <div class="settings-fields">

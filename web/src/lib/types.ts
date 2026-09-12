@@ -46,6 +46,7 @@ export type Project = TokenUsage & {
   id: string;
   name: string;
   path: string;
+  style: string;
   description: string;
   groupName?: string;
   tags: string[];
@@ -57,6 +58,13 @@ export type Project = TokenUsage & {
   runningAgents: number;
   sync: SyncStatus;
   updatedAt: string;
+};
+export type StylePack = {
+  name: string;
+  brief: string;
+  palette?: Record<string, string>;
+  type?: Record<string, string>;
+  builtIn: boolean;
 };
 export type MemoryEntry = {
   id: string;
@@ -89,6 +97,11 @@ export type Agent = {
   // (Claude runs only, workspace-write permission or above). Off by default.
   validateAfterRun: boolean;
   maxCorrectionRuns: number;
+  // Pauses file-changing runs at the end of a provider turn for operator
+  // review. Off by default.
+  reviewBeforeApply: boolean;
+  egressPolicy: 'unrestricted' | 'registry-only' | 'none' | string;
+  registryHosts?: string[];
 };
 export type Task = {
   id: string;
@@ -149,6 +162,24 @@ export type RunDiff = {
     createdAt: string;
   };
 };
+export type ProjectFileEntry = {
+  name: string;
+  path: string;
+  type: 'file' | 'directory' | 'symlink' | string;
+  size: number;
+  modifiedAt: string;
+};
+export type ProjectFiles = {
+  path: string;
+  entries: ProjectFileEntry[];
+};
+export type ProjectFileContent = {
+  path: string;
+  content: string;
+  binary: boolean;
+  size: number;
+  modifiedAt: string;
+};
 export type RunEvent = {
   id: number;
   projectId: string;
@@ -203,6 +234,11 @@ export type StudioStatus = {
   blocked?: boolean;
   error?: string;
 };
+export type StudioRefreshState = {
+  enabled: boolean;
+  suspended: boolean;
+  lastRefreshed?: string;
+};
 // An operator-approval gate: something the scheduler would otherwise have
 // silently decided on its own (today, only a correction run whose automatic
 // budget was exhausted). Only pending decisions ride on the snapshot.
@@ -216,6 +252,10 @@ export type Decision = {
   status: string;
   createdAt: string;
   resolvedAt?: string;
+  expiresAt?: string;
+  diff?: string;
+  files?: string[];
+  reviewFiles?: { path: string; hunks?: string[] }[];
 };
 export type Snapshot = {
   projects: Project[];
@@ -223,6 +263,7 @@ export type Snapshot = {
   agents: Agent[];
   tasks: Task[];
   studios: StudioSession[];
+  studioRefresh: StudioRefreshState;
   decisions: Decision[];
   diagnostics: Diagnostics;
   settings: AppSettings;
@@ -249,6 +290,7 @@ export type AppSettings = {
   studio_auto_open: string;
   concurrency: string;
   playtest_window_seconds: string;
+  studio_sessions_poll_interval_seconds: string;
   // OpenRouter routing preferences. Empty string means "provider default" for
   // every field; require_parameters has no UI toggle and is always on
   // server-side. Persisted through the same POST /settings payload as every

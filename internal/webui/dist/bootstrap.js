@@ -6,8 +6,8 @@
 					const element = document.currentScript.parentElement;
 
 					Promise.all([
-						import("/_app/immutable/entry/start.CkSbSjKU.js"),
-						import("/_app/immutable/entry/app.D6v8PpEG.js")
+						import("/_app/immutable/entry/start.k1JFVdcm.js"),
+						import("/_app/immutable/entry/app.oJFGFw1E.js")
 					]).then(([kit, app]) => {
 						kit.start(app, element);
 					});

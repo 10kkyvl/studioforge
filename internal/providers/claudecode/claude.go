@@ -105,6 +105,9 @@ func (p *Provider) Resume(ctx context.Context, req providers.ResumeRequest) (pro
 	return p.start(ctx, req.RunRequest, req.SessionID)
 }
 func (p *Provider) start(ctx context.Context, req providers.RunRequest, resume string) (providers.RunHandle, error) {
+	if req.EgressPolicy != "" && req.EgressPolicy != string(processes.NetworkUnrestricted) {
+		return nil, fmt.Errorf("egress policy %q is unavailable for Claude Code: the CLI's provider API traffic is part of the child process; use unrestricted or an agent provider with child-only network enforcement", req.EgressPolicy)
+	}
 	diag := p.Diagnose(ctx)
 	if !diag.Available {
 		return nil, errors.New(diag.Message)
@@ -113,6 +116,22 @@ func (p *Provider) start(ctx context.Context, req providers.RunRequest, resume s
 	cmd := exec.CommandContext(ctx, diag.Path, args...)
 	cmd.Dir = req.WorkingDirectory
 	cmd.Env = processes.MinimalEnvironment(req.Environment)
+	containment := processes.DefaultAgentContainment(req.WorkingDirectory)
+	switch req.PermissionProfile {
+	case "read-only":
+		containment.Filesystem = processes.FilesystemReadOnly
+	case "danger-full-access":
+		containment.Filesystem = processes.FilesystemFullAccess
+	}
+	if req.EgressPolicy != "" {
+		containment.Network = processes.NetworkPolicy(req.EgressPolicy)
+	}
+	containment.RegistryHosts = append([]string(nil), req.RegistryHosts...)
+	cmdSpec := processes.Spec{Containment: containment}
+	tempCleanup, err := processes.AllocateContainmentTemp(&cmdSpec.Containment)
+	if err != nil {
+		return nil, fmt.Errorf("prepare Claude confinement temp: %w", err)
+	}
 	// Claude Code is the root of a small process tree: it spawns the MCP shim
 	// and a process per tool call. Cancelling has to take the whole tree down,
 	// so the command is started as a killable group and both cancellation
@@ -120,24 +139,38 @@ func (p *Provider) start(ctx context.Context, req providers.RunRequest, resume s
 	// the same tree kill. Without cmd.Cancel, context cancellation would fall
 	// back to os/exec's plain Process.Kill and orphan those children.
 	processes.ConfigureTree(cmd)
+	if err := processes.PrepareCommand(cmd, cmdSpec); err != nil {
+		tempCleanup()
+		return nil, fmt.Errorf("prepare Claude confinement: %w", err)
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		tempCleanup()
 		return nil, err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		tempCleanup()
 		return nil, err
 	}
 	h := &handle{cmd: cmd, events: make(chan providers.Event, 128), done: make(chan struct{})}
 	h.cancel = func() { _ = processes.TerminateTree(cmd, h.done, cancelGrace) }
 	cmd.Cancel = func() error { return h.Cancel() }
-	if err := cmd.Start(); err != nil {
+	jobCleanup, err := processes.StartCommand(cmd, cmdSpec)
+	if err != nil {
+		tempCleanup()
 		return nil, fmt.Errorf("start Claude Code: %w", err)
 	}
 	p.mu.Lock()
 	p.runs[req.RunID] = h
 	p.mu.Unlock()
-	go h.consume(stdout, stderr, func() { p.mu.Lock(); delete(p.runs, req.RunID); p.mu.Unlock() })
+	go h.consume(stdout, stderr, func() {
+		jobCleanup()
+		tempCleanup()
+		p.mu.Lock()
+		delete(p.runs, req.RunID)
+		p.mu.Unlock()
+	})
 	return h, nil
 }
 func buildArgs(req providers.RunRequest, resume string, caps map[string]bool) []string {

@@ -27,8 +27,8 @@ point of this demo is that every second of it is real.
   [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md)).
 - Project memory as a curated or browsable feature — entries are auto-saved from run prompts with no
   management UI or API to list, edit, or delete them.
-- Studio Sessions discovery as automatic — real-instance discovery needs a manual **Refresh** click;
-  nothing polls the launcher in the background.
+- Studio Sessions discovery during an active run — background refresh pauses while Studio is in use
+  and resumes after a quiet period. The idle interval is configurable; `0` disables polling.
 - Any capability the official Roblox Studio MCP tooling does not itself provide. StudioForge
   detects and launches that official tooling; it does not reimplement Studio operations and ships
   no Roblox Studio plugin.

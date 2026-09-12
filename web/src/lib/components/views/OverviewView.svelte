@@ -5,6 +5,7 @@
     Gauge,
     GitBranch,
     Pencil,
+    Palette,
     Play,
     Plug,
     Save,
@@ -13,9 +14,16 @@
     Waypoints,
     X,
   } from '@lucide/svelte';
-  import { clearMemory, deleteMemory, getMemory, updateMemory } from '$lib/api';
+  import {
+    clearMemory,
+    deleteMemory,
+    getMemory,
+    getProjectStyles,
+    setProjectStyle,
+    updateMemory,
+  } from '$lib/api';
   import { formatDate, formatMoney, locale, translate, type TranslationKey } from '$lib/i18n';
-  import type { MemoryEntry, Project, Snapshot } from '$lib/types';
+  import type { MemoryEntry, Project, Snapshot, StylePack } from '$lib/types';
 
   export let snapshot: Snapshot;
   export let project: Project | undefined;
@@ -31,6 +39,49 @@
   let loadedMemoryProject = '';
   let loadedMemoryRun = '';
   let memoryGeneration = 0;
+  let stylePacks: StylePack[] = [];
+  let selectedStyle = '';
+  let styleBusy = false;
+  let styleError = '';
+  let styleGeneration = 0;
+  let loadedStyleProject = '';
+
+  async function loadStyles(projectId: string, generation: number) {
+    styleBusy = true;
+    styleError = '';
+    try {
+      const result = await getProjectStyles(projectId);
+      if (generation !== styleGeneration || project?.id !== projectId) return;
+      stylePacks = result.styles;
+      selectedStyle = result.selected;
+    } catch (error) {
+      if (generation !== styleGeneration || project?.id !== projectId) return;
+      styleError = error instanceof Error ? error.message : String(error);
+    } finally {
+      if (generation === styleGeneration) styleBusy = false;
+    }
+  }
+
+  async function chooseStyle(event: Event) {
+    const value = (event.currentTarget as HTMLSelectElement).value;
+    if (!project || !value || value === selectedStyle || styleBusy) return;
+    const projectId = project.id;
+    const previous = selectedStyle;
+    const generation = styleGeneration;
+    styleBusy = true;
+    styleError = '';
+    selectedStyle = value;
+    try {
+      await setProjectStyle(projectId, value);
+    } catch (error) {
+      if (generation === styleGeneration && project?.id === projectId) {
+        selectedStyle = previous;
+        styleError = error instanceof Error ? error.message : $translate('overview.styleSaveError');
+      }
+    } finally {
+      if (generation === styleGeneration) styleBusy = false;
+    }
+  }
 
   async function loadMemory(projectId: string, generation: number) {
     memoryBusy = true;
@@ -48,6 +99,16 @@
   }
 
   $: memoryProjectId = project?.id ?? '';
+  $: styleProjectId = project?.id ?? '';
+  $: if (styleProjectId && styleProjectId !== loadedStyleProject) {
+    styleGeneration += 1;
+    const generation = styleGeneration;
+    loadedStyleProject = styleProjectId;
+    stylePacks = [];
+    selectedStyle = project?.style ?? '';
+    styleError = '';
+    void loadStyles(styleProjectId, generation);
+  }
 
   function startMemoryEdit(entry: MemoryEntry) {
     editingMemoryId = entry.id;
@@ -239,6 +300,27 @@
         )}</strong
       >
     </article>
+    <article class="panel style-panel">
+      <Palette /><span>{$translate('overview.style')}</span>
+      {#if styleBusy && !stylePacks.length}
+        <strong>{$translate('overview.styleLoading')}</strong>
+      {:else if stylePacks.length}
+        <select
+          aria-label={$translate('overview.style')}
+          value={selectedStyle}
+          onchange={chooseStyle}
+          disabled={styleBusy}
+        >
+          {#each stylePacks as pack}
+            <option value={pack.name}>{pack.name}{pack.builtIn ? '' : ' · custom'}</option>
+          {/each}
+        </select>
+        <p class="panel-hint">{$translate('overview.styleHint')}</p>
+      {:else}
+        <strong>{$translate('common.none')}</strong>
+      {/if}
+      {#if styleError}<p class="panel-hint memory-error" role="alert">{styleError}</p>{/if}
+    </article>
   </section>
   <section class="panel memory-panel">
     <div class="memory-heading">
@@ -321,6 +403,13 @@
 <style>
   .memory-panel {
     grid-column: 1 / -1;
+  }
+  .style-panel {
+    display: grid;
+    gap: 0.45rem;
+  }
+  .style-panel select {
+    width: 100%;
   }
   .memory-heading,
   .memory-meta,

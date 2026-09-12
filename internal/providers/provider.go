@@ -28,6 +28,10 @@ type RunRequest struct {
 	Attachments []string
 	Environment []string
 	Scenario    string
+	// EgressPolicy applies to agent-started child processes only. Provider API
+	// and local Studio MCP traffic are outside this policy.
+	EgressPolicy  string
+	RegistryHosts []string
 	// Subagents are the project's other enabled agents, handed to an
 	// orchestrator lead so it can delegate via the provider's native
 	// subagent mechanism (e.g. Claude's --agents).

@@ -266,3 +266,22 @@ implicit Studio instance selection.
 StudioForge adds existing conventional tool directories (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, and Cargo/Aftman/Foreman bin directories) to the inherited PATH on macOS. This lets Finder-launched apps discover Claude Code, Rojo and build tools without sourcing shell startup files. Existing PATH entries keep their priority; explicit executable settings still take precedence.
 
 Child processes also retain `USER`, which Claude Code needs to locate its saved macOS Keychain login. Diagnostics and agent launches use the same filtered environment; provider credentials are not added to that environment.
+
+## Project UI style packs
+
+The Overview selector stores a project's style under the `style` project setting.
+StudioForge installs `cute`, `dark-fantasy`, and `cyber` under
+`.agent/styles/<name>/`. Each pack has a required `brief.md` and optional
+`palette.json` / `type.json` string-to-string tables. Install a custom style by
+adding the same directory structure with a lowercase name (letters, digits,
+underscores, hyphens); reload Overview to select it. No rebuild is required.
+
+Installed files are write-once, so edits survive future runs and app updates.
+Individual data files are limited to 64 KiB and read through a project-rooted
+filesystem handle; symlinks cannot make style reads or installation escape the
+project. Invalid optional JSON tables are omitted; a missing selected pack falls
+back to `cute` in the run context. The universal `.agent/roblox-ui.md` and
+`.agent/roblox-ui-craft.md` contain mechanics; genre palettes, type pairings, and
+motion conventions live in packs. Style briefs supplement mechanics and can
+choose no tilt, no decorative lip, or quiet motion; they do not override engine
+constraints. Model generation manifests are not part of this initial format.

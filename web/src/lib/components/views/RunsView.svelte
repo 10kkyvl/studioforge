@@ -1,5 +1,6 @@
 <script lang="ts">
   import RunStudioChanges from '$lib/components/RunStudioChanges.svelte';
+  import DiffViewer from '$lib/components/DiffViewer.svelte';
   import { formatDate, locale, translate } from '$lib/i18n';
   import type { Decision, Run, RunEvent } from '$lib/types';
 
@@ -14,6 +15,12 @@
   export let payloadText: (payload: unknown) => string;
   export let decisions: Decision[] = [];
   export let onResolveDecision: (decisionId: string, approve: boolean) => void = () => {};
+  export let onResolveReviewDecision: (
+    decisionId: string,
+    action: string,
+    files: string[],
+    hunks: { path: string; index: number }[],
+  ) => void = () => {};
   export let busy = false;
 
   // A run that scheduled a correction carries its own parentRunId only on the
@@ -26,6 +33,42 @@
   // off it — so the first match for a run is the only one that can exist.
   function decisionFor(runId: string): Decision | undefined {
     return decisions?.find((decision) => decision.runId === runId);
+  }
+
+  function reviewFiles(decision: Decision): string[] {
+    const structured = decision.reviewFiles?.map((file) => file.path) ?? [];
+    if (structured.length > 0) return structured;
+    const files = decision.files ?? [];
+    if (files.length > 0) return files;
+    const found = new Set<string>();
+    for (const line of (decision.diff ?? '').split('\n')) {
+      if (line.startsWith('+++ b/')) found.add(line.slice(6));
+      else if (line.startsWith('--- a/') && !line.startsWith('--- a//')) found.add(line.slice(6));
+    }
+    return [...found];
+  }
+
+  let selectedReviewFiles: string[] = [];
+  let selectedReviewHunks: { path: string; index: number }[] = [];
+  let lastReviewSelectionKey = '';
+  $: reviewSelectionKey = selectedRun
+    ? (decisions?.find((decision) => decision.runId === selectedRun.id)?.id ?? '')
+    : '';
+  $: if (reviewSelectionKey !== lastReviewSelectionKey) {
+    lastReviewSelectionKey = reviewSelectionKey;
+    selectedReviewFiles = [];
+    selectedReviewHunks = [];
+  }
+  function toggleReviewFile(path: string) {
+    selectedReviewFiles = selectedReviewFiles.includes(path)
+      ? selectedReviewFiles.filter((candidate) => candidate !== path)
+      : [...selectedReviewFiles, path];
+  }
+  function toggleReviewHunk(path: string, index: number) {
+    const exists = selectedReviewHunks.some((hunk) => hunk.path === path && hunk.index === index);
+    selectedReviewHunks = exists
+      ? selectedReviewHunks.filter((hunk) => hunk.path !== path || hunk.index !== index)
+      : [...selectedReviewHunks, { path, index }];
   }
 </script>
 
@@ -122,21 +165,84 @@
       {#if decision}
         <div class="decision-banner">
           <p>{decision.summary}</p>
-          {#if decision.detail}<pre class="log-lines">{decision.detail}</pre>{/if}
+          {#if decision.kind === 'review_before_apply'}
+            {#if decision.diff}
+              <DiffViewer diff={decision.diff} />
+              <fieldset class="review-selection">
+                <legend>{$translate('runs.reviewSelection')}</legend>
+                {#each reviewFiles(decision) as path}
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={selectedReviewFiles.includes(path)}
+                      onchange={() => toggleReviewFile(path)}
+                    />
+                    <code>{path}</code>
+                  </label>
+                  {@const structured = decision.reviewFiles?.find((file) => file.path === path)}
+                  {#if structured?.hunks?.length}
+                    <div class="review-hunks">
+                      {#each structured.hunks as hunk, index}
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={selectedReviewHunks.some(
+                              (selection) => selection.path === path && selection.index === index,
+                            )}
+                            onchange={() => toggleReviewHunk(path, index)}
+                          />
+                          <pre>{hunk}</pre>
+                        </label>
+                      {/each}
+                    </div>
+                  {/if}
+                {/each}
+              </fieldset>
+            {/if}
+            {#if decision.detail}<pre class="log-lines">{decision.detail}</pre>{/if}
+          {:else if decision.detail}<pre class="log-lines">{decision.detail}</pre>{/if}
           <div class="decision-actions">
-            <button
-              class="primary"
-              type="button"
-              disabled={busy}
-              onclick={() => onResolveDecision(decision.id, true)}
-              >{$translate('runs.decisionApprove')}</button
-            >
-            <button
-              type="button"
-              disabled={busy}
-              onclick={() => onResolveDecision(decision.id, false)}
-              >{$translate('runs.decisionDeny')}</button
-            >
+            {#if decision.kind === 'review_before_apply'}
+              <button
+                class="primary"
+                type="button"
+                disabled={busy}
+                onclick={() => onResolveReviewDecision(decision.id, 'apply', [], [])}
+                >{$translate('runs.reviewApply')}</button
+              >
+              <button
+                type="button"
+                disabled={busy}
+                onclick={() => onResolveReviewDecision(decision.id, 'reject', [], [])}
+                >{$translate('runs.reviewReject')}</button
+              >
+              <button
+                type="button"
+                disabled={busy ||
+                  (selectedReviewFiles.length === 0 && selectedReviewHunks.length === 0)}
+                onclick={() =>
+                  onResolveReviewDecision(
+                    decision.id,
+                    'apply_selected',
+                    selectedReviewFiles,
+                    selectedReviewHunks,
+                  )}>{$translate('runs.reviewApplySelected')}</button
+              >
+            {:else}
+              <button
+                class="primary"
+                type="button"
+                disabled={busy}
+                onclick={() => onResolveDecision(decision.id, true)}
+                >{$translate('runs.decisionApprove')}</button
+              >
+              <button
+                type="button"
+                disabled={busy}
+                onclick={() => onResolveDecision(decision.id, false)}
+                >{$translate('runs.decisionDeny')}</button
+              >
+            {/if}
           </div>
         </div>
       {/if}
@@ -224,6 +330,37 @@
   .decision-actions {
     display: flex;
     gap: 8px;
+  }
+  .review-selection {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 14px;
+    margin: 10px 0;
+    padding: 8px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+  }
+  .review-selection label {
+    display: flex;
+    gap: 5px;
+    align-items: center;
+  }
+  .review-hunks {
+    margin: 0 0 8px 22px;
+    display: grid;
+    gap: 6px;
+    flex-basis: 100%;
+  }
+  .review-hunks label {
+    align-items: flex-start;
+  }
+  .review-hunks pre {
+    margin: 0;
+    max-height: 180px;
+    overflow: auto;
+    white-space: pre-wrap;
+    color: var(--muted);
+    font-size: var(--fs-xs);
   }
   .error-banner {
     margin: 8px 12px 0;

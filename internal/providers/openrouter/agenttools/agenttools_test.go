@@ -21,7 +21,7 @@ func newTestToolSet(t *testing.T, profile Profile) (*ToolSet, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	opts := Options{Workspace: ws, Git: gitops.New(), ProjectID: "proj", RunID: "run"}
+	opts := Options{Workspace: ws, Git: gitops.New(), ProjectID: "proj", RunID: "run", Containment: processes.ContainmentSpec{Mode: processes.ContainmentDisabled}}
 	if profile != ProfileReadOnly {
 		sup := processes.NewSupervisor()
 		t.Cleanup(func() { _ = sup.Close(context.Background()) })
@@ -376,7 +376,7 @@ func newSmallOutputToolSet(t *testing.T) (*ToolSet, string) {
 	}
 	sup := processes.NewSupervisor()
 	t.Cleanup(func() { _ = sup.Close(context.Background()) })
-	set, err := NewToolSet(ProfileWorkspace, Options{Workspace: ws, Git: gitops.New(), Supervisor: sup, ProjectID: "proj", RunID: "small", MaxOutputBytes: 32})
+	set, err := NewToolSet(ProfileWorkspace, Options{Workspace: ws, Git: gitops.New(), Supervisor: sup, ProjectID: "proj", RunID: "small", MaxOutputBytes: 32, Containment: processes.ContainmentSpec{Mode: processes.ContainmentDisabled}})
 	if err != nil {
 		t.Fatal(err)
 	}

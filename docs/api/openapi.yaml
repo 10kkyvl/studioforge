@@ -2,6 +2,14 @@ openapi: 3.1.0
 info: {title: StudioForge Local API, version: 1.0.0}
 servers: [{url: /api/v1}]
 paths:
+  /projects/{id}/usage:
+    get:
+      summary: Durable project costs, daily and weekly UTC buckets, per-run tokens, active budget and typical duration
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: 'runs (with recorded flag), days, weeks, total, dailyLimit, last24Hours, typicalSeconds, paceSamples. Independent of run-event retention.'}
+        '404': {description: Project not found}
   /api/v1/runs/{id}/studio-changes:
     get:
       summary: List durable Studio operations dispatched by this run
@@ -28,6 +36,58 @@ paths:
     get:
       summary: Complete UI bootstrap snapshot
       responses: {"200": {description: Snapshot}}
+  /projects/{id}/files:
+    get:
+      summary: List a project directory without leaving the app
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: path, in: query, required: false, schema: {type: string, default: ""}}
+      responses:
+        '200': {description: Directory entries with relative paths, types, sizes, and modification times}
+        '403': {description: Path traversal, absolute path, or symlink escape refused}
+  /projects/{id}/styles:
+    get:
+      summary: List the style packs installed in a project and its selected pack
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Style pack catalog and selected style name}
+        '404': {description: Project not found}
+  /projects/{id}/style:
+    get:
+      summary: Read the selected project style and its pack data
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Selected style name and pack data}
+        '404': {description: Project not found}
+    post:
+      summary: Select an installed style pack for a project
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [style]
+              properties:
+                style: {type: string}
+      responses:
+        '200': {description: Style selected}
+        '400': {description: Invalid or uninstalled style}
+        '404': {description: Project not found}
+  /projects/{id}/files/content:
+    get:
+      summary: Read one project file when it is a regular text-sized file
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: path, in: query, required: true, schema: {type: string}}
+      responses:
+        '200': {description: File content, or a binary flag when content is not text}
+        '403': {description: Path traversal, absolute path, or symlink escape refused}
+        '413': {description: File exceeds the 1 MB browser read cap}
   /events:
     get:
       summary: Replayable SSE events

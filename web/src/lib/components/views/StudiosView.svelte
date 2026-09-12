@@ -1,6 +1,6 @@
 <script lang="ts">
   import { translate } from '$lib/i18n';
-  import type { Project, StudioSession } from '$lib/types';
+  import type { Project, StudioRefreshState, StudioSession } from '$lib/types';
 
   export let studios: StudioSession[];
   export let projects: Project[];
@@ -17,12 +17,17 @@
   export let detected = true;
   export let onRefresh: () => void = () => {};
   export let busy = false;
+  export let refreshState: StudioRefreshState = { enabled: false, suspended: false };
 
   function playStateLabel(state: string): string {
     if (state === 'play' || state === 'playing') return $translate('state.playing');
     if (state === 'edit' || state === 'editing') return $translate('state.editing');
     return state;
   }
+
+  $: lastRefreshed = refreshState.lastRefreshed
+    ? new Date(refreshState.lastRefreshed).toLocaleString()
+    : $translate('studios.neverRefreshed');
 </script>
 
 <section class="page-heading">
@@ -35,6 +40,14 @@
     {busy ? $translate('studios.refreshing') : $translate('studios.refresh')}
   </button>
 </section>
+<p class="path-hint studio-refresh-state">
+  {$translate('studios.lastRefreshed')}: {lastRefreshed}
+  {#if refreshState.suspended}
+    · {$translate('studios.pollingSuspended')}
+  {:else if refreshState.enabled}
+    · {$translate('studios.pollingActive')}
+  {/if}
+</p>
 {#if !detected}
   <div class="empty">{$translate('studios.notDetected')}</div>
 {:else}

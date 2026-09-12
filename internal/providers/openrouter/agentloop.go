@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/10kkyvl/studioforge/internal/gitops"
+	"github.com/10kkyvl/studioforge/internal/processes"
 	"github.com/10kkyvl/studioforge/internal/providers"
 	"github.com/10kkyvl/studioforge/internal/providers/openrouter/agenttools"
 	"github.com/10kkyvl/studioforge/internal/providers/openrouter/mcpbridge"
@@ -118,6 +119,17 @@ func resolveProfile(raw string) agenttools.Profile {
 		return agenttools.Profile(raw)
 	default:
 		return agenttools.ProfileWorkspace
+	}
+}
+
+func networkPolicy(raw string) processes.NetworkPolicy {
+	switch raw {
+	case string(processes.NetworkNone):
+		return processes.NetworkNone
+	case string(processes.NetworkRegistryOnly):
+		return processes.NetworkRegistryOnly
+	default:
+		return processes.NetworkUnrestricted
 	}
 }
 
@@ -342,12 +354,19 @@ func (p *Provider) execute(ctx context.Context, req providers.RunRequest, priorM
 		return
 	}
 
+	filesystem := processes.FilesystemProjectOnly
+	if req.PermissionProfile == "danger-full-access" {
+		filesystem = processes.FilesystemFullAccess
+	} else if req.PermissionProfile == "read-only" {
+		filesystem = processes.FilesystemReadOnly
+	}
 	toolset, err := agenttools.NewToolSet(resolveProfile(req.PermissionProfile), agenttools.Options{
-		Workspace:  ws,
-		Git:        gitops.New(),
-		Supervisor: p.sup,
-		ProjectID:  req.ProjectID,
-		RunID:      req.RunID,
+		Workspace:   ws,
+		Git:         gitops.New(),
+		Supervisor:  p.sup,
+		ProjectID:   req.ProjectID,
+		RunID:       req.RunID,
+		Containment: processes.ContainmentSpec{Mode: processes.ContainmentRequired, Filesystem: filesystem, WorkspaceRoot: ws.Root(), Network: networkPolicy(req.EgressPolicy), RegistryHosts: req.RegistryHosts},
 	})
 	if err != nil {
 		emit(ctx, h, sessionID, providers.Event{Type: "error", RawType: rawType("tools"), Payload: map[string]any{"message": err.Error()}, Error: err.Error()})

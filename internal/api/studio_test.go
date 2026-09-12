@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/10kkyvl/studioforge/internal/roblox/studio"
 )
@@ -466,6 +467,28 @@ func TestRefreshStudioSessionsCallsTheHookAndReportsDetection(t *testing.T) {
 	}
 	if body.Detected {
 		t.Error("detected must reflect what the hook reported, not default true once a hook is wired")
+	}
+}
+
+func TestRefreshStudioSessionsReportsCoordinatorState(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	stamp := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	a.server.studioSessionsState = func() StudioSessionsState {
+		return StudioSessionsState{Enabled: true, Suspended: true, LastRefreshed: &stamp}
+	}
+	rec := postJSON(t, a, cookie, "/api/v1/studio/sessions/refresh", map[string]any{})
+	if rec.Code != 200 {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		State StudioSessionsState `json:"studioRefresh"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.State.Enabled || !body.State.Suspended || body.State.LastRefreshed == nil || !body.State.LastRefreshed.Equal(stamp) {
+		t.Fatalf("state=%+v", body.State)
 	}
 }
 
