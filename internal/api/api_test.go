@@ -39,6 +39,14 @@ type testAPI struct {
 }
 
 func newTestAPI(t *testing.T) *testAPI {
+	return newConfiguredTestAPI(t, true)
+}
+
+func newEmptyTestAPI(t *testing.T) *testAPI {
+	return newConfiguredTestAPI(t, false)
+}
+
+func newConfiguredTestAPI(t *testing.T, seedDemo bool) *testAPI {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "api.db"))
@@ -47,8 +55,10 @@ func newTestAPI(t *testing.T) *testAPI {
 	}
 	store := database.NewStore(db)
 	data := t.TempDir()
-	if err := store.SeedDemo(ctx, data); err != nil {
-		t.Fatal(err)
+	if seedDemo {
+		if err := store.SeedDemo(ctx, data); err != nil {
+			t.Fatal(err)
+		}
 	}
 	hub := events.NewHub(store)
 	leases := resources.NewManager(time.Second)
@@ -129,6 +139,39 @@ func TestSecurityBootstrapAndSnapshot(t *testing.T) {
 		t.Fatal("strict script policy missing")
 	}
 }
+
+func TestSnapshotFreshEmptyDatabaseUsesArrays(t *testing.T) {
+	a := newEmptyTestAPI(t)
+	cookie := bootstrapCookie(t, a)
+	request := httptest.NewRequest("GET", "http://127.0.0.1:1234/api/v1/snapshot", nil)
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	a.handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var snapshot map[string]json.RawMessage
+	if err := json.Unmarshal(recorder.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"projects", "runs", "agents", "tasks", "studios", "decisions"} {
+		raw, ok := snapshot[key]
+		if !ok {
+			t.Fatalf("snapshot is missing %q: %s", key, recorder.Body.String())
+		}
+		if string(raw) == "null" {
+			t.Fatalf("snapshot.%s is null for a fresh database", key)
+		}
+		var items []json.RawMessage
+		if err := json.Unmarshal(raw, &items); err != nil {
+			t.Fatalf("snapshot.%s is not an array: %v", key, err)
+		}
+		if items == nil {
+			t.Fatalf("snapshot.%s decoded to a nil slice", key)
+		}
+	}
+}
+
 func TestRejectsHostOriginAndUnauthenticatedRequests(t *testing.T) {
 	a := newTestAPI(t)
 	cases := []*http.Request{httptest.NewRequest("GET", "http://evil.example/api/v1/snapshot", nil), httptest.NewRequest("POST", "http://127.0.0.1:1234/api/v1/settings", strings.NewReader(`{"locale":"en"}`))}

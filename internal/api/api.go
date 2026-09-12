@@ -296,30 +296,50 @@ func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 	for i := range projectsList {
 		projectsList[i].Sync = s.syncStatus(projectsList[i].ID)
 	}
+	// Keep collection fields JSON arrays even when a fresh database has no rows.
+	// The desktop client iterates these fields during its first refresh.
+	if projectsList == nil {
+		projectsList = []models.Project{}
+	}
 	runs, err := s.store.ListRuns(ctx, "", 200)
 	if err != nil {
 		writeError(w, r, 500, "database_error", "Unable to list runs", err)
 		return
+	}
+	if runs == nil {
+		runs = []models.Run{}
 	}
 	agents, err := s.store.ListAgents(ctx, "")
 	if err != nil {
 		writeError(w, r, 500, "database_error", "Unable to list agents", err)
 		return
 	}
+	if agents == nil {
+		agents = []models.Agent{}
+	}
 	tasks, err := s.store.ListTasks(ctx, "")
 	if err != nil {
 		writeError(w, r, 500, "database_error", "Unable to list tasks", err)
 		return
+	}
+	if tasks == nil {
+		tasks = []models.Task{}
 	}
 	studios, err := s.store.ListStudioSessions(ctx)
 	if err != nil {
 		writeError(w, r, 500, "database_error", "Unable to list Studio sessions", err)
 		return
 	}
+	if studios == nil {
+		studios = []models.StudioSession{}
+	}
 	decisions, err := s.store.ListDecisions(ctx, "pending")
 	if err != nil {
 		writeError(w, r, 500, "database_error", "Unable to list decisions", err)
 		return
+	}
+	if decisions == nil {
+		decisions = []models.Decision{}
 	}
 	locale, ok, _ := s.store.Setting(ctx, "locale")
 	if !ok {

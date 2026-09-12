@@ -329,16 +329,28 @@
     refreshPromise = (async () => {
       try {
         const nextSnapshot = await getSnapshot();
-        snapshot = nextSnapshot;
+        // Be defensive at the app boundary as well as in the API. Older
+        // installed servers may still return null for empty collections.
+        const normalizedSnapshot = {
+          ...nextSnapshot,
+          projects: nextSnapshot.projects ?? [],
+          runs: nextSnapshot.runs ?? [],
+          agents: nextSnapshot.agents ?? [],
+          tasks: nextSnapshot.tasks ?? [],
+          studios: nextSnapshot.studios ?? [],
+          decisions: nextSnapshot.decisions ?? [],
+        };
+        snapshot = normalizedSnapshot;
         if (!selectedProjectId)
           // The remembered project wins over "first in the list", but only if it
           // still exists — projects can be removed from another window, or the
           // data directory swapped entirely, between sessions.
           selectedProjectId =
-            loadProject(nextSnapshot.projects) || nextSnapshot.projects[0]?.id || '';
-        const configured = nextSnapshot.settings.locale;
+            loadProject(normalizedSnapshot.projects) || normalizedSnapshot.projects[0]?.id || '';
+        const configured = normalizedSnapshot.settings.locale;
         locale.set(configured === 'ru' || configured === 'en' ? configured : detectLocale());
-        if (!selectedRunId && nextSnapshot.runs[0]) selectedRunId = nextSnapshot.runs[0].id;
+        if (!selectedRunId && normalizedSnapshot.runs[0])
+          selectedRunId = normalizedSnapshot.runs[0].id;
       } catch (cause) {
         // refresh() is also called directly from click handlers (the header
         // button, FirstRunWizard, SettingsView) with no surrounding

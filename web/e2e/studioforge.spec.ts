@@ -18,6 +18,37 @@ test.afterAll(async () => {
   await stopDaemon(handle);
 });
 
+test('fresh real database loads setup and empty projects without runtime errors', async ({
+  page,
+}) => {
+  const fresh = await startDaemon({ mock: false });
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  try {
+    await page.goto(`${fresh.baseURL}/#bootstrap=${encodeURIComponent(fresh.bootstrap)}`);
+    await expect(page.getByRole('dialog')).toBeVisible();
+    const snapshot = await page.request.get(`${fresh.baseURL}/api/v1/snapshot`);
+    expect(snapshot.ok()).toBeTruthy();
+    const body = await snapshot.json();
+    for (const key of ['projects', 'runs', 'agents', 'tasks', 'studios', 'decisions'])
+      expect(body[key]).toEqual([]);
+    const settings = await page.request.post(`${fresh.baseURL}/api/v1/settings`, {
+      headers: { Origin: fresh.baseURL },
+      data: { setup_complete: 'true', locale: 'en' },
+    });
+    expect(settings.ok()).toBeTruthy();
+    await page.reload();
+    await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: 'New project', exact: true }).first(),
+    ).toBeVisible();
+    await expect(page.getByText(/can't access property|Cannot read properties/)).toHaveCount(0);
+    expect(errors).toEqual([]);
+  } finally {
+    await stopDaemon(fresh);
+  }
+});
+
 test('first run, locale, projects, live run, and core navigation', async ({ page }) => {
   const errors: string[] = [];
   page.on('console', (message) => {

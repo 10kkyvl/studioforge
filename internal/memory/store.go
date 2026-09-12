@@ -95,7 +95,7 @@ func (s *Store) searchLike(ctx context.Context, projectID, query string, limit i
 // were selected for the project's most recently-created run, keeping the
 // operator-visible relationship between memory and agent behaviour.
 func (s *Store) List(ctx context.Context, projectID string) ([]Entry, error) {
-	rows, err := s.db.SQL.QueryContext(ctx, `SELECT m.id,m.project_id,COALESCE(m.run_id,''),COALESCE(m.agent_id,''),COALESCE(m.task_id,''),m.scope,m.content,m.summary,m.source,m.confidence,m.importance,m.created_at,m.pinned,CASE WHEN EXISTS (SELECT 1 FROM memory_injections i WHERE i.memory_entry_id=m.id AND i.run_id=(SELECT id FROM runs WHERE project_id=? ORDER BY created_at DESC,id DESC LIMIT 1)) THEN 1 ELSE 0 END FROM memory_entries m WHERE m.project_id=? ORDER BY m.created_at DESC`, projectID, projectID)
+	rows, err := s.db.SQL.QueryContext(ctx, `SELECT m.id,m.project_id,COALESCE(m.run_id,''),COALESCE(m.agent_id,''),COALESCE(m.task_id,''),m.scope,m.content,m.summary,m.source,m.confidence,m.importance,m.created_at,m.pinned,CASE WHEN EXISTS (SELECT 1 FROM memory_injections i WHERE i.memory_entry_id=m.id AND i.run_id=(SELECT r.id FROM runs r WHERE r.project_id=? ORDER BY r.created_at DESC,r.rowid DESC LIMIT 1)) THEN 1 ELSE 0 END FROM memory_entries m WHERE m.project_id=? ORDER BY m.created_at DESC,m.rowid DESC`, projectID, projectID)
 	if err != nil {
 		return nil, err
 	}

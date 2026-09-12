@@ -55,7 +55,7 @@ func TestMemoryManagementPinInjectionAndDeletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	memoryStore := New(db)
-	sourceRun, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", ModelAlias: "default"}, "")
+	sourceRun, _, err := store.CreateRun(ctx, models.Run{ID: "z-older-run", ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", ModelAlias: "default"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,8 +92,14 @@ func TestMemoryManagementPinInjectionAndDeletion(t *testing.T) {
 	if err != nil || len(results) != 1 || results[0].ID != first.ID {
 		t.Fatalf("pinned fallback search=%+v err=%v", results, err)
 	}
-	run, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", ModelAlias: "default"}, "")
+	run, _, err := store.CreateRun(ctx, models.Run{ID: "a-newer-run", ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", ModelAlias: "default"}, "")
 	if err != nil {
+		t.Fatal(err)
+	}
+	// Force a timestamp collision on a coarse clock, with IDs sorting opposite
+	// to insertion order. The later inserted run must still be the latest run
+	// whose injections are reflected by List.
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE runs SET created_at=(SELECT created_at FROM runs WHERE id=?) WHERE id=?`, sourceRun.ID, run.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := memoryStore.RecordInjection(ctx, run.ID, []string{first.ID}); err != nil {
