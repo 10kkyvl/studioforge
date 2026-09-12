@@ -2,8 +2,12 @@ package database
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -46,6 +50,250 @@ func TestMigrationsAndPragmas(t *testing.T) {
 			t.Fatalf("missing table %s: %v", table, err)
 		}
 	}
+}
+
+func TestFreshInstallSkipsMigrationSnapshots(t *testing.T) {
+	root := t.TempDir()
+	db, err := OpenWithVersion(context.Background(), filepath.Join(root, "studioforge.db"), "fresh-writer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	backups, err := filepath.Glob(filepath.Join(root, "backups", "migration-before-*.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 0 {
+		t.Fatalf("fresh install created migration backups: %v", backups)
+	}
+}
+
+func TestMigrationLedgerRecordsAndVerifiesChecksums(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "studioforge.db")
+	db, err := OpenWithVersion(ctx, path, "test-writer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var checksum, writer string
+	if err := db.SQL.QueryRowContext(ctx, `SELECT checksum, writer_version FROM schema_migrations WHERE version = '001_initial.sql'`).Scan(&checksum, &writer); err != nil {
+		t.Fatal(err)
+	}
+	if checksum == "" || writer != "test-writer" {
+		t.Fatalf("ledger checksum=%q writer=%q", checksum, writer)
+	}
+	var appVersion string
+	if err := db.SQL.QueryRowContext(ctx, `SELECT app_version FROM schema_migration_state WHERE id = 1`).Scan(&appVersion); err != nil {
+		t.Fatal(err)
+	}
+	if appVersion != "test-writer" {
+		t.Fatalf("last application version=%q", appVersion)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate an edited immutable migration in the on-disk ledger.
+	legacy, err := sql.Open("sqlite", sqliteDSN(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.ExecContext(ctx, `UPDATE schema_migrations SET checksum = 'tampered' WHERE version = '001_initial.sql'`); err != nil {
+		legacy.Close()
+		t.Fatal(err)
+	}
+	legacy.Close()
+	if _, err := OpenWithVersion(ctx, path, "test-writer"); err == nil || !strings.Contains(err.Error(), "001_initial.sql") || !strings.Contains(err.Error(), "checksum") {
+		t.Fatalf("checksum tampering error = %v", err)
+	}
+}
+
+func TestLegacyMigrationLedgerAdoptsChecksumsAndUpgradeMatchesFreshInstall(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	upgradePath := filepath.Join(root, "upgrade.db")
+	freshPath := filepath.Join(root, "fresh.db")
+
+	// Build a pre-checksum database at the first released migration. This is
+	// the shape that an existing install had before the hardened runner.
+	legacy, err := sql.Open("sqlite", sqliteDSN(upgradePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := fs.ReadFile(migrations.Files, "sql/001_initial.sql")
+	if err != nil {
+		legacy.Close()
+		t.Fatal(err)
+	}
+	if _, err := legacy.ExecContext(ctx, string(body)); err != nil {
+		legacy.Close()
+		t.Fatal(err)
+	}
+	if _, err := legacy.ExecContext(ctx, `CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
+		legacy.Close()
+		t.Fatal(err)
+	}
+	if _, err := legacy.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES('001_initial.sql', '2020-01-01T00:00:00Z')`); err != nil {
+		legacy.Close()
+		t.Fatal(err)
+	}
+	if _, err := legacy.ExecContext(ctx, `INSERT INTO app_settings(key, value, updated_at) VALUES('snapshot-marker', 'current-data', '2020-01-01T00:00:00Z')`); err != nil {
+		legacy.Close()
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// A stale deterministic name from an older runner must never be reused
+	// as the recovery point for this upgrade.
+	stale := filepath.Join(root, "backups", "migration-before-002_chat_threads.db")
+	if err := os.MkdirAll(filepath.Dir(stale), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stale, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	upgraded, err := OpenWithVersion(ctx, upgradePath, "upgrade-writer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var adopted string
+	if err := upgraded.SQL.QueryRowContext(ctx, `SELECT checksum FROM schema_migrations WHERE version = '001_initial.sql'`).Scan(&adopted); err != nil {
+		upgraded.Close()
+		t.Fatal(err)
+	}
+	if adopted == "" {
+		upgraded.Close()
+		t.Fatal("legacy ledger checksum was not adopted")
+	}
+	if err := upgraded.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	fresh, err := OpenWithVersion(ctx, freshPath, "fresh-writer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fresh.Close()
+	upgraded, err = OpenWithVersion(ctx, upgradePath, "upgrade-writer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.Close()
+	if got, want := schemaSnapshot(ctx, upgraded), schemaSnapshot(ctx, fresh); got != want {
+		t.Fatalf("upgrade schema differs from fresh install:\n%s\nwant:\n%s", got, want)
+	}
+	backups, err := filepath.Glob(filepath.Join(root, "backups", "migration-before-*.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) == 0 || len(backups) > 3 {
+		t.Fatalf("migration backups=%d, want 1..3", len(backups))
+	}
+	if info, err := os.Stat(stale); err != nil {
+		t.Fatal(err)
+	} else if info.Size() != 0 {
+		t.Fatalf("stale backup was overwritten, size=%d", info.Size())
+	}
+	var backupCount int
+	if err := upgraded.SQL.QueryRowContext(ctx, `SELECT COUNT(DISTINCT backup_path) FROM schema_migrations WHERE backup_path <> ''`).Scan(&backupCount); err != nil {
+		t.Fatal(err)
+	}
+	if backupCount != 1 {
+		t.Fatalf("upgrade recorded %d snapshot paths, want one start-of-upgrade snapshot", backupCount)
+	}
+	var recordedBackup string
+	if err := upgraded.SQL.QueryRowContext(ctx, `SELECT backup_path FROM schema_migrations WHERE version = '002_chat_threads.sql'`).Scan(&recordedBackup); err != nil {
+		t.Fatal(err)
+	}
+	if recordedBackup == stale {
+		t.Fatal("upgrade reused stale deterministic backup path")
+	}
+	if info, err := os.Stat(recordedBackup); err != nil {
+		t.Fatal(err)
+	} else if info.Size() == 0 {
+		t.Fatal("recorded migration backup is empty")
+	}
+	backupDB, err := sql.Open("sqlite", sqliteDSN(recordedBackup))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backupDB.Close()
+	var marker string
+	if err := backupDB.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key = 'snapshot-marker'`).Scan(&marker); err != nil {
+		t.Fatal(err)
+	}
+	if marker != "current-data" {
+		t.Fatalf("snapshot marker=%q, want current data", marker)
+	}
+}
+
+func TestDowngradeRefusesUnknownMigrationWithWriterAndBackup(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "studioforge.db")
+	db, err := OpenWithVersion(ctx, path, "new-release")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at, checksum, writer_version, backup_path) VALUES('999_future.sql', ?, 'future-hash', 'future-release', '/tmp/migration-before-999_future.db')`, Now()); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenWithVersion(ctx, path, "old-release"); err == nil || !strings.Contains(err.Error(), "999_future.sql") || !strings.Contains(err.Error(), "future-release") || !strings.Contains(err.Error(), "/tmp/migration-before-999_future.db") {
+		t.Fatalf("downgrade error = %v", err)
+	}
+}
+
+func schemaSnapshot(ctx context.Context, db *DB) string {
+	rows, err := db.SQL.QueryContext(ctx, `SELECT type, name, COALESCE(sql, '') FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name`)
+	if err != nil {
+		return "query error: " + err.Error()
+	}
+	defer rows.Close()
+	var result strings.Builder
+	for rows.Next() {
+		var objectType, name, definition string
+		if err := rows.Scan(&objectType, &name, &definition); err != nil {
+			return "scan error: " + err.Error()
+		}
+		result.WriteString(objectType + "|" + name + "|")
+		if objectType == "table" {
+			// SQLite retains the original CREATE TABLE text when ALTER TABLE
+			// appends columns. Compare the canonical column metadata instead,
+			// which is what the upgrade-path contract actually promises.
+			columns, err := db.SQL.QueryContext(ctx, `PRAGMA table_info("`+strings.ReplaceAll(name, `"`, `""`)+`")`)
+			if err != nil {
+				return "column query error: " + err.Error()
+			}
+			for columns.Next() {
+				var cid, notNull, pk int
+				var colName, colType string
+				var defaultValue sql.NullString
+				if err := columns.Scan(&cid, &colName, &colType, &notNull, &defaultValue, &pk); err != nil {
+					columns.Close()
+					return "column scan error: " + err.Error()
+				}
+				result.WriteString(fmt.Sprintf("%d:%s:%s:%d:%s:%d;", cid, colName, colType, notNull, defaultValue.String, pk))
+			}
+			if err := columns.Err(); err != nil {
+				columns.Close()
+				return "column rows error: " + err.Error()
+			}
+			columns.Close()
+		} else {
+			result.WriteString(strings.Join(strings.Fields(definition), " "))
+		}
+		result.WriteByte('\n')
+	}
+	if err := rows.Err(); err != nil {
+		return "rows error: " + err.Error()
+	}
+	return result.String()
 }
 func TestDemoIsolationAndRecovery(t *testing.T) {
 	db, store := testDB(t)

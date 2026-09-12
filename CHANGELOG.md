@@ -8,6 +8,22 @@ adheres to [Semantic Versioning](https://semver.org/). Pre-release versions use 
 
 ## [Unreleased]
 
+### Added
+
+- Project memory management in Overview: inspect, edit, pin, delete or clear entries,
+  open their source runs, and identify memory included in the latest run (#19).
+- Durable Studio operation history alongside Git changes and in run records, for
+  Claude’s MCP shim and the OpenRouter/NVIDIA clients. Property names and outcomes
+  survive event retention; opaque operations remain explicitly unknown (#17).
+
+### Fixed
+
+- Database upgrades verify migration checksums, snapshot existing data before the
+  upgrade and refuse unknown newer migrations with recovery information (#30).
+- macOS app launches find conventional Homebrew/user tool installations without
+  shell setup, and Claude subprocesses retain the account identity needed for
+  Keychain login. Diagnostics use the same filtered environment as real runs.
+
 ## [0.5.0-rc.3] - 2026-07-25
 
 ### Added

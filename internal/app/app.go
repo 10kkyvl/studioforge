@@ -226,7 +226,8 @@ func Run(ctx context.Context, opts config.Options) error {
 	}
 	studioOpener := &studio.Opener{Rojo: rojoManager}
 	studioProvisioner := &mcp.Provisioner{
-		Dir: filepath.Join(dataDir, "mcp"),
+		Dir:         filepath.Join(dataDir, "mcp"),
+		JournalPath: db.Path,
 		Override: func() string {
 			value, _ := studioMCPOverride.Load().(string)
 			return value
@@ -316,11 +317,17 @@ func Run(ctx context.Context, opts config.Options) error {
 	})
 	openrouterProvider.SetMCPConnector(func(ctx context.Context, projectID, runID, permissionProfile string) openrouter.MCPGrant {
 		g := studioProvisioner.ProvisionLive(ctx, permissionProfile, studioTarget(ctx, projectID))
+		if g.Client != nil {
+			g.Client.SetRecorder(store.StudioRecorder(runID))
+		}
 		return openrouter.MCPGrant{Client: g.Client, AllowedTools: g.AllowedTools, Context: g.Context, Notice: g.Notice, Release: g.Release}
 	})
 	openrouterProvider.SetConversationStore(&conversationAdapter{store: store})
 	nvidiaProvider.SetMCPConnector(func(ctx context.Context, projectID, runID, permissionProfile string) openrouter.MCPGrant {
 		g := studioProvisioner.ProvisionLive(ctx, permissionProfile, studioTarget(ctx, projectID))
+		if g.Client != nil {
+			g.Client.SetRecorder(store.StudioRecorder(runID))
+		}
 		return openrouter.MCPGrant{Client: g.Client, AllowedTools: g.AllowedTools, Context: g.Context, Notice: g.Notice, Release: g.Release}
 	})
 	nvidiaProvider.SetConversationStore(&conversationAdapter{store: store})

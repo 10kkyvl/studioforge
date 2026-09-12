@@ -26,6 +26,7 @@ export function freePort(): Promise<number> {
 
 export interface StartDaemonOptions {
   env?: NodeJS.ProcessEnv;
+  mock?: boolean;
 }
 
 export async function startDaemon(options: StartDaemonOptions = {}): Promise<DaemonHandle> {
@@ -38,7 +39,14 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
   const port = await freePort();
   const daemon = spawn(
     binary,
-    ['--mock', '--no-open', '--port', String(port), '--data-dir', dataDir],
+    [
+      ...(options.mock === false ? [] : ['--mock']),
+      '--no-open',
+      '--port',
+      String(port),
+      '--data-dir',
+      dataDir,
+    ],
     {
       cwd: root,
       env: options.env ? { ...process.env, ...options.env } : process.env,

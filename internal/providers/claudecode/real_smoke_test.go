@@ -22,7 +22,9 @@ func TestRealClaudeSmoke(t *testing.T) {
 	if !diagnostics.Available || !diagnostics.Authenticated {
 		t.Skipf("Claude is not ready: %s", diagnostics.Message)
 	}
-	handle, err := provider.Start(ctx, providers.RunRequest{RunID: "286fbd5e-6cde-4bac-a57d-31045c34e571", ProjectID: "smoke", AgentID: "smoke", WorkingDirectory: t.TempDir(), Prompt: "Reply with exactly: StudioForge Claude adapter smoke passed", MaxTurns: 1, MaxBudget: .10, PermissionProfile: "plan"})
+	// Installed user hooks and context contribute to first-turn cost. Keep the
+	// smoke bounded, but allow enough for startup plus the short reply.
+	handle, err := provider.Start(ctx, providers.RunRequest{RunID: "286fbd5e-6cde-4bac-a57d-31045c34e571", ProjectID: "smoke", AgentID: "smoke", Model: "haiku", WorkingDirectory: t.TempDir(), Prompt: "Reply with exactly: StudioForge Claude adapter smoke passed", MaxTurns: 1, MaxBudget: .50, PermissionProfile: "plan"})
 	if err != nil {
 		t.Fatal(err)
 	}

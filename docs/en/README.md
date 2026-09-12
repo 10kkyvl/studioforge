@@ -83,7 +83,7 @@ Each project selects a `*.project.json`. StudioForge invokes Rojo to build a pla
 
 ## Projects and agent teams
 
-Register an existing directory or create a new one. StudioForge stores its canonical path/fingerprint; it does not copy source into application data. Every project receives a default agent, including older registered projects that had none. The **Team builder** can create, edit, enable/disable, and launch agents with Claude Code, OpenRouter, or mock providers. A version-controlled `.agent/` folder may contain a `constitution.yaml` and a `requirements.md`; StudioForge reads exactly these two files verbatim and prepends them to every run's system prompt. Nothing else under `.agent/` (architecture notes, prompts, skills, or memory) is read today. Runtime transcripts and usage remain in SQLite.
+Register an existing directory or create a new one. StudioForge stores its canonical path/fingerprint; it does not copy source into application data. Every project receives a default agent, including older registered projects that had none. The **Team builder** can create, edit, enable/disable, and launch agents with Claude Code, OpenRouter, or mock providers. A version-controlled `.agent/` folder may contain a `constitution.yaml` and a `requirements.md`; StudioForge reads exactly these two files verbatim and prepends them to every run's system prompt. Project memory is managed from Overview: entries can be edited, pinned, deleted, or cleared, and each entry links to its source run; the latest run marks entries that were injected. Runtime transcripts and usage remain in SQLite.
 
 Demo projects have separate orchestrator, builder, and verifier agents. Provider/model aliases (`fast`, `balanced`, `reasoning`, `premium`) are domain values; adapters map them. Permission profiles, concurrency, runtime, turns, and budget are per agent.
 
@@ -93,7 +93,7 @@ Demo projects have separate orchestrator, builder, and verifier agents. Provider
 
 The scheduler is round-robin across project queues. Different projects can hold writer leases simultaneously. A project has one writer by default; same-project writers wait on `project:<id>:write`. Resources are sorted and acquired atomically to prevent deadlock. Provider/model/global/project ceilings are checked before dispatch. Events are persisted before SSE publication.
 
-Pause and resume are cooperative at event boundaries. Cancel terminates the provider handle/process tree. Runs active during daemon failure become `interrupted`; restart creates a new auditable run. Histories, agents, tasks, usage, and budgets are filtered by `project_id`. (A project-scoped memory store — SQLite full-text search with Put/Search — now writes one entry per completed run and surfaces up to five relevant past entries into the next run's system prompt; it is a minimal wiring, not a summarized or curated memory.)
+Pause and resume are cooperative at event boundaries. Cancel terminates the provider handle/process tree. Runs active during daemon failure become `interrupted`; restart creates a new auditable run. Histories, agents, tasks, usage, budgets, and memory are filtered by `project_id`. Memory writes one entry per completed run, surfaces up to five relevant past entries into the next run's system prompt, and supports operator curation from Overview; it remains prompt based rather than a summary of agent decisions.
 
 ## Permissions and safety
 

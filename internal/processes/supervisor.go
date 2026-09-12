@@ -278,6 +278,9 @@ func (s *Supervisor) Close(ctx context.Context) error {
 func MinimalEnvironment(extra []string) []string {
 	allow := map[string]bool{
 		"PATH": true, "PATHEXT": true, "HOME": true, "USERPROFILE": true,
+		// Claude Code uses USER to find its account in the macOS Keychain.
+		// It is account identity, not a credential; dropping it loses login.
+		"USER":         true,
 		"LOCALAPPDATA": true, "APPDATA": true, "TMPDIR": true, "TMP": true,
 		"TEMP": true, "SYSTEMROOT": true, "WINDIR": true, "COMSPEC": true,
 		"HTTP_PROXY": true, "HTTPS_PROXY": true,

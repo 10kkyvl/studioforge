@@ -5,6 +5,14 @@ info:
 servers:
   - url: /api/v1
 paths:
+  /runs/{id}/studio-changes:
+    get:
+      summary: Durable journal of dispatched Studio operations
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "200": {description: "Operation records with target, property names and outcome; independent of event retention, not a DataModel snapshot or undo."}
+        "404": {description: Run not found}
   /health:
     get:
       summary: Local daemon health
@@ -111,6 +119,28 @@ paths:
       parameters:
         - {name: id, in: path, required: true, schema: {type: string}}
       responses: {"200": {description: "typicalSeconds and samples (0 when there is no history)"}}
+  /projects/{id}/memory:
+    get:
+      summary: List project memory, marking entries injected into the latest run
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses: {"200": {description: Memory entries}}
+    delete:
+      summary: Delete all memory entries for a project
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses: {"200": {description: Number of deleted entries}}
+  /memory/{entryId}:
+    patch:
+      summary: Edit or pin a memory entry
+      parameters:
+        - {name: entryId, in: path, required: true, schema: {type: string}}
+      responses: {"200": {description: Updated memory entry}}
+    delete:
+      summary: Delete one memory entry without changing its source run
+      parameters:
+        - {name: entryId, in: path, required: true, schema: {type: string}}
+      responses: {"204": {description: Deleted}}
   /threads/{threadId}/messages:
     get:
       summary: A thread's chronological chat history (operator prompts and agent replies)

@@ -18,6 +18,38 @@ test.afterAll(async () => {
   await stopDaemon(handle);
 });
 
+test('fresh real database loads setup and empty projects without runtime errors', async ({
+  page,
+}) => {
+  const fresh = await startDaemon({ mock: false });
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  try {
+    await page.goto(`${fresh.baseURL}/#bootstrap=${encodeURIComponent(fresh.bootstrap)}`);
+    await expect(page.getByRole('dialog')).toBeVisible();
+    const snapshot = await page.request.get(`${fresh.baseURL}/api/v1/snapshot`);
+    expect(snapshot.ok()).toBeTruthy();
+    const body = await snapshot.json();
+    for (const key of ['projects', 'runs', 'agents', 'tasks', 'studios', 'decisions'])
+      expect(body[key]).toEqual([]);
+    const settings = await page.request.post(`${fresh.baseURL}/api/v1/settings`, {
+      headers: { Origin: fresh.baseURL },
+      data: { setup_complete: 'true', locale: 'en' },
+    });
+    expect(settings.ok()).toBeTruthy();
+    await page.reload();
+    await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
+    await expect(page.getByText('Online', { exact: true })).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: 'New project', exact: true }).first(),
+    ).toBeVisible();
+    await expect(page.getByText(/can't access property|Cannot read properties/)).toHaveCount(0);
+    expect(errors).toEqual([]);
+  } finally {
+    await stopDaemon(fresh);
+  }
+});
+
 test('first run, locale, projects, live run, and core navigation', async ({ page }) => {
   const errors: string[] = [];
   page.on('console', (message) => {
@@ -178,4 +210,146 @@ test('first run, locale, projects, live run, and core navigation', async ({ page
   await page.keyboard.press('Tab');
   await expect(page.locator(':focus-visible')).toHaveCount(1);
   expect(errors).toEqual([]);
+});
+
+test('Studio journal shows durable operations and uncertain outcomes on a run', async ({
+  page,
+}) => {
+  const journalDaemon = await startDaemon();
+  const { baseURL, bootstrap } = journalDaemon;
+  try {
+    await page.route('**/api/v1/runs/*/studio-changes', async (route) => {
+      await route.fulfill({
+        json: [
+          {
+            id: 'journal-1',
+            callId: 'call-1',
+            runId: 'demo-obby-history',
+            createdAt: '2026-09-12T12:00:00Z',
+            tool: 'multi_edit',
+            target: 'ServerScriptService.Main',
+            operation: 'modify',
+            properties: ['Source'],
+            status: 'succeeded',
+          },
+          {
+            id: 'journal-2',
+            callId: 'call-2',
+            runId: 'demo-obby-history',
+            createdAt: '2026-09-12T12:00:01Z',
+            tool: 'execute_luau',
+            target: '',
+            operation: 'unknown',
+            properties: [],
+            status: 'unknown',
+          },
+        ],
+      });
+    });
+    await page.goto(`${baseURL}/#bootstrap=${encodeURIComponent(bootstrap)}`);
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    await dialog
+      .getByRole('button', { name: /Continue in limited mode|Продолжить в ограниченном режиме/ })
+      .click();
+    const englishToggle = page.getByRole('button', { name: 'RU', exact: true });
+    if (await englishToggle.isVisible()) await englishToggle.click();
+    await page.getByRole('button', { name: 'Runs', exact: true }).click();
+    await page.locator('.run-row').first().click();
+    const journal = page.locator('details.studio-changes');
+    await expect(journal.locator('summary')).toContainText('2 records');
+    await journal.locator('summary').click();
+    await expect(journal).toContainText('Git rollback does not undo these changes');
+    await expect(journal).toContainText('ServerScriptService.Main');
+    await expect(journal).toContainText('Properties: Source');
+    await expect(journal).toContainText('Outcome unknown; inspect Studio before retrying');
+    await page.getByRole('button', { name: 'EN', exact: true }).click();
+    await expect(journal).toContainText('Изменения Studio');
+    await expect(journal).toContainText('Исход неизвестен');
+  } finally {
+    await stopDaemon(journalDaemon);
+  }
+});
+
+test('project memory can be edited, pinned, and cleared without touching runs', async ({
+  page,
+}) => {
+  const memoryDaemon = await startDaemon();
+  const { baseURL, bootstrap } = memoryDaemon;
+  let entries = [
+    {
+      id: 'memory-1',
+      projectId: 'demo-obby',
+      runId: 'run-1',
+      scope: 'project',
+      content: 'Keep server validation',
+      summary: 'Keep server validation',
+      source: 'run',
+      confidence: 0.9,
+      importance: 0.8,
+      createdAt: '2026-09-12T12:00:00Z',
+      pinned: false,
+      injected: true,
+    },
+    {
+      id: 'memory-2',
+      projectId: 'demo-obby',
+      scope: 'project',
+      content: 'Use a respawn pad',
+      summary: 'Use a respawn pad',
+      source: 'run',
+      confidence: 0.8,
+      importance: 0.5,
+      createdAt: '2026-09-11T12:00:00Z',
+      pinned: false,
+      injected: false,
+    },
+  ];
+  page.on('dialog', (dialog) => dialog.accept());
+  await page.route('**/api/v1/projects/demo-obby/memory', async (route) => {
+    if (route.request().method() === 'GET') return route.fulfill({ json: { entries } });
+    if (route.request().method() === 'DELETE') {
+      entries = [];
+      return route.fulfill({ json: { deleted: 2 } });
+    }
+    return route.continue();
+  });
+  await page.route('**/api/v1/memory/*', async (route) => {
+    const body = route.request().postDataJSON() as { content?: string; pinned?: boolean };
+    const id = route.request().url().split('/').pop()!;
+    const current = entries.find((entry) => entry.id === id)!;
+    const updated = { ...current, ...body, summary: body.content ?? current.summary };
+    entries = entries.map((entry) => (entry.id === id ? updated : entry));
+    return route.fulfill({ json: updated });
+  });
+  try {
+    await page.goto(`${baseURL}/#bootstrap=${encodeURIComponent(bootstrap)}`);
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    await dialog
+      .getByRole('button', { name: /Continue in limited mode|Продолжить в ограниченном режиме/ })
+      .click();
+    await page.getByRole('button', { name: 'Projects', exact: true }).click();
+    await page
+      .locator('.project-card')
+      .filter({ hasText: 'Skyline Obby' })
+      .getByRole('button', { name: 'Skyline Obby' })
+      .click();
+    await expect(page.getByText('Project memory', { exact: true })).toBeVisible();
+    const entry = page.locator('.memory-entry').first();
+    await entry.getByRole('button', { name: 'Edit', exact: true }).click();
+    await entry.locator('textarea').fill('Always validate on the server');
+    await entry.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(entry).toContainText('Always validate on the server');
+    await expect(entry).toContainText('Included in latest run');
+    await entry.getByRole('button', { name: 'Pin', exact: true }).click();
+    await expect(entry).toContainText('Pinned');
+    await expect(entry).toContainText('Included in latest run');
+    await page.getByRole('button', { name: 'Clear all', exact: true }).click();
+    await expect(
+      page.getByText('No memory entries stored for this project.', { exact: true }),
+    ).toBeVisible();
+  } finally {
+    await stopDaemon(memoryDaemon);
+  }
 });

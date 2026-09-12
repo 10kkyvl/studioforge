@@ -1,4 +1,5 @@
 <script lang="ts">
+  import StudioChangesPanel from '$lib/components/StudioChangesPanel.svelte';
   import { onDestroy, onMount, tick } from 'svelte';
   import { Cpu, Lock, MessagesSquare, Plus } from '@lucide/svelte';
   import {
@@ -1401,6 +1402,7 @@
     {#if loadingDiff}
       <p class="diff-muted">{$translate('common.loading')}</p>
     {:else if runDiff}
+      <StudioChangesPanel changes={runDiff.studioChanges ?? []} />
       {#if runDiff.diff.trim() !== '' && !runDiff.note}
         <details class="diff-panel">
           <summary>{$translate('chat.diffChangedFiles')}</summary>

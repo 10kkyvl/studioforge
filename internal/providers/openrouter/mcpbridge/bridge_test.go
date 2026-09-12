@@ -12,6 +12,40 @@ import (
 	"github.com/10kkyvl/studioforge/internal/roblox/mcp"
 )
 
+type recordingJournal struct {
+	starts int
+	status string
+}
+
+func (r *recordingJournal) Start(context.Context, string, map[string]any) (string, error) {
+	r.starts++
+	return "call", nil
+}
+func (r *recordingJournal) Finish(_ context.Context, _ string, status string) error {
+	r.status = status
+	return nil
+}
+
+func TestBridgeJournalsAllowedMutationButNotDeniedOrReadOnlyCalls(t *testing.T) {
+	transport := &fakeTransport{tools: []mcp.Tool{{Name: "multi_edit"}, {Name: "script_read"}, {Name: "http_get"}}}
+	journal := &recordingJournal{}
+	client := mcp.NewClient(transport)
+	client.SetRecorder(journal)
+	b := New(context.Background(), client, mcp.AllowedTools("workspace-write"), 0)
+	if r := b.Execute(context.Background(), "multi_edit", json.RawMessage(`{"path":"ServerScriptService.Main"}`)); r.IsError {
+		t.Fatal(r)
+	}
+	if r := b.Execute(context.Background(), "script_read", nil); r.IsError {
+		t.Fatal(r)
+	}
+	if r := b.Execute(context.Background(), "http_get", nil); !r.IsError {
+		t.Fatal("disallowed call accepted")
+	}
+	if journal.starts != 1 || journal.status != "succeeded" || transport.sawCall("http_get") {
+		t.Fatalf("journal=%+v calls=%v", journal, transport.calls)
+	}
+}
+
 type fakeTransport struct {
 	tools   []mcp.Tool
 	listErr error

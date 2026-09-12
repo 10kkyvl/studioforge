@@ -2,6 +2,20 @@ openapi: 3.1.0
 info: {title: StudioForge Local API, version: 1.0.0}
 servers: [{url: /api/v1}]
 paths:
+  /api/v1/runs/{id}/studio-changes:
+    get:
+      summary: List durable Studio operations dispatched by this run
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Array of records with id, callId, runId, createdAt, tool, target, operation, properties (names only), and status (pending, succeeded, error, unknown). Independent of run-event retention; no Studio undo implied.
+        '404':
+          description: Run not found
   /health:
     get:
       summary: Local daemon health
@@ -22,3 +36,21 @@ paths:
     post:
       summary: Idempotent run creation
       responses: {"201": {description: Queued}}
+  /projects/{id}/memory:
+    get:
+      summary: List project memory, marking entries injected into the latest run
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses: {"200": {description: Memory entries}}
+    delete:
+      summary: Delete all memory entries for a project
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses: {"200": {description: Number of deleted entries}}
+  /memory/{entryId}:
+    patch:
+      summary: Edit or pin a memory entry
+      parameters: [{name: entryId, in: path, required: true, schema: {type: string}}]
+      responses: {"200": {description: Updated memory entry}}
+    delete:
+      summary: Delete one memory entry without changing its source run
+      parameters: [{name: entryId, in: path, required: true, schema: {type: string}}]
+      responses: {"204": {description: Deleted}}

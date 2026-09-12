@@ -141,7 +141,21 @@ export function checkHelpLabel(t: (key: TranslationKey) => string, help: string)
 
 export function checkMessageLabel(t: (key: TranslationKey) => string, message: string): string {
   const key = wizardMessageKeys[message];
-  return key ? t(key) : message;
+  if (key) return t(key);
+  // Database startup errors include the migration and backup path so the
+  // operator can recover. Keep those details while localising the explanation.
+  if (message.includes('database schema is newer than this StudioForge build')) {
+    const details = message.match(
+      /migration (.+) was written by (.+); restore the backup at (.+)$/,
+    );
+    return details
+      ? t('check.databaseDowngrade')
+          .replace('{migration}', details[1])
+          .replace('{writer}', details[2])
+          .replace('{backup}', details[3])
+      : t('check.databaseDowngrade');
+  }
+  return message;
 }
 
 export function checkStatusLabel(t: (key: TranslationKey) => string, status: string): string {

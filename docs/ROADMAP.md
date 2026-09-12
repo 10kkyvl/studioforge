@@ -8,8 +8,8 @@ based on real feedback from people using the beta, not on a predetermined schedu
 Work needed to make what already exists in the repository trustworthy for a beta user, rather than
 adding new surface area:
 
-- Add a project-memory management UI/API. Entries are auto-saved from run prompts today with no way to
-  list, edit, or delete them.
+- Project-memory management UI/API is shipped: operators can list, edit, pin, delete, and clear entries;
+  the latest run shows which entries were injected into its prompt.
 
 ## Near-term
 
@@ -27,9 +27,8 @@ Everything in this section is **RESEARCH**: an idea under consideration, with no
 and no implementation. Listing something here is not a promise it ships, and it may not resemble this
 description if it ever does.
 
-- A richer project memory than the minimal version now live: today a run writes its own prompt text
-  and the next run's system prompt gets a handful of relevant past prompts back, with no summarization
-  of what actually happened and no UI to browse or curate what's stored.
+- A richer project memory than the current curated store: entries still originate from run prompts and
+  selection is relevance based, without summarization of what actually happened.
 - Richer visual iteration than the current pasted-image and `screen_capture` handoff, such as
   automatic comparison of several playtest views.
 - Multi-agent orchestration beyond the current orchestrator-to-`--agents` delegation that Claude Code

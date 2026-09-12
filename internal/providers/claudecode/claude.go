@@ -57,10 +57,15 @@ func (p *Provider) Diagnose(ctx context.Context) providers.Diagnostics {
 	if err != nil {
 		return providers.Diagnostics{Message: "Claude Code was not found. Install it, then run StudioForge doctor. Mock mode remains available.", Capabilities: map[string]bool{}}
 	}
-	versionOut, versionErr := exec.CommandContext(ctx, path, "--version").CombinedOutput()
-	helpOut, helpErr := exec.CommandContext(ctx, path, "--help").CombinedOutput()
+	probe := func(args ...string) ([]byte, error) {
+		cmd := exec.CommandContext(ctx, path, args...)
+		cmd.Env = processes.MinimalEnvironment(nil)
+		return cmd.CombinedOutput()
+	}
+	versionOut, versionErr := probe("--version")
+	helpOut, helpErr := probe("--help")
 	caps := parseCapabilities(string(helpOut))
-	authOut, authErr := exec.CommandContext(ctx, path, "auth", "status").CombinedOutput()
+	authOut, authErr := probe("auth", "status")
 	authenticated := authErr == nil && authLooksValid(string(authOut))
 	message := "Claude Code detected"
 	if versionErr != nil {

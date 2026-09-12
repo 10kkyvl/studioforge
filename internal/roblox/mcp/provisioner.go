@@ -40,11 +40,12 @@ type Grant struct {
 // instance-selection argument. Ambiguity is therefore refused rather than
 // guessed at.
 type Provisioner struct {
-	Dir      string        // directory for generated per-run configs
-	Override func() string // configured studio_mcp_path, may be nil
-	Dial     Dialer        // defaults to the stdio launcher transport
-	Timeout  time.Duration // defaults to launcherTimeout
-	Exe      func() (string, error)
+	Dir         string        // directory for generated per-run configs
+	Override    func() string // configured studio_mcp_path, may be nil
+	Dial        Dialer        // defaults to the stdio launcher transport
+	Timeout     time.Duration // defaults to launcherTimeout
+	Exe         func() (string, error)
+	JournalPath string // parent database, used only by the per-run shim
 	// AutoOpen reports the studio_auto_open setting. A nil func opens Studio,
 	// which is the default the operator sees.
 	AutoOpen func() bool
@@ -218,7 +219,14 @@ func (p *Provisioner) Provision(ctx context.Context, runID, permissionProfile st
 		return Grant{}
 	}
 	path := filepath.Join(p.Dir, runID+".json")
-	if err := WriteConfig(path, p.agentLaunch(launch)); err != nil {
+	agentLaunch := p.agentLaunch(launch)
+	if p.JournalPath != "" {
+		if len(agentLaunch.Args) == 0 || agentLaunch.Args[0] != "mcp-shim" {
+			return Grant{Notice: "Studio MCP withheld: change journal requires the StudioForge shim"}
+		}
+		agentLaunch.Args = append(agentLaunch.Args, "--journal-db", p.JournalPath, "--run-id", runID)
+	}
+	if err := WriteConfig(path, agentLaunch); err != nil {
 		return Grant{Notice: "Studio MCP withheld: " + err.Error()}
 	}
 	return Grant{

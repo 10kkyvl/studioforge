@@ -187,6 +187,10 @@ type Job struct {
 	// MaxCorrectionRuns bounds how many follow-up correction runs one failed
 	// validation may chain, across the whole lineage.
 	MaxCorrectionRuns int
+	// MemoryEntryIDs are the entries already folded into this job's system
+	// prompt. They are persisted with the run before it is admitted, and are
+	// copied to automatic or operator-approved correction jobs.
+	MemoryEntryIDs []string
 	// ParentRunID and CorrectionDepth are set on a correction run: the run
 	// whose failed validation scheduled it, and how deep into the correction
 	// chain this run is (1 for the first correction attempt, and so on).
@@ -399,6 +403,16 @@ func (m *Manager) createRun(ctx context.Context, j *Job) (models.Run, bool, erro
 		return run, created, err
 	}
 	j.RunID = run.ID
+	if len(j.MemoryEntryIDs) > 0 {
+		m.mu.Lock()
+		mem := m.memoryStore
+		m.mu.Unlock()
+		if mem != nil {
+			if err := mem.RecordInjection(ctx, run.ID, j.MemoryEntryIDs); err != nil {
+				slog.Warn("failed to persist memory injection provenance", "run_id", run.ID, "error", err)
+			}
+		}
+	}
 	if len(j.Resources) == 0 {
 		j.Resources = []string{"project:" + j.ProjectID + ":write"}
 	}
@@ -845,6 +859,7 @@ func buildCorrectionJob(j *Job, sessionID string, validation ValidationResult) J
 		MaxBudget: j.MaxBudget, AllowUnverifiedModel: j.AllowUnverifiedModel, Prompt: correctionPrompt(validation),
 		ParentRunID: j.RunID, CorrectionDepth: j.CorrectionDepth + 1,
 		MaxCorrectionRuns: j.MaxCorrectionRuns, ValidateAfterRun: j.ValidateAfterRun,
+		MemoryEntryIDs: append([]string(nil), j.MemoryEntryIDs...),
 		IdempotencyKey: "correction:" + j.RunID,
 	}
 }
