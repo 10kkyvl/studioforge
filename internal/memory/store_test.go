@@ -2,9 +2,12 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/10kkyvl/studioforge/internal/database"
 	"github.com/10kkyvl/studioforge/internal/models"
@@ -133,5 +136,217 @@ func TestMemoryManagementPinInjectionAndDeletion(t *testing.T) {
 	}
 	if n, err := memoryStore.Clear(ctx, "demo-obby"); err != nil || n != 1 {
 		t.Fatalf("clear n=%d err=%v", n, err)
+	}
+}
+
+func TestMemoryUpdatePersistsDerivedSummary(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "memory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := database.NewStore(db).SeedDemo(ctx, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	store := New(db)
+	if err := store.Put(ctx, Entry{ID: "summary-memory", ProjectID: "demo-obby", Content: "old content", Summary: "old summary", Source: "run"}); err != nil {
+		t.Fatal(err)
+	}
+	content := "New durable contract\nImplementation detail"
+	if _, err := store.Update(ctx, "summary-memory", &content, nil); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := store.List(ctx, "demo-obby")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Summary != "New durable contract" || entries[0].Source != "edited" {
+		t.Fatalf("updated entry=%+v", entries)
+	}
+}
+
+func TestSummaryForContentKeepsUnicodeBoundaries(t *testing.T) {
+	content := strings.Repeat("я", 160)
+	if got := summaryForContent(content); got != strings.Repeat("я", 140) {
+		t.Fatalf("summary length/content mismatch: got %d runes", len([]rune(got)))
+	}
+}
+
+func TestMemorySearchNaturalLanguageIsBoundedAndSafe(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "memory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := database.NewStore(db).SeedDemo(ctx, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	store := New(db)
+	if err := store.Put(ctx, Entry{ID: "search-server", ProjectID: "demo-obby", Content: "server validation contract", Summary: "server contract", Source: "test", Importance: .9}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(ctx, Entry{ID: "search-client", ProjectID: "demo-obby", Content: "client rendering contract", Summary: "client contract", Source: "test", Importance: .8}); err != nil {
+		t.Fatal(err)
+	}
+	query := `Please find "server" OR validation; DROP TABLE memory_entries; ` + strings.Repeat("noise ", 100)
+	results, err := store.Search(ctx, "demo-obby", query, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].ID != "search-server" {
+		t.Fatalf("FTS natural language results=%+v", results)
+	}
+	db.FTS5 = false
+	results, err = store.Search(ctx, "demo-obby", query, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].ID != "search-server" {
+		t.Fatalf("LIKE natural language results=%+v", results)
+	}
+}
+
+func TestMemorySearchReservesRelevantUnpinnedSlots(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "memory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := database.NewStore(db).SeedDemo(ctx, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	store := New(db)
+	for i := 0; i < 5; i++ {
+		if err := store.Put(ctx, Entry{ID: fmt.Sprintf("pinned-%d", i), ProjectID: "demo-obby", Content: fmt.Sprintf("pinned note %d", i), Summary: "pinned", Source: "test", Pinned: true, Importance: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Put(ctx, Entry{ID: "relevant-unpinned", ProjectID: "demo-obby", Content: "server validation rule", Summary: "server", Source: "test", Importance: .1}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := store.Search(ctx, "demo-obby", "server", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 5 {
+		t.Fatalf("reserved results=%+v", results)
+	}
+	found := false
+	for _, entry := range results {
+		if entry.ID == "relevant-unpinned" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("relevant unpinned entry was crowded out: %+v", results)
+	}
+}
+
+func TestMemoryAutoDedupAndRetention(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "memory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := database.NewStore(db).SeedDemo(ctx, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	store := New(db)
+	if err := store.Put(ctx, Entry{ID: "auto-duplicate-one", ProjectID: "demo-obby", Content: "same outcome", Source: "run"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(ctx, Entry{ID: "auto-duplicate-two", ProjectID: "demo-obby", Content: " same outcome ", Source: "run"}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < defaultAutoRetentionLimit+3; i++ {
+		if err := store.Put(ctx, Entry{ID: fmt.Sprintf("auto-%03d", i), ProjectID: "demo-obby", Content: fmt.Sprintf("unique outcome %03d", i), Source: "run", CreatedAt: time.Unix(int64(i+1), 0).UTC()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := store.List(ctx, "demo-obby")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != defaultAutoRetentionLimit {
+		t.Fatalf("retained %d entries, want %d", len(entries), defaultAutoRetentionLimit)
+	}
+	for _, entry := range entries {
+		if entry.ID == "auto-duplicate-two" {
+			t.Fatal("duplicate auto memory was inserted")
+		}
+	}
+	if _, err := store.Update(ctx, "auto-050", strptr("manually curated outcome"), nil); err != nil {
+		t.Fatal(err)
+	}
+	pinned := true
+	if _, err := store.Update(ctx, "auto-051", nil, &pinned); err != nil {
+		t.Fatal(err)
+	}
+	for i := defaultAutoRetentionLimit + 3; i < 2*defaultAutoRetentionLimit+6; i++ {
+		if err := store.Put(ctx, Entry{ID: fmt.Sprintf("later-%03d", i), ProjectID: "demo-obby", Content: fmt.Sprintf("later outcome %03d", i), Source: "run", CreatedAt: time.Unix(int64(i+100), 0).UTC()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err = store.List(ctx, "demo-obby")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundEdited, foundPinned := false, false
+	for _, entry := range entries {
+		if entry.ID == "auto-051" && entry.Pinned {
+			foundPinned = true
+		}
+		if entry.ID == "auto-050" && entry.Source == "edited" {
+			foundEdited = true
+		}
+	}
+	if !foundEdited || !foundPinned {
+		t.Fatal("manual edit or pinned entry was removed by automatic retention")
+	}
+}
+
+func strptr(value string) *string { return &value }
+
+func TestEditedUnicodeSummaryAndUnpinnedSearchFill(t *testing.T) {
+	ctx := t.Context()
+	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "utf8.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := database.NewStore(db).SeedDemo(ctx, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	store := New(db)
+	for i := 0; i < 5; i++ {
+		if err := store.Put(ctx, Entry{ID: fmt.Sprint(i), ProjectID: "demo-obby", Content: "unicode contract", Source: "test"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, fts := range []bool{db.FTS5, false} {
+		db.FTS5 = fts
+		for _, limit := range []int{1, 5} {
+			got, err := store.Search(ctx, "demo-obby", "contract", limit)
+			if err != nil || len(got) != limit {
+				t.Fatalf("fts=%v limit=%d got=%d err=%v", fts, limit, len(got), err)
+			}
+		}
+	}
+	text := "a" + strings.Repeat("я", 100)
+	if _, err := store.Update(ctx, "0", &text, nil); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := store.List(ctx, "demo-obby")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if !utf8.ValidString(e.Summary) {
+			t.Fatalf("broken UTF8 summary: %q", e.Summary)
+		}
 	}
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { aggregateOpenRouterMessages } from './openrouterStream';
+import { aggregateOpenRouterMessages, isResetMessage } from './openrouterStream';
 import type { RunEvent } from './types';
 
 function event(id: number, rawType: string, text: string, turn: number): RunEvent {
@@ -15,6 +15,15 @@ function event(id: number, rawType: string, text: string, turn: number): RunEven
 }
 
 describe('aggregateOpenRouterMessages', () => {
+  it('recognizes an empty retry marker before aggregation', () => {
+    const reset: RunEvent = {
+      ...event(0, 'openrouter.message.partial', '', 1),
+      payload: { text: '', turn: 1, reset: true },
+    };
+    expect(isResetMessage(reset)).toBe(true);
+    expect(isResetMessage(event(0, 'openrouter.message.partial', '', 1))).toBe(false);
+  });
+
   it('turns several deltas into one live bubble', () => {
     const result = aggregateOpenRouterMessages([
       event(0, 'openrouter.message.partial', 'Hello', 1),

@@ -146,6 +146,54 @@ func TestServiceModelsFetchFailureEmptyCacheFallsBackToFallbackModels(t *testing
 	}
 }
 
+func TestServiceModelsFallbackDoesNotPinTransientFetchFailure(t *testing.T) {
+	server, ts := newToggleServer(t, oneToolModelResponse)
+	cache := &fakeCacheStore{}
+	now := time.Now()
+	svc := NewService(Config{HTTPClient: server.Client(), BaseURL: server.URL, Cache: cache, TTL: 6 * time.Hour, Now: func() time.Time { return now }})
+	ts.setFail(true)
+	if _, source, err := svc.Models(context.Background()); err != nil || source != SourceFallback {
+		t.Fatalf("first call source=%q err=%v, want fallback", source, err)
+	}
+	// The fallback is briefly memoized to avoid hammering an unavailable
+	// endpoint, but it must expire independently of the six-hour normal TTL.
+	now = now.Add(degradedMemoTTL)
+	ts.setFail(false)
+	models, source, err := svc.Models(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source != SourceLive || len(models) != 1 || models[0].ID != "vendor/x" {
+		t.Fatalf("second call source=%q models=%+v, want live model after transient failure", source, models)
+	}
+	if ts.hitCount() != 2 {
+		t.Fatalf("hits=%d, want a retry after fallback", ts.hitCount())
+	}
+}
+
+func TestServiceModelsStaleCacheDoesNotPinFetchFailure(t *testing.T) {
+	server, ts := newToggleServer(t, oneToolModelResponse)
+	cache := &fakeCacheStore{}
+	if err := cache.SetModelCache(context.Background(), []byte(`[{"id":"vendor/cached","supported_parameters":["tools"],"architecture":{"output_modalities":["text"]},"pricing":{"prompt":"0","completion":"0"}}]`), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	svc := NewService(Config{HTTPClient: server.Client(), BaseURL: server.URL, Cache: cache, TTL: 6 * time.Hour, Now: func() time.Time { return now }})
+	ts.setFail(true)
+	if _, source, err := svc.Models(context.Background()); err != nil || source != SourceCache {
+		t.Fatalf("first call source=%q err=%v, want cache", source, err)
+	}
+	now = now.Add(degradedMemoTTL)
+	ts.setFail(false)
+	models, source, err := svc.Models(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source != SourceLive || len(models) != 1 || models[0].ID != "vendor/x" {
+		t.Fatalf("second call source=%q models=%+v, want live model after cache TTL", source, models)
+	}
+}
+
 func TestServiceModelsTTLMemoizationAvoidsRefetch(t *testing.T) {
 	server, ts := newToggleServer(t, oneToolModelResponse)
 	cache := &fakeCacheStore{}

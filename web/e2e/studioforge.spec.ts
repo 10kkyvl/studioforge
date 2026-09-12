@@ -605,6 +605,8 @@ test('review card submits selected hunks and clears selection for another decisi
   const fresh = await startDaemon();
   try {
     let chosen: unknown = null;
+    let releaseResolve!: () => void;
+    const resolveGate = new Promise<void>((resolve) => (releaseResolve = resolve));
     let revision = 1;
     const hunk = '@@ -1 +1 @@\n-old\n+new\n';
     await page.route('**/api/v1/snapshot', async (route) => {
@@ -629,6 +631,7 @@ test('review card submits selected hunks and clears selection for another decisi
     await page.route('**/api/v1/decisions/*/resolve', async (route) => {
       chosen = route.request().postDataJSON();
       revision++;
+      await resolveGate;
       await route.fulfill({ json: { ok: true } });
     });
     await page.goto(`${fresh.baseURL}/#bootstrap=${encodeURIComponent(fresh.bootstrap)}`);
@@ -654,6 +657,224 @@ test('review card submits selected hunks and clears selection for another decisi
         hunks: [{ path: 'example.txt', index: 0 }],
       });
     await expect(applySelected).toBeDisabled();
+    releaseResolve();
+    await expect(applySelected).toBeDisabled();
+  } finally {
+    await stopDaemon(fresh);
+  }
+});
+
+test('reconnects the SSE stream after an authentication failure', async ({ page }) => {
+  const fresh = await startDaemon();
+  try {
+    let eventRequests = 0;
+    await page.route('**/api/v1/events*', async (route) => {
+      eventRequests += 1;
+      if (eventRequests === 1) {
+        await route.fulfill({ status: 401, body: 'unauthorized' });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
+        body: ': reconnected\n\n',
+      });
+    });
+    await page.goto(`${fresh.baseURL}/#bootstrap=${encodeURIComponent(fresh.bootstrap)}`);
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await expect.poll(() => eventRequests, { timeout: 10_000 }).toBeGreaterThan(1);
+  } finally {
+    await stopDaemon(fresh);
+  }
+});
+
+test('stops SSE retries and explains that the session expired after a daemon restart', async ({
+  page,
+}) => {
+  const fresh = await startDaemon();
+  try {
+    let snapshotRequests = 0;
+    let eventRequests = 0;
+    await page.route('**/api/v1/snapshot', async (route) => {
+      snapshotRequests += 1;
+      if (snapshotRequests === 1) {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'session_invalid', message: 'Session expired' } }),
+      });
+    });
+    await page.route('**/api/v1/events*', async (route) => {
+      eventRequests += 1;
+      await route.fulfill({ status: 401, body: 'unauthorized' });
+    });
+    await page.goto(`${fresh.baseURL}/#bootstrap=${encodeURIComponent(fresh.bootstrap)}`);
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await expect(page.getByRole('alert').getByText(/Session expired/)).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(page.locator('.sidebar-footer-status')).toContainText('Session expired');
+    await expect.poll(() => eventRequests, { timeout: 2_000 }).toBe(1);
+  } finally {
+    await stopDaemon(fresh);
+  }
+});
+
+test('ignores a stale Studio status response after switching projects', async ({ page }) => {
+  const fresh = await startDaemon();
+  try {
+    let firstProjectId = '';
+    let releaseStale!: () => void;
+    const staleResponse = new Promise<void>((resolve) => (releaseStale = resolve));
+    let delayedFirst = false;
+    await page.route('**/api/v1/studio-status?project=*', async (route) => {
+      const projectId = new URL(route.request().url()).searchParams.get('project') ?? '';
+      if (!firstProjectId) firstProjectId = projectId;
+      if (projectId === firstProjectId && !delayedFirst) {
+        delayedFirst = true;
+        await staleResponse;
+      }
+      await route.fulfill({
+        json:
+          projectId === firstProjectId
+            ? { open: 1, matched: 0, state: 'other' }
+            : { open: 1, matched: 1, state: 'matched' },
+      });
+    });
+    await page.goto(`${fresh.baseURL}/#bootstrap=${encodeURIComponent(fresh.bootstrap)}`);
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await page.request.post(`${fresh.baseURL}/api/v1/settings`, {
+      headers: { Origin: fresh.baseURL },
+      data: { setup_complete: 'true', locale: 'en' },
+    });
+    await page.reload();
+    await expect(page.getByRole('dialog')).toBeHidden();
+    await page.getByRole('button', { name: 'Chat', exact: true }).click();
+    await expect(page.locator('.chat-layout')).toBeVisible();
+    const projects = page.getByRole('combobox', { name: 'Project', exact: true });
+    await expect(projects.locator('option')).toHaveCount(3);
+    await projects.selectOption({ index: 1 });
+    const studioStatus = page.getByText('Studio: this place is open', { exact: true });
+    await expect(studioStatus).toBeVisible();
+    releaseStale();
+    await expect(studioStatus).toBeVisible();
+  } finally {
+    await stopDaemon(fresh);
+  }
+});
+
+test('rollback stays attached to the completed run when a follow-up is foreground', async ({
+  page,
+}) => {
+  const fresh = await startDaemon();
+  try {
+    let projectId = '';
+    const completedRunId = 'rollback-completed-run';
+    const foregroundRunId = 'rollback-foreground-run';
+    let releaseEvents!: () => void;
+    const eventsGate = new Promise<void>((resolve) => (releaseEvents = resolve));
+    let rollbackPath = '';
+    const bootstrapResponse = await page.request.post(`${fresh.baseURL}/api/v1/session/bootstrap`, {
+      headers: { Origin: fresh.baseURL },
+      data: { token: fresh.bootstrap },
+    });
+    expect(bootstrapResponse.ok()).toBeTruthy();
+    const seedResponse = await page.request.get(`${fresh.baseURL}/api/v1/snapshot`);
+    expect(seedResponse.ok()).toBeTruthy();
+    const seedBody = await seedResponse.json();
+    seedBody.settings.setupComplete = true;
+    projectId =
+      seedBody.projects.find((project: { archived: boolean }) => !project.archived)?.id ?? '';
+    const template = seedBody.runs[0] ?? {
+      projectId,
+      agentId: '',
+      provider: 'mock',
+      modelAlias: 'mock',
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      cost: 0,
+      validation: 'none',
+      correctionDepth: 0,
+    };
+    const base = {
+      ...template,
+      projectId,
+      threadId: 'rollback-thread',
+      promptSnapshot: 'rollback regression',
+      updatedAt: '2026-09-13T00:02:00Z',
+    };
+    const syntheticRuns = [
+      { ...base, id: completedRunId, status: 'completed', createdAt: '2026-09-13T00:00:00Z' },
+      { ...base, id: foregroundRunId, status: 'running', createdAt: '2026-09-13T00:01:00Z' },
+    ];
+    await page.route('**/api/v1/snapshot', async (route) => {
+      await route.fulfill({ json: { ...seedBody, runs: syntheticRuns } });
+    });
+    await page.route('**/api/v1/projects/*/threads', async (route) => {
+      await route.fulfill({
+        json: {
+          threads: [
+            {
+              id: 'rollback-thread',
+              projectId,
+              title: 'Rollback regression',
+              createdAt: '2026-09-13T00:00:00Z',
+              updatedAt: '2026-09-13T00:02:00Z',
+            },
+          ],
+        },
+      });
+    });
+    await page.route('**/api/v1/threads/*/messages', (route) =>
+      route.fulfill({ json: { messages: [] } }),
+    );
+    await page.route('**/api/v1/runs/*/diff', (route) =>
+      route.fulfill({
+        json: {
+          diff: 'diff --git a/example.txt b/example.txt\n--- a/example.txt\n+++ b/example.txt\n@@ -0,0 +1 @@\n+changed\n',
+          checkpoint: {
+            commitHash: '0123456789abcdef',
+            branch: 'codex/test',
+            label: 'rollback regression',
+            createdAt: '2026-09-13T00:02:00Z',
+          },
+        },
+      }),
+    );
+    await page.route('**/api/v1/runs/*/rollback', async (route) => {
+      rollbackPath = new URL(route.request().url()).pathname.split('/').at(-2) ?? '';
+      await route.fulfill({ json: { branch: 'codex/test', commitHash: 'fedcba' } });
+    });
+    await page.route('**/api/v1/events*', async (route) => {
+      await eventsGate;
+      const event = {
+        id: 901,
+        projectId,
+        runId: completedRunId,
+        type: 'status',
+        rawType: 'scheduler.state',
+        payload: { status: 'completed' },
+        createdAt: '2026-09-13T00:02:01Z',
+      };
+      await route.fulfill({
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
+        body: `id: 901\nevent: status\ndata: ${JSON.stringify(event)}\n\n`,
+      });
+    });
+    await page.goto(fresh.baseURL);
+    await page.getByRole('button', { name: 'Chat', exact: true }).click();
+    await expect(page.locator('.chat-layout')).toBeVisible();
+    releaseEvents();
+    await expect(page.locator('.rollback-button')).toBeVisible({ timeout: 10_000 });
+    await page.locator('.rollback-button').click();
+    await page.getByRole('button', { name: 'Confirm rollback', exact: true }).click();
+    await expect.poll(() => rollbackPath).toBe(completedRunId);
   } finally {
     await stopDaemon(fresh);
   }

@@ -57,7 +57,7 @@ StudioForge is a public beta, not a finished product. Before pointing it at a pr
 
 - **Back it up.** A Git repo (StudioForge checkpoints before every run) or a plain copy both work.
 - **Expect unsigned builds.** Windows SmartScreen and macOS Gatekeeper will both warn on first launch — this is expected for an unsigned development build, not a sign of a compromised download. Verify the release checksum if you want extra assurance.
-- **Some features are still rough or partial.** Project memory is intentionally minimal: it stores run prompt entries rather than summaries of agent decisions. The full list: [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
+- **Some features are still rough or partial.** Project memory stores bounded excerpts of reported run outcomes, not independently verified facts. The full list: [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
 
 ## Want more?
 
@@ -78,4 +78,4 @@ MIT — see [LICENSE](LICENSE).
 
 ## Project status
 
-Public beta (v0.5.0-beta line). There is no stable interface yet — expect changes between releases. Read [Known limitations](docs/KNOWN_LIMITATIONS.md) before relying on any part of it for a real project.
+Public beta (v0.6.0). There is no stable interface yet — expect changes between releases. Read [Known limitations](docs/KNOWN_LIMITATIONS.md) before relying on any part of it for a real project.

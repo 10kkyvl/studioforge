@@ -163,6 +163,40 @@ func TestReadJSONAccumulatesUsage(t *testing.T) {
 	}
 }
 
+func TestReadJSONStopsWhenRunIsCancelled(t *testing.T) {
+	h := &handle{events: make(chan providers.Event, 1), cancelled: make(chan struct{})}
+	close(h.cancelled)
+	stream := `{"type":"assistant","message":{"content":[]}}
+{"type":"assistant","message":{"content":[]}}
+`
+	done := make(chan error, 1)
+	go func() { done <- h.readJSON(strings.NewReader(stream)) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("readJSON returned %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("readJSON remained blocked after cancellation")
+	}
+}
+
+func TestConsumePreservesUsage(t *testing.T) {
+	// Reuse the test binary so this regression test is portable across the
+	// platforms supported by the provider; the selected pattern runs no tests.
+	cmd := exec.Command(os.Args[0], "-test.run=^$")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	h := &handle{cmd: cmd, events: make(chan providers.Event, 4), done: make(chan struct{}), cancelled: make(chan struct{})}
+	h.result.Usage = providers.Usage{InputTokens: 12, OutputTokens: 34}
+	h.consume(strings.NewReader(""), strings.NewReader(""), func() {})
+	got := h.Wait().Usage
+	if got != (providers.Usage{InputTokens: 12, OutputTokens: 34}) {
+		t.Fatalf("usage=%+v, want input=12 output=34", got)
+	}
+}
+
 func TestBuildArgsAddsOnlyCapabilities(t *testing.T) {
 	args := buildArgs(providers.RunRequest{RunID: "id", Prompt: "prompt", Model: "balanced", Effort: "high", MaxTurns: 4, MaxBudget: 2, MCPConfigPath: "mcp.json", PermissionProfile: "default"}, "resume-id", map[string]bool{"stream-json": true, "resume": true, "model": true})
 	joined := strings.Join(args, " ")
@@ -432,5 +466,44 @@ func TestCancelTerminatesRun(t *testing.T) {
 	// a no-op rather than signalling a PID the OS may have reused.
 	if err := handle.Cancel(); err != nil {
 		t.Fatalf("repeat cancel: %v", err)
+	}
+}
+
+// Cancel must also unblock readers that are stuck reporting events. A full
+// provider event buffer used to leave cmd.Wait unreachable when the scheduler
+// stopped consuming Events before waiting for the cancelled run.
+func TestCancelUnblocksFloodedRunWithoutEventReader(t *testing.T) {
+	provider := New(fakeClaude(t))
+	handle, err := provider.Start(context.Background(), providers.RunRequest{
+		RunID:             "run-flood",
+		WorkingDirectory:  t.TempDir(),
+		Prompt:            "test",
+		PermissionProfile: "default",
+		Environment:       []string{"FAKE_CLAUDE_SCENARIO=flood"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No goroutine drains Events. Wait until the provider's 128-event buffer is
+	// full, which proves at least one stream reader is back-pressured.
+	deadline := time.After(5 * time.Second)
+	for len(handle.Events()) < 128 {
+		select {
+		case <-deadline:
+			_ = handle.Cancel()
+			t.Fatal("flood subprocess did not fill the event buffer")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	if err := handle.Cancel(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan providers.Result, 1)
+	go func() { done <- handle.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(cancelGrace + 5*time.Second):
+		t.Fatal("cancelled flooded Claude run never exited")
 	}
 }

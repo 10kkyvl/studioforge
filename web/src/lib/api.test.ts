@@ -324,4 +324,24 @@ describe('connectEvents', () => {
     expect(statuses).toEqual([true, false]);
     disconnect();
   });
+  it('opens a fresh source when the previous source is permanently closed', () => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('EventSource', FakeEventSource);
+    const firstDisconnect = connectEvents(
+      () => {},
+      () => {},
+    );
+    const first = FakeEventSource.instances[0];
+    first.readyState = FakeEventSource.CLOSED;
+    const secondDisconnect = connectEvents(
+      () => {},
+      () => {},
+      17,
+    );
+    expect(FakeEventSource.instances).toHaveLength(2);
+    expect(FakeEventSource.instances[1].url).toBe('/api/v1/events?after=17');
+    firstDisconnect();
+    secondDisconnect();
+    expect(FakeEventSource.instances[1].closeCalled).toBe(true);
+  });
 });

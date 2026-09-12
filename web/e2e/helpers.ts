@@ -79,9 +79,13 @@ export async function startDaemon(options: StartDaemonOptions = {}): Promise<Dae
 
 export async function stopDaemon(handle: DaemonHandle): Promise<void> {
   const { daemon, dataDir, binary } = handle;
-  if (daemon && !daemon.killed) {
+  if (daemon && daemon.exitCode === null) {
     daemon.kill();
     await new Promise((resolveExit) => {
+      if (daemon.exitCode !== null) {
+        resolveExit(undefined);
+        return;
+      }
       daemon.once('exit', resolveExit);
       setTimeout(resolveExit, 3_000);
     });

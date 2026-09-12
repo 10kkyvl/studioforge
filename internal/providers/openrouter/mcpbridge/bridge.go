@@ -32,6 +32,13 @@ func New(ctx context.Context, client *mcp.Client, allowedPrefixed []string, maxR
 		allowed[strings.TrimPrefix(name, mcp.ToolPrefix)] = true
 	}
 	discovered, _ := client.Discover(ctx)
+	if len(discovered) == 0 {
+		// A launcher can successfully connect while withholding tools/list from
+		// this client (for example when another MCP client owns Studio's WS host
+		// port). The shim has the same fallback, and the direct bridge needs one
+		// too or OpenRouter is sent a run with no Studio tools at all.
+		discovered = fallbackTools()
+	}
 	var advertised []mcp.Tool
 	for _, tool := range discovered {
 		if allowed[tool.Name] {
@@ -39,6 +46,18 @@ func New(ctx context.Context, client *mcp.Client, allowedPrefixed []string, maxR
 		}
 	}
 	return &Bridge{client: client, allowed: allowed, advertised: advertised, maxResultBytes: maxResultBytes}
+}
+
+func fallbackTools() []mcp.Tool {
+	tools := make([]mcp.Tool, 0, len(mcp.OfficialTools))
+	for _, name := range mcp.OfficialTools {
+		tools = append(tools, mcp.Tool{
+			Name:        name,
+			Description: "Roblox Studio tool " + name + ". Argument schema unavailable: this Studio did not publish one, so pass the arguments the tool documents and read the error if they are wrong.",
+			InputSchema: map[string]any{"type": "object", "additionalProperties": true},
+		})
+	}
+	return tools
 }
 
 func (b *Bridge) Definitions() []orclient.Tool {

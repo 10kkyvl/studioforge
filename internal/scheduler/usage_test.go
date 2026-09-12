@@ -45,6 +45,27 @@ func TestCompletedRunPersistsTokens(t *testing.T) {
 	}
 }
 
+func TestReceivedProviderEventSurvivesCancelledContext(t *testing.T) {
+	manager, _, store, ctx := newHarness(t)
+	run, _, err := store.CreateRun(ctx, models.Run{ProjectID: "demo-obby", AgentID: "demo-obby-orch", Provider: "mock", ModelAlias: "balanced", Status: "running", Phase: "running"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	manager.emitEvent(cancelled, &execution{job: &Job{RunID: run.ID, ProjectID: run.ProjectID, AgentID: run.AgentID}}, providers.Event{
+		Type: "message", RawType: "assistant", Payload: map[string]any{"text": "Final answer"},
+		Usage: providers.Usage{OutputTokens: 42}, At: time.Now().UTC(),
+	})
+	list, err := store.EventsAfter(ctx, 0, run.ProjectID, run.ID, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 || list[0].Type != "usage" || list[1].Type != "message" {
+		t.Fatalf("received final message/usage lost on cancellation: %+v", list)
+	}
+}
+
 // Stopping a run does not refund it. The cancel path used to drop the provider
 // result on the floor, so a cancelled run reported zero tokens forever.
 func TestCancelledRunPersistsTokens(t *testing.T) {

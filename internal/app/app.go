@@ -560,12 +560,36 @@ func Run(ctx context.Context, opts config.Options) error {
 		runErr = err
 	case <-ctx.Done():
 	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	_ = httpServer.Shutdown(shutdownCtx)
-	_ = schedulerManager.Close(shutdownCtx)
-	_ = supervisor.Close(shutdownCtx)
-	_ = db.Checkpoint(shutdownCtx)
+	httpShutdownCtx, cancelHTTP := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := httpServer.Shutdown(httpShutdownCtx); err != nil {
+		slog.Warn("HTTP server shutdown incomplete", "error", err)
+	}
+	cancelHTTP()
+
+	// Keep the database alive until the scheduler has finished its cancellation
+	// bookkeeping. If the bounded shutdown budget expires, wait for the same
+	// manager without a deadline before the deferred db.Close runs; otherwise a
+	// late final transition can race a closed SQLite handle.
+	schedulerShutdownCtx, cancelScheduler := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := schedulerManager.Close(schedulerShutdownCtx); err != nil {
+		slog.Warn("scheduler shutdown exceeded deadline; waiting for completion", "error", err)
+		if waitErr := schedulerManager.Close(context.Background()); waitErr != nil {
+			slog.Error("scheduler shutdown failed", "error", waitErr)
+		}
+	}
+	cancelScheduler()
+
+	supervisorShutdownCtx, cancelSupervisor := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := supervisor.Close(supervisorShutdownCtx); err != nil {
+		slog.Warn("process supervisor shutdown incomplete", "error", err)
+	}
+	cancelSupervisor()
+
+	checkpointCtx, cancelCheckpoint := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := db.Checkpoint(checkpointCtx); err != nil {
+		slog.Warn("database checkpoint failed during shutdown", "error", err)
+	}
+	cancelCheckpoint()
 	return runErr
 }
 

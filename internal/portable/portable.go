@@ -58,7 +58,11 @@ func Export(ctx context.Context, store *database.Store, projectID, target string
 	}
 	zw := zip.NewWriter(file)
 	ok := false
+	fileClosed := false
 	defer func() {
+		if !fileClosed {
+			_ = file.Close()
+		}
 		if !ok {
 			_ = os.Remove(target)
 		}
@@ -84,8 +88,10 @@ func Export(ctx context.Context, store *database.Store, projectID, target string
 		return err
 	}
 	if err := file.Close(); err != nil {
+		fileClosed = true
 		return err
 	}
+	fileClosed = true
 	ok = true
 	return nil
 }

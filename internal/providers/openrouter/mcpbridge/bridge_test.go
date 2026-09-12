@@ -265,7 +265,22 @@ func TestNewToleratesDiscoveryFailure(t *testing.T) {
 	transport := &fakeTransport{listErr: errors.New("discovery boom")}
 	client := mcp.NewClient(transport)
 	b := New(context.Background(), client, mcp.AllowedTools("read-only"), 0)
-	if len(b.Names()) != 0 {
-		t.Fatalf("names = %v, want none when discovery fails", b.Names())
+	if !b.Has("script_read") {
+		t.Fatalf("names = %v, want known Studio tools after discovery fails", b.Names())
+	}
+	if len(b.Definitions()) == 0 {
+		t.Fatal("fallback Studio tools should still have definitions")
+	}
+	res := b.Execute(context.Background(), "script_read", nil)
+	if res.IsError {
+		t.Fatalf("fallback tool should remain callable: %+v", res)
+	}
+}
+
+func TestNewFallsBackWhenLauncherAdvertisesNoTools(t *testing.T) {
+	transport := &fakeTransport{tools: []mcp.Tool{}}
+	b := New(context.Background(), mcp.NewClient(transport), mcp.AllowedTools("read-only"), 0)
+	if !b.Has("screen_capture") {
+		t.Fatalf("names = %v, want fallback Studio tools", b.Names())
 	}
 }

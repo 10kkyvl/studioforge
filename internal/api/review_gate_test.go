@@ -68,6 +68,21 @@ func reviewFixture(t *testing.T) (*testAPI, string, models.Run, string) {
 	return a, root, run, base
 }
 
+func TestReviewGateAcceptsCleanRepositoryCheckpoint(t *testing.T) {
+	a, root, _, base := reviewFixture(t)
+	for _, provider := range []string{"claude", "openrouter", "nvidia"} {
+		t.Run(provider, func(t *testing.T) {
+			hash, _ := a.server.checkpointBeforeRun(models.Project{Path: root}, provider, "build")
+			if hash != base {
+				t.Fatalf("checkpoint=%q, want clean HEAD %q", hash, base)
+			}
+			if err := a.server.reviewGateReady(models.Agent{Provider: provider, ReviewBeforeApply: true}, "build", hash); err != nil {
+				t.Fatalf("clean git repository rejected by review gate: %v", err)
+			}
+		})
+	}
+}
+
 func TestReviewAPIProposeAndApplySelectedHunk(t *testing.T) {
 	a, root, run, base := reviewFixture(t)
 	if err := os.WriteFile(filepath.Join(root, "tracked.txt"), []byte("base\nchanged\n"), 0o600); err != nil {

@@ -25,8 +25,8 @@ point of this demo is that every second of it is real.
 - Task dependencies as an enforced gate — they are persisted and cycle-checked at creation time, but a
   run does not check whether a task's dependencies are finished before starting (see
   [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md)).
-- Project memory as a curated or browsable feature — entries are auto-saved from run prompts with no
-  management UI or API to list, edit, or delete them.
+- Project memory as automatically verified knowledge — entries are bounded reported outcomes.
+  The management UI supports browsing, editing, pinning and deletion; semantic conflicts need explicit correction.
 - Studio Sessions discovery during an active run — background refresh pauses while Studio is in use
   and resumes after a quiet period. The idle interval is configurable; `0` disables polling.
 - Any capability the official Roblox Studio MCP tooling does not itself provide. StudioForge

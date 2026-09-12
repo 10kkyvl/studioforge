@@ -31,6 +31,11 @@ const (
 
 const DefaultTTL = 6 * time.Hour
 
+// degradedMemoTTL avoids hammering the catalog endpoint during an outage while
+// keeping recovery responsive. Fallback and stale-cache results must never
+// occupy the normal six-hour live catalog window.
+const degradedMemoTTL = time.Minute
+
 const fetchTimeout = 15 * time.Second
 
 type Service struct {
@@ -64,7 +69,11 @@ func (s *Service) Models(ctx context.Context) ([]Model, Source, error) {
 	defer s.mu.Unlock()
 
 	now := s.now()
-	if !s.memoAt.IsZero() && now.Sub(s.memoAt) < s.cfg.TTL {
+	memoTTL := s.cfg.TTL
+	if (s.memoSource == SourceFallback || s.memoSource == SourceCache) && degradedMemoTTL < memoTTL {
+		memoTTL = degradedMemoTTL
+	}
+	if !s.memoAt.IsZero() && now.Sub(s.memoAt) < memoTTL {
 		return cloneModels(s.memo), s.memoSource, nil
 	}
 
@@ -88,6 +97,9 @@ func (s *Service) Models(ctx context.Context) ([]Model, Source, error) {
 	}
 
 	fallback := FallbackModels()
+	// A transient outage must not pin the bundled snapshot for the full catalog
+	// TTL. Memoize it briefly to avoid hammering the endpoint during a short
+	// outage, then retry the live endpoint and consult the persistent cache.
 	s.storeLocked(ctx, fallback, now, SourceFallback, false)
 	return cloneModels(fallback), SourceFallback, nil
 }

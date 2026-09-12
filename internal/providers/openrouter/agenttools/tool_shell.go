@@ -57,6 +57,12 @@ var refusedSubcommands = map[string]string{"go": "run"}
 // checkWorkspaceCommand applies the workspace-write restrictions to an already
 // tokenized command line. An empty return means the command may run.
 func checkWorkspaceCommand(exe string, argv []string) string {
+	// The allowlist is for trusted command names, not paths chosen by the
+	// model. Without this check, a model-created tools/git script is accepted
+	// because its basename happens to be the trusted name "git".
+	if filepath.Base(exe) != exe || strings.ContainsAny(exe, `/\\`) {
+		return fmt.Sprintf("command paths are not allowed in workspace-write profile: %s (use danger-full-access for arbitrary commands)", exe)
+	}
 	base := strings.ToLower(filepath.Base(exe))
 	base = strings.TrimSuffix(base, ".exe")
 	base = strings.TrimSuffix(base, ".cmd")

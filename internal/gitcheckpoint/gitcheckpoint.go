@@ -1,7 +1,7 @@
 // Package gitcheckpoint commits a project's current state before an agent run,
 // so the operator can revert an agent's changes with git. Everything is
-// best-effort: a project that is not a git repo, or has nothing to commit, is a
-// silent no-op, and StudioForge never fails a run over a checkpoint.
+// best-effort: a project that is not a git repo is a silent no-op. A clean
+// repository reuses HEAD so every run has a rollback point without extra commits.
 package gitcheckpoint
 
 import (
@@ -11,19 +11,29 @@ import (
 	"time"
 )
 
-// Checkpoint commits the working tree at root and returns the new commit
-// hash and the branch it was committed to. It returns ("", "", nil) when root
-// is not a git repo or there is nothing to commit.
+// Checkpoint commits the working tree at root and returns the commit hash and
+// branch. A clean tree returns its existing HEAD; a non-git directory or an
+// empty repository with no commits returns ("", "", nil).
 func Checkpoint(root, label string) (hash string, branch string, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if run(ctx, root, "rev-parse", "--git-dir") != nil {
 		return "", "", nil // not a git repository
 	}
-	_ = run(ctx, root, "add", "-A")
-	status, _ := output(ctx, root, "status", "--porcelain")
+	if err := run(ctx, root, "add", "-A"); err != nil {
+		return "", "", err
+	}
+	status, err := output(ctx, root, "status", "--porcelain")
+	if err != nil {
+		return "", "", err
+	}
 	if status == "" {
-		return "", "", nil // nothing changed since the last checkpoint
+		hash, err = output(ctx, root, "rev-parse", "--verify", "HEAD")
+		if err != nil {
+			return "", "", nil // empty repository with no initial commit
+		}
+		branch, _ = output(ctx, root, "rev-parse", "--abbrev-ref", "HEAD")
+		return hash, branch, nil
 	}
 	// -c identity keeps the commit working even when the repo has no configured
 	// author, without touching the operator's global git config.
