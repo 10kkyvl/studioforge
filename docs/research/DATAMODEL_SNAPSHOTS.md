@@ -69,8 +69,8 @@ before recommending build.
 
 The connection preflight on this Apple Silicon macOS machine on 2026-09-13
 advertised zero tools and timed out after 20 seconds while listing Studio
-instances (`TestRealStudioMCP`). Therefore no successful real-place capture cost
-is available in this revision. Connection timeout is not a snapshot benchmark.
+instances (`TestRealStudioMCP`). Therefore no successful end-to-end MCP capture cost
+is available in this revision. The Command Bar measurement below covers local capture only. Connection timeout is not a snapshot benchmark.
 A second attempt through ProvisionLive returned no connected instance.
 
 
